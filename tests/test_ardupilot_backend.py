@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from pi_fpv_companion.fc.ardupilot import ArduPilotBackend, ArduCopterRcMapping
+from pi_fpv_companion.fc.ardupilot import (
+    ArduPilotBackend, ArduCopterRcMapping, _STREAM_REREQUEST_S)
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode
 from tests.fakes.fake_ardupilot import FakeArduCopter
 
@@ -177,3 +178,18 @@ def test_adaptive_hover_clamped_to_max():
     _seed(b, -50.0)                     # huge descent would push past the clamp
     b._adaptive_throttle(_hold())
     assert b._hover_pwm <= 1700.0
+
+
+def test_streams_rerequested_periodically(ap_pair, monkeypatch):
+    # RC_CHANNELS + VFR_HUD must be re-asked after a link blip, not only at startup.
+    backend, _ = ap_pair
+    calls = []
+    monkeypatch.setattr(backend, "_request_streams", lambda *a, **k: calls.append(1))
+    backend._last_stream_req = 0.0
+    backend._drain()                    # >5 s since 0 -> re-request
+    assert len(calls) == 1
+    backend._drain()                    # immediate -> gated, no re-request
+    assert len(calls) == 1
+    backend._last_stream_req -= _STREAM_REREQUEST_S + 1   # pretend interval elapsed
+    backend._drain()
+    assert len(calls) == 2

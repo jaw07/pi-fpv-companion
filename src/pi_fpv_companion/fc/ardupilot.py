@@ -34,11 +34,20 @@ Stick signs are TX/RCMAP/airframe dependent — bench/SITL-validate them
 `pymavlink` is imported lazily so the module is importable without it.
 """
 from __future__ import annotations
+import logging
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode, SwitchState
+
+_log = logging.getLogger(__name__)
+
+# Re-ask for telemetry streams this often. ArduPilot drops a serial link's stream
+# subscriptions on reconnect, so a one-shot request at startup is not enough —
+# without periodic re-request the engage switch (RC_CHANNELS) and adaptive-hover
+# climb rate (VFR_HUD) silently stop after any link blip.
+_STREAM_REREQUEST_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -138,6 +147,8 @@ class ArduPilotBackend:
         self._hover_t: float = 0.0           # last adapt time (for dt)
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
+        self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
+        self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
 
     def open(self) -> None:
         """Bind / connect the transport. Does NOT block on heartbeat — call
@@ -197,10 +208,17 @@ class ArduPilotBackend:
     def _drain(self) -> None:
         if self._mav is None:
             return
+        # Keep RC_CHANNELS + VFR_HUD flowing across link reconnects (see
+        # _STREAM_REREQUEST_S) — cheap, and the alternative is a stuck engage
+        # switch / starved adaptive hover after any blip.
+        now = time.monotonic()
+        if now - self._last_stream_req > _STREAM_REREQUEST_S:
+            self._request_streams()
+            self._last_stream_req = now
         while True:
             msg = self._mav.recv_match(blocking=False)
             if msg is None:
-                return
+                break
             t = msg.get_type()
             if t == "HEARTBEAT":
                 armed_bit = self._mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
@@ -256,6 +274,12 @@ class ArduPilotBackend:
         self._hover_t = now
         holding = abs(intent.thrust - 0.5) < m.hover_learn_band
         fresh = (now - self._climb_t) < 0.5 if self._climb_t else False
+        if fresh:
+            self._vfr_warned = False
+        elif holding and not self._vfr_warned:
+            _log.warning("adaptive hover: no fresh VFR_HUD.climb — holding at fixed "
+                         "hover %d. Is VFR_HUD streamed (SR*_EXTRA2)?", int(self._hover_pwm))
+            self._vfr_warned = True
         if holding and fresh:
             if 0.0 < dt < 0.3:   # Ki: slow trim of the hover estimate
                 self._hover_pwm = _clamp(
