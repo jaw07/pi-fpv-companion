@@ -1,0 +1,89 @@
+# IMX500 airframe config — Sony IMX500 AI camera (on-sensor NPU) + ArduPilot FC.
+# Deployed on the Pi Zero 2W rig. The sensor runs the network on its own NPU, so
+# there is NO CPU detector and ncnn is intentionally NOT installed; the .rpk model
+# below is uploaded to the sensor at startup (see camera/imx500.py).
+#   run: python -m pi_fpv_companion --config config/imx500.yaml
+
+video:
+  tv_mode: PAL
+  width: 720
+  height: 576
+  framebuffer: /dev/fb0      # auto-falls back to DRM /dev/dri/card0, then cv2 window
+
+camera:
+  type: imx500               # on-sensor inference; detections emitted inline in FrameBundle
+  framerate: 30
+  imx500_model: /usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk
+
+detector:
+  type: none                 # IMX500 does detection on-sensor — no CPU/ncnn model
+  # conf_threshold + classes_of_interest are still read here and applied by
+  # IMX500Camera when it decodes the sensor's output tensors.
+  conf_threshold: 0.35
+  classes_of_interest: [person, car, truck, motorcycle, bus, boat]
+
+tracker:
+  type: iou                  # associate the dense per-frame sensor detections
+  iou_threshold: 0.3
+  reacquire_after_lost_frames: 30
+
+fc:
+  backend: ardupilot
+  uart_device: /dev/serial0  # PL011 on header pins 8/10 (after dtoverlay=disable-bt)
+  baud: 115200
+  switch_channel: 7          # 3-position mode switch (STANDBY / TRACK / DIVE)
+  track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
+  dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
+  # GPS-denied path: ch7 engages. On TRACK/DIVE the Pi injects AETR sticks via
+  # RC_CHANNELS_OVERRIDE into a self-levelling pilot mode; STANDBY releases them.
+  # control_mode MUST match the FC's mode. stabilize (DEFAULT) = direct throttle,
+  # 0.5=hover, no alt hold -> true steep dive (~16 m/s); companion owns altitude.
+  # althold = climb-rate throttle (0.5=hold via baro), descent capped (gentle).
+  control_mode: stabilize
+  stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
+  # Adaptive hover: companion vertical-velocity hold trims throttle from VFR_HUD
+  # climb rate so it self-levels (no manual hover tuning). Frozen during a dive.
+  stab_hover_learn: true
+  stab_hover_learn_kp: 50.0     # PWM per (m/s) climb — immediate damping (anti-oscillation)
+  stab_hover_learn_gain: 20.0   # Ki: PWM per (m/s) climb per second — slow hover trim
+  stab_hover_min_us: 1200
+  stab_hover_max_us: 1700
+  angle_max_deg: 45.0        # full roll/pitch stick = this lean (match FC ANGLE_MAX)
+  pilot_yaw_rate_dps: 180.0  # full yaw stick = this yaw rate (SITL-measured ~180)
+  rc_roll_sign: 1            # per-axis stick sign; bench/SITL validate (audit §4)
+  rc_pitch_sign: 1
+  rc_yaw_sign: 1
+
+# ATTITUDE-domain guidance (ALT_HOLD RC-override surface). See docs/gps-denied-modes.md.
+guidance:
+  max_yaw_rate_dps: 60
+  max_pitch_deg: 15.0
+  pixel_deadzone_px: 20
+  yaw_p_gain: 0.15
+  yaw_ff_gain: 0.05
+  desired_bbox_frac: 0.30
+  closure_p_gain: 50.0
+  # DIVE only: keep the target centred (pitch P on vertical pixel error) while
+  # leaning forward to close. TRACK uses the range-hold closure above instead.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error
+  dive_forward_deg: 10.0    # forward (nose-down) lean while diving
+  # Gravity dive: descend to gain speed (target is normally below us). Descent is
+  # gated on HORIZONTAL aim, eased off only if the target is ABOVE us.
+  # thrust=climb-rate -> REQUIRES ArduPilot GUID_OPTIONS climb-rate + you manage
+  # an altitude floor. Bench-validate. 0.0 disables (hold altitude).
+  dive_descent: 0.25        # climb-rate-down at full commit (below 0.5 neutral)
+  dive_center_frac: 0.30    # horizontal aim tolerance to commit descent (+ above-us taper)
+  # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
+  yaw_sign: 1.0
+  pitch_sign: 1.0
+
+safety:
+  command_rate_hz: 20
+  watchdog_timeout_ms: 250
+  require_armed: true
+  min_track_quality: 0.35
+
+cpu:
+  # Core-pinning isolates the CPU detector worker from capture/main loop. The
+  # IMX500 path has no CPU detector, so let the pipeline use all cores.
+  pin: false

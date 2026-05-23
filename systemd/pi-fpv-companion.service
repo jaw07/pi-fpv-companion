@@ -1,0 +1,41 @@
+[Unit]
+Description=pi-fpv-companion drone visual tracker
+After=multi-user.target network.target
+
+[Service]
+Type=simple
+User=pi
+Group=video
+SupplementaryGroups=dialout
+
+WorkingDirectory=/opt/pi-fpv-companion
+Environment=PYTHONUNBUFFERED=1
+# Wait for the IMX500 to be enumerable before launching. At boot the service can
+# otherwise grab the sensor mid-init and the camera frontend times out ~60s later.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 40); do rpicam-hello --list-cameras 2>/dev/null | grep -qi imx500 && exit 0; sleep 1; done; echo "imx500 not listed after 40s, starting anyway" >&2; exit 0'
+ExecStart=/opt/pi-fpv-companion/.venv/bin/python -m pi_fpv_companion \
+    --config /opt/pi-fpv-companion/config/default.yaml
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Filesystem hardening — drone software shouldn't be writing outside its install
+ProtectSystem=strict
+ReadWritePaths=/opt/pi-fpv-companion/var
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Resource caps — fail loud if the pipeline tries to balloon
+MemoryMax=300M
+TasksMax=64
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pi-fpv-companion
+
+[Install]
+WantedBy=multi-user.target

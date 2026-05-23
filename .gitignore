@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Model weights — large binaries, do not commit
+*.rpk
+*.ncnn
+*.param
+*.bin
+*.onnx
+*.pt
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local config overrides
+config/local.yaml
+config/*.local.yaml

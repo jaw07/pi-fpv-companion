@@ -1,0 +1,20 @@
+# Runtime dependencies for pi-fpv-companion on Raspberry Pi OS Bookworm (64-bit Lite).
+#
+# Note: picamera2 and libcamera are NOT pip-installable on Bookworm.
+# Install via:
+#   sudo apt install -y python3-picamera2 python3-libcamera
+# For IMX500 support also:
+#   sudo apt install -y imx500-all
+#
+# The packages below ARE pip-installable.
+
+numpy>=1.24
+opencv-contrib-python>=4.8 # full build with cv2.legacy.TrackerKCF/CSRT/MOSSE
+ncnn>=1.0                  # NCNN inference for the PiCam path
+psutil>=5.9                # peak RSS tracking in PerfMonitor
+pymavlink>=2.4.40          # ArduPilot backend
+pyserial>=3.5              # MSP backend (Betaflight) and low-level access
+pyyaml>=6.0                # config
+
+# Dev / test only
+pytest>=7.4

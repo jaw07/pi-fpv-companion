@@ -1,0 +1,139 @@
+# Default configuration for pi-fpv-companion.
+# Override per-airframe by copying to config/<airframe>.yaml and passing --config.
+
+video:
+  tv_mode: PAL              # PAL or NTSC
+  width: 720
+  height: 576               # 576 for PAL, 480 for NTSC
+  framebuffer: /dev/fb0
+
+camera:
+  type: picam               # picam | imx500
+  framerate: 30
+  # PiCam (Camera Module) FPV tuning:
+  exposure_mode: short      # short | normal | long  (short = fast shutter, low motion blur)
+  noise_reduction: fast     # off | fast | high_quality  (fast = clean grain, low latency)
+  hflip: false              # set per camera mounting orientation
+  vflip: false
+  # Note: ScalerCrop is auto-maximized to the widest aspect-correct sensor
+  # region for the widest FOV the lens allows (no software FOV beyond the lens).
+  # IMX500 only:
+  imx500_model: /usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk
+  # PiCam path only:
+  ncnn_model_param: /opt/pi-fpv-companion/models/yolov8n.param
+  ncnn_model_bin: /opt/pi-fpv-companion/models/yolov8n.bin
+
+detector:
+  # PiCam path defaults. On IMX500 the detector module is a no-op (sensor does it).
+  type: nanodet                        # nanodet | yolov8 | color (color = HSV blob, dev only)
+  model_dir: models/nanodet_plus_m_416 # populate with NanoDet-Plus NCNN model files
+                                       # (the 416-trained model works at any input_size due to
+                                       # fully-convolutional architecture)
+  input_size: 256                      # 221 ms inference on Pi Zero 2W (measured)
+                                       # 320 = 347 ms; 416 = 586 ms (overrun risk)
+  conf_threshold: 0.35
+  nms_threshold: 0.45
+  classes_of_interest: [person, car, truck, motorcycle, bus, boat]
+  detect_period_frames: 7              # 4.3 Hz detect rate at input_size: 256
+                                       # MUST be > 30 * inference_seconds or pipeline overruns:
+                                       #   input 256 (221 ms) -> need >= 7
+                                       #   input 320 (347 ms) -> need >= 11
+                                       #   input 416 (586 ms) -> need >= 18
+
+tracker:
+  # picam path -> classical cv2 tracker, re-seeded by Pipeline on detector bursts
+  # imx500 path -> iou associator over dense per-frame detections
+  type: classical           # classical | iou
+  cv2_backend: mosse        # mosse | kcf | medianflow | csrt
+                            # MOSSE measured 1.2 ms p50 on Pi Zero 2W at 720x576
+                            # KCF   measured 23 ms;  MedianFlow 12 ms;  CSRT 200 ms.
+                            # MOSSE's no-scale weakness is fully compensated by the
+                            # detector re-seeding every detect_period_frames.
+  reacquire_after_lost_frames: 30
+  iou_threshold: 0.3        # imx500 path only
+
+fc:
+  backend: ardupilot        # ardupilot | betaflight
+  uart_device: /dev/serial0 # primary UART on GPIO header (pins 8/10). Symlinks to
+                            # the PL011 (ttyAMA0) once Bluetooth is freed via
+                            # dtoverlay=disable-bt — preferred over the mini-UART.
+  baud: 115200              # 115200 for both ArduPilot SERIALn_BAUD=115 and Betaflight MSP
+  switch_channel: 7         # 3-position guidance mode switch (ArduPilot)
+  switch_threshold_us: 1700 # betaflight 2-state engage threshold
+  track_threshold_us: 1300  # ardupilot: pwm >= this -> TRACK (follow + hold range)
+  dive_threshold_us: 1700   # ardupilot: pwm >= this -> DIVE (close + dive); else STANDBY
+  # ArduPilot GPS-denied path: while engaged the Pi injects AETR sticks via
+  # RC_CHANNELS_OVERRIDE into a self-levelling pilot mode; STANDBY releases them.
+  # control_mode MUST match the FC's mode. stabilize (DEFAULT) = direct throttle,
+  # 0.5=hover, no altitude hold -> a true steep dive (~16 m/s in SITL); the
+  # companion owns altitude. althold = throttle is climb rate (0.5=hold via baro),
+  # descent capped at PILOT_SPEED_DN (gentle, ~1-5 m/s). See docs/gps-denied-modes.md.
+  control_mode: stabilize
+  stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
+  # Adaptive hover: companion vertical-velocity hold — trims throttle from measured
+  # climb rate (VFR_HUD) so it levels out by itself; no manual hover tuning needed.
+  # Frozen during a commanded dive; clamped to [min,max]. Needs VFR_HUD streamed.
+  stab_hover_learn: true
+  stab_hover_learn_kp: 50.0     # PWM per (m/s) climb — immediate damping (anti-oscillation)
+  stab_hover_learn_gain: 20.0   # Ki: PWM per (m/s) climb per second — slow hover trim
+  stab_hover_min_us: 1200
+  stab_hover_max_us: 1700
+  angle_max_deg: 45.0       # full roll/pitch stick = this lean (match FC ANGLE_MAX)
+  pilot_yaw_rate_dps: 180.0 # full yaw stick = this yaw rate (SITL-measured ~180)
+  rc_roll_sign: 1           # per-axis stick sign; bench/SITL validate (audit §4)
+  rc_pitch_sign: 1
+  rc_yaw_sign: 1
+
+  # Betaflight-only: ATTITUDE intent -> MSP_SET_RAW_RC sticks (ANGLE mode).
+  # Demo-only path (BF failsafe keys off RX, not MSP). Signs are TX/rcmap
+  # dependent — bench-calibrate. roll/pitch are us-per-DEGREE (angle mode).
+  betaflight:
+    roll_us_per_deg: 12.0            # roll_deg  -> aileron delta from 1500us
+    pitch_us_per_deg: -12.0          # pitch_deg -> elevator delta from 1500us
+    yaw_us_per_dps: 5.0              # yaw_rate_dps -> rudder delta from 1500us
+    throttle_us_per_thrust: 0.0      # thrust(0..1) -> throttle; 0 = FC holds alt
+    throttle_neutral_us: 1500
+    stick_min_us: 1000
+    stick_max_us: 2000
+
+# ATTITUDE-domain guidance (GPS-denied surface — see docs/architecture-audit.md).
+# yaw is rate-controlled; "approach" is a fixed forward (nose-down) lean while
+# locked; roll=0 (pure pursuit); vertical left to the FC in v1.
+guidance:
+  max_yaw_rate_dps: 60
+  max_pitch_deg: 15.0       # forward-lean clamp (approach-aggressiveness ceiling)
+  pixel_deadzone_px: 20     # ignore horizontal offsets smaller than this
+  yaw_p_gain: 0.15          # deg/s of yaw rate per pixel of horizontal error
+  yaw_ff_gain: 0.05         # deg/s per (px/s) of target image velocity (feedforward)
+  # Closure regulation (audit §4): forward lean ~ (apparent_size - desired).
+  desired_bbox_frac: 0.30   # hold when target bbox-height ≈ 30% of frame height
+  closure_p_gain: 50.0      # deg pitch per unit size-fraction error
+                            # far(size~0)-> -15deg clamp (full approach); hold->0;
+                            # too close -> +deg (nose up, back off — collision guard)
+  # DIVE only: keep target centred (pitch P on vertical pixel error) + forward
+  # lean to close. TRACK uses the range-hold closure above instead.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  dive_forward_deg: 10.0    # forward (nose-down) lean while diving
+  # Gravity dive (DIVE only): descend to trade altitude for speed, gated on
+  # horizontal aim. 0.0 = disabled (hold altitude). Needs FC GUID_OPTIONS=climb-rate
+  # + an altitude floor you manage. Bench-validate before enabling.
+  dive_descent: 0.0
+  dive_center_frac: 0.30
+  # Sign overrides (audit §6). A mirrored/flipped camera inverts these ->
+  # divergent positive feedback ("spins away from target"). MUST be
+  # bench-validated — see docs/deployment-safety.md §4. Flip to -1 if the
+  # bench self-test shows the aircraft turning AWAY from the target.
+  yaw_sign: 1.0
+  pitch_sign: 1.0
+
+safety:
+  command_rate_hz: 20
+  watchdog_timeout_ms: 250  # if tracker stale beyond this, mute commands
+  require_armed: true       # require FC to be armed before sending any guidance
+  min_track_quality: 0.35   # below this, mute (probable wrong/drifted target — audit §5)
+
+cpu:
+  # Pin the NCNN detector worker to a dedicated core set so it can't starve
+  # camera capture + the main loop. Measured on Zero 2W: p50 tick 92->31 ms,
+  # content refresh ~7->~10.5 FPS. Linux + >=4 cores only; else silent no-op.
+  pin: true
