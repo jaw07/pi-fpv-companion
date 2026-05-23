@@ -1,0 +1,43 @@
+# Mac development config — runs the full pipeline locally with no Pi hardware.
+# All Pi-specific bits are substituted: synthetic camera, no real detector
+# (the synthetic camera emits detections inline), IoU associator for the
+# IMX500-style path, ArduPilot backend pointed at a SITL/loopback UDP endpoint.
+
+video:
+  tv_mode: PAL
+  width: 720
+  height: 576
+  framebuffer: ""           # empty -> falls back to cv2 LiveViewer
+
+camera:
+  type: synthetic
+  framerate: 30
+
+detector:
+  type: none                # synthetic camera produces detections directly
+
+tracker:
+  type: iou
+  iou_threshold: 0.2
+  reacquire_after_lost_frames: 15
+
+fc:
+  backend: ardupilot
+  uart_device: "udpin:127.0.0.1:14550"   # point at SITL or run demo_synthetic for the fake
+  baud: 0
+  switch_channel: 7
+  switch_threshold_us: 1700
+
+guidance:
+  max_yaw_rate_dps: 60.0
+  max_pitch_deg: 15.0
+  pixel_deadzone_px: 20.0
+  yaw_p_gain: 0.2
+  yaw_ff_gain: 0.05
+  desired_bbox_frac: 0.30
+  closure_p_gain: 50.0
+
+safety:
+  watchdog_timeout_ms: 500
+  require_armed: true
+  min_track_quality: 0.35
