@@ -63,9 +63,11 @@ guidance:
   yaw_ff_gain: 0.05
   desired_bbox_frac: 0.30
   closure_p_gain: 50.0
-  # DIVE only: keep the target centred (pitch P on vertical pixel error) while
-  # leaning forward to close. TRACK uses the range-hold closure above instead.
-  pitch_p_gain: 0.15        # deg pitch per px of vertical error
+  # Vertical centring (pitch P on vertical pixel error). DIVE aims with pitch_p_gain;
+  # TRACK adds track_vcenter_gain on top of range-hold so the target stays centred
+  # as a forward lean tilts the fixed camera down (target rises in frame). 0 = off.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK re-centre)
   dive_forward_deg: 10.0    # forward (nose-down) lean while diving
   # Gravity dive: descend to gain speed (target is normally below us). Descent is
   # gated on HORIZONTAL aim, eased off only if the target is ABOVE us.

@@ -180,6 +180,28 @@ def test_adaptive_hover_clamped_to_max():
     assert b._hover_pwm <= 1700.0
 
 
+# ---- control_ready interlock (don't override into the wrong FC mode) ----
+
+def test_control_ready_true_only_in_matching_mode():
+    b = _stab_backend()                 # control_mode = stabilize -> expects mode 0
+    b._current_mode = 0                  # FC in STABILIZE
+    assert b.control_ready() is True
+    b._current_mode = 2                  # FC in ALT_HOLD -> mismatch
+    assert b.control_ready() is False
+    b._current_mode = None               # unknown -> not ready (safe default)
+    assert b.control_ready() is False
+
+
+def test_control_ready_respects_althold_control_mode():
+    b = ArduPilotBackend(device="udpin:127.0.0.1:1", baud=0, switch_channel=7,
+                         track_threshold_us=1300, dive_threshold_us=1700,
+                         mapping=ArduCopterRcMapping(control_mode="althold"))
+    b._current_mode = 2                  # ALT_HOLD
+    assert b.control_ready() is True
+    b._current_mode = 0                  # STABILIZE -> mismatch for althold
+    assert b.control_ready() is False
+
+
 def test_streams_rerequested_periodically(ap_pair, monkeypatch):
     # RC_CHANNELS + VFR_HUD must be re-asked after a link blip, not only at startup.
     backend, _ = ap_pair

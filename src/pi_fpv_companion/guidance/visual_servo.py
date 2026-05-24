@@ -39,10 +39,14 @@ class ServoConfig:
     yaw_ff_gain: float            # deg/s of yaw rate per (px/s) of target image vx
     desired_bbox_frac: float      # target bbox-height / frame-height at the hold distance
     closure_p_gain: float         # deg of pitch per unit of (size_frac - desired) error
-    # DIVE-only: keep the target centred vertically (pitch P on the vertical pixel
-    # error, mirroring yaw on the horizontal one) AND lean forward to close.
-    # TRACK ignores both and uses the range-hold closure above instead.
-    pitch_p_gain: float = 0.15    # deg of pitch per pixel of VERTICAL error (DIVE aim)
+    # Vertical centring (pitch P on the vertical pixel error, mirroring yaw on the
+    # horizontal one). DIVE uses pitch_p_gain to aim the dive; TRACK adds a (usually
+    # gentler) track_vcenter_gain ON TOP of range-hold so a forward lean — which
+    # tilts the fixed camera down and makes the target rise in frame — is corrected
+    # back toward centre instead of letting the target drift out the top.
+    pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (DIVE aim)
+    track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
+                                  # (keeps target centred as lean tilts the camera; 0 = off)
     dive_forward_deg: float = 10.0  # constant forward (nose-down) lean while diving
     # Gravity dive (DIVE only): command a descent (climb-rate below neutral) to
     # trade altitude for speed, SCALED by how well-centred the target is — full
@@ -121,10 +125,20 @@ def compute_intent(
             commit = 0.0
         thrust = _clamp(HOVER_THRUST - cfg.dive_descent * commit, 0.0, 1.0)
     else:
+        # TRACK: range-hold (pitch ~ apparent-size error) PLUS a vertical-centring
+        # term. The fixed camera tilts with the airframe, so leaning forward to
+        # close makes the target rise in frame; the vcentre term pitches back up to
+        # re-centre it (limiting the lean) so it stays in view. The two share the
+        # pitch budget — closure dominates, vcentre keeps the target from drifting
+        # out the top. (Accommodating a target at a different *altitude* is a
+        # throttle job, not pitch — see docs camera-pitch-coupling.)
+        cy = cfg.frame_height / 2.0
+        dy = _deadband(det.y - cy, cfg.pixel_deadzone_px)
         size_frac = (det.h / cfg.frame_height) if cfg.frame_height else 0.0
         size_err = size_frac - cfg.desired_bbox_frac
         pitch = _clamp(
-            cfg.pitch_sign * cfg.closure_p_gain * size_err,
+            cfg.pitch_sign * cfg.closure_p_gain * size_err
+            - cfg.pitch_sign * cfg.track_vcenter_gain * dy,
             -cfg.max_pitch_deg, cfg.max_pitch_deg,
         )
 

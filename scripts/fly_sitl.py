@@ -56,6 +56,7 @@ class ObservingBackend(ArduPilotBackend):
                 armed_bit = self._mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
                 self._armed = bool(msg.base_mode & armed_bit)
                 self.custom_mode = msg.custom_mode
+                self._current_mode = int(msg.custom_mode)   # for the control_ready interlock
             elif t == "RC_CHANNELS":
                 pwm = getattr(msg, f"chan{self._switch_channel}_raw")
                 mode = self._mode_for(pwm)

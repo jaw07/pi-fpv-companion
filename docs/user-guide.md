@@ -1,0 +1,186 @@
+# pi-fpv-companion — User Guide
+
+
+---
+
+## The one rule
+
+**The 3-position switch is your steering wheel.** Flick it down and the companion
+lets go — you have the sticks, instantly. Keep a finger near it the whole time.
+
+| Switch | Mode | What happens |
+|--------|------|--------------|
+| **Down** | STANDBY | Companion is asleep. **You fly, normally.** |
+| **Middle** | TRACK | It takes the sticks: yaws to center the target, follows, holds height. |
+| **Up** | DIVE | It commits: noses down and drops onto the target. |
+
+That's the whole mental model. Everything below is making it work and trusting it.
+
+---
+
+## Part 1 — Set it up (once)
+
+### a. Put it on the aircraft
+- Pi UART → flight controller UART (3 wires: **Pi pin 8 → FC RX, pin 10 → FC TX,
+  GND↔GND**). Composite video out of the Pi → FC camera-in. Details + photos:
+  `hardware.md`.
+
+### b. Install the software on the Pi
+```bash
+bash scripts/install-pi.sh      # installs to /opt/pi-fpv-companion, sets up the service
+```
+Say yes to the IMX500 firmware and the boot config when asked, then **reboot**.
+
+### c. Set up the flight controller (ArduCopter 4.6+)
+In Mission Planner → Full Parameter List, set and reboot the FC:
+
+| Param | Value | Meaning |
+|-------|-------|---------|
+| `SERIALn_PROTOCOL` / `_BAUD` | `2` / `115` | MAVLink on the UART wired to the Pi |
+| `SRn_EXTRA2` | `≥ 5` | streams climb rate (the companion holds height with it) |
+| `ANGLE_MAX` | `4500` | 45° max lean — must match `fc.angle_max_deg` |
+| `RC7_OPTION` | `0` | leave ch7 alone — it's the companion's engage switch |
+| flight-mode switch | → **STABILIZE** | the mode the companion flies in |
+| ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
+
+Keep the FC's own **RC-loss and battery failsafes** configured — they're your
+backstop if everything else fails.
+
+### d. Point it at the right targets
+Edit `config/imx500.yaml` on the Pi (`/opt/pi-fpv-companion/config/imx500.yaml`):
+```yaml
+camera: { type: imx500, hflip: false, vflip: false }   # flip to match your mount
+fc:
+  control_mode: stabilize     # diving mode (default). 'althold' = gentle/altitude-safe.
+  rc_roll_sign: 1             # <- you'll confirm these on the bench (Part 2)
+  rc_pitch_sign: 1
+  rc_yaw_sign: 1
+guidance:
+  classes_of_interest: [person, car, truck, boat]   # what to lock onto
+  dive_descent: 0.0           # 0 = DIVE just leans in. Set 0.3–0.5 to actually drop.
+```
+
+---
+
+## Part 2 — The bench check (props OFF, 15 minutes, do not skip)
+
+This is the difference between a good first flight and a crash. **Take the props
+off.** Then run it by hand so you can watch it think:
+
+```bash
+sudo systemctl stop pi-fpv-companion      # free it up
+/opt/pi-fpv-companion/.venv/bin/python -m pi_fpv_companion \
+    --config /opt/pi-fpv-companion/config/imx500.yaml \
+    --stream 8080 --no-gui --force-mode track     # pretend the switch is in TRACK
+# open http://<pi-ip>:8080/ in a browser to see what it sees
+# open Mission Planner to watch the stick commands it sends
+```
+
+Walk an object (a person works) across the camera and check:
+
+- 👁️ **It sees it** — a box tracks the object in the browser view.
+- ↪️ **It aims the RIGHT way** *(the critical one)* — object to the **right** of
+  center → it commands **yaw right** (toward it). Object **bigger/closer** → it
+  **eases off**, doesn't lunge. If any axis goes the wrong way, flip that
+  `rc_*_sign` (or fix `camera.hflip`) and re-check. *A wrong sign makes it chase
+  away from the target, faster and faster — find it here, not in the air.*
+- ✋ **You can take it back** — set the real switch to STANDBY → your sticks
+  return at once. Then kill the program (Ctrl-C) mid-track → the FC falls back to
+  your radio within a second or two.
+
+Re-enable the service when done: `sudo systemctl start pi-fpv-companion`.
+
+---
+
+## Part 3 — How to actually fly it
+
+Build up gently. First time, fly somewhere open with room to recover, and treat it
+like a maiden flight.
+
+**1. Power up and warm up.** Battery in, give it ~a minute. In your goggles you
+should see the live feed with boxes on detected objects. Switch **down** (STANDBY).
+
+**2. Take off and fly — normally.** It's just your STABILIZE quad right now; the
+companion is asleep. Get comfortable, climb to a safe height with margin below you.
+
+**3. Line up.** Put your target somewhere in the frame and point roughly at it.
+
+**4. Hand it the wheel — flick to TRACK (middle).** Now *let go of the sticks.*
+The companion yaws to center the target, leans in to follow, and holds your
+altitude by itself. Watch it turn **toward** the target. It should feel like a
+smooth, hands-off chase that keeps the target the same size in frame.
+> If it ever turns *away* or wanders off — flick to STANDBY immediately. Something's
+> miscalibrated; land and recheck Part 2.
+
+**5. Follow as long as you like.** Re-take the sticks anytime by flicking to
+STANDBY. TRACK won't dive — it just follows and holds range.
+
+**6. Commit — flick to DIVE (up).** It noses down hard toward the target. With
+`dive_descent` set above 0 it also drops altitude onto it; at 0 it only leans in.
+There is **no automatic pull-up** — *you* end the dive.
+
+**7. Bail out / finish — flick to STANDBY (down).** Instant manual control. Pull
+up, recover, fly home.
+
+That's it. STANDBY → fly. TRACK → it follows. DIVE → it commits. STANDBY → you're
+back.
+
+### What each mode feels like
+- **STANDBY** — nothing different; you're flying.
+- **TRACK** — hands-off; it gently yaws and leans to keep the target centered and
+  the same distance away, holding height. Following, not attacking.
+- **DIVE** — committed and aggressive: nose down toward the target, descending if
+  you enabled it. Short and decisive — you pull out by going STANDBY.
+
+---
+
+## Part 4 — Make it behave how you want (tuning)
+
+Edit `config/imx500.yaml`, restart the service (`sudo systemctl restart
+pi-fpv-companion`). One change at a time.
+
+| You want… | Change |
+|-----------|--------|
+| It turns the wrong way | a `rc_*_sign` is flipped — **fix before flying** (Part 2) |
+| Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
+| Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
+| Gentler / harder approach | `guidance.max_pitch_deg` |
+| DIVE to actually lose altitude | `guidance.dive_descent` → 0.3–0.5 |
+| Steeper / shallower dive | `dive_descent` (drop) + `max_pitch_deg` (forward) |
+| It holds altitude poorly | confirm `SRn_EXTRA2` is streaming; nudge `stab_hover_throttle_us` |
+| Altitude bounces/hunts | lower `stab_hover_learn_kp`, then `stab_hover_learn_gain` |
+| Stop chasing wrong objects | trim `classes_of_interest`; raise `safety.min_track_quality` |
+| Calm, altitude-safe mode | `fc.control_mode: althold` (won't dive hard, but holds height) |
+
+---
+
+## Part 5 — When something's off
+
+**Abort, always:** switch to STANDBY, or change your flight-mode switch out of
+STABILIZE. Either gives you full manual control immediately.
+
+- **Watch it live:** add `--stream 8080` and open `http://<pi-ip>:8080/`.
+- **Read the logs:** `journalctl -u pi-fpv-companion -f`
+- **Restart it:** `sudo systemctl restart pi-fpv-companion`
+
+| Problem | Likely fix |
+|---------|-----------|
+| Black screen / no video | composite wiring; `video.tv_mode` (PAL vs NTSC) |
+| Won't respond to the switch | check ch7 reaches the FC (Mission Planner radio cal); thresholds |
+| "never armed" / no control | UART wiring + `SERIALn` params; FC must be armed |
+| Log says `no fresh VFR_HUD.climb` | set `SRn_EXTRA2 > 0` on the FC |
+| It flies the wrong way | stick signs / `camera.hflip` (Part 2) |
+| Camera keeps restarting | check the IMX500 shows in `rpicam-hello --list-cameras` |
+
+---
+
+## Please remember
+
+- **No GPS, and in STABILIZE no altitude floor** — a dive keeps descending until
+  *you* stop it. Fly with height to spare and a finger on the switch.
+- **The bench check (Part 2) is the real safety test.** A wrong stick sign is the
+  one thing that turns this dangerous; SITL can't catch it for your airframe.
+- **You are the safety system:** the engage switch, a flight-mode switch back to
+  manual, and the FC's own failsafes. Keep all three.
+- Proven in simulation (ArduCopter 4.6.3), **not yet on a real airframe** — your
+  first flights are the real test. Go slow, go low, build up.
