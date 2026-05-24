@@ -49,6 +49,12 @@ _log = logging.getLogger(__name__)
 # climb rate (VFR_HUD) silently stop after any link blip.
 _STREAM_REREQUEST_S = 5.0
 
+# ArduCopter flight-mode numbers we drive via RC override. The interlock
+# (control_ready) refuses to override unless the FC is actually in the mode that
+# matches control_mode — so a stabilize mapping can't be pushed into ALT_HOLD /
+# LOITER / a GPS mode by mistake. None for control_mode -> no interlock.
+_EXPECTED_MODE = {"stabilize": 0, "althold": 2}   # STABILIZE / ALT_HOLD custom_mode
+
 
 @dataclass(frozen=True)
 class ArduCopterRcMapping:
@@ -149,6 +155,8 @@ class ArduPilotBackend:
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
+        self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
+        self._interlock_warned: bool = False        # warned once that FC mode != expected
 
     def open(self) -> None:
         """Bind / connect the transport. Does NOT block on heartbeat — call
@@ -223,6 +231,7 @@ class ArduPilotBackend:
             if t == "HEARTBEAT":
                 armed_bit = self._mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
                 self._armed = bool(msg.base_mode & armed_bit)
+                self._current_mode = int(msg.custom_mode)
             elif t == "RC_CHANNELS":
                 pwm = getattr(msg, f"chan{self._switch_channel}_raw")
                 mode = self._mode_for(pwm)
@@ -246,6 +255,25 @@ class ArduPilotBackend:
     def is_armed(self) -> bool:
         self._drain()
         return self._armed
+
+    def control_ready(self) -> bool:
+        """Interlock: only override the sticks if the FC is actually in the flight
+        mode that matches control_mode (else our throttle mapping is wrong for the
+        active mode — e.g. stabilize direct-throttle pushed into ALT_HOLD). The
+        pipeline releases to the pilot when this is False. Warns once on mismatch.
+        No expected mode for this control_mode -> no interlock (returns True)."""
+        expected = _EXPECTED_MODE.get(self._mapping.control_mode)
+        if expected is None:
+            return True
+        if self._current_mode == expected:
+            self._interlock_warned = False
+            return True
+        if not self._interlock_warned:
+            _log.warning("engage requested but FC flight mode=%s, need %d for "
+                         "control_mode=%s — staying RELEASED to the pilot; put the FC "
+                         "in that mode.", self._current_mode, expected, self._mapping.control_mode)
+            self._interlock_warned = True
+        return False
 
     def send_intent(self, intent: GuidanceIntent) -> None:
         """Override the AETR channels from the intent (the rest released to the

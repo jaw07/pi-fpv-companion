@@ -226,6 +226,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         desired_bbox_frac=d.get("desired_bbox_frac", 0.30),
         closure_p_gain=d.get("closure_p_gain", 50.0),
         pitch_p_gain=d.get("pitch_p_gain", 0.15),
+        track_vcenter_gain=d.get("track_vcenter_gain", 0.10),
         dive_forward_deg=d.get("dive_forward_deg", 10.0),
         dive_descent=d.get("dive_descent", 0.0),
         dive_center_frac=d.get("dive_center_frac", 0.30),

@@ -26,6 +26,7 @@ class StubFC:
         self.sent: List[GuidanceIntent] = []
         self.released = 0                      # times release() (handback) was called
         self.mode = None                       # if set, overrides switch_active
+        self.ready = True                      # control_ready interlock value
 
     def open(self) -> None: ...
     def close(self) -> None: ...
@@ -39,6 +40,9 @@ class StubFC:
 
     def is_armed(self) -> bool:
         return self.armed
+
+    def control_ready(self) -> bool:
+        return self.ready
 
     def release(self) -> None:
         self.released += 1
@@ -248,6 +252,21 @@ def test_safety_mutes_when_disarmed():
     gated = pipeline.tick(cam.render_at(0.0))
     assert gated.muted
     assert gated.reason == "fc not armed"
+
+
+def test_engaged_but_fc_wrong_mode_releases_not_commands():
+    # Interlock: engaged (TRACK) but the FC isn't in the expected flight mode ->
+    # pipeline releases to the pilot instead of overriding.
+    cam = SyntheticCamera()
+    fc = StubFC()                 # switch_active=True -> TRACK (engaged)
+    fc.ready = False              # control_ready() interlock trips
+    pipeline = Pipeline(cam, IouAssociator(), _servo(), _safety(), fc)
+    pipeline.tick(cam.render_at(0.0))
+    assert fc.released >= 1 and fc.sent == []
+    # once the FC is in the right mode, it commands again
+    fc.ready = True
+    pipeline.tick(cam.render_at(0.05))
+    assert len(fc.sent) == 1
 
 
 def test_standby_releases_engaged_commands():

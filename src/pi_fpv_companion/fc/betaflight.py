@@ -174,6 +174,10 @@ class BetaflightBackend:
         if self._serial is not None:
             self._serial.write(encode(MSP_SET_RAW_RC, struct.pack("<HHHH", 1500, 1500, 1500, 1500)))
 
+    def control_ready(self) -> bool:
+        # No FC-flight-mode interlock on the MSP demo path — always "ready".
+        return True
+
     def send_intent(self, intent: GuidanceIntent) -> None:
         a, e, t, r = intent_to_sticks(intent, self._mapping)
         # MSP_SET_RAW_RC takes channels as little-endian u16. AETR order matches default

@@ -113,6 +113,9 @@ guidance:
   # DIVE only: keep target centred (pitch P on vertical pixel error) + forward
   # lean to close. TRACK uses the range-hold closure above instead.
   pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  # TRACK: re-centre the target vertically as a forward lean tilts the fixed
+  # camera down (target rises in frame). Added on top of range-hold; 0 disables.
+  track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK)
   dive_forward_deg: 10.0    # forward (nose-down) lean while diving
   # Gravity dive (DIVE only): descend to trade altitude for speed, gated on
   # horizontal aim. 0.0 = disabled (hold altitude). Needs FC GUID_OPTIONS=climb-rate

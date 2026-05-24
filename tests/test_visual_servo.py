@@ -190,3 +190,32 @@ def test_track_is_the_default_mode():
     cfg = _cfg()
     t = _target(360, 288, h=40)
     assert compute_intent(t, cfg) == compute_intent(t, cfg, GuidanceMode.TRACK)
+
+
+# ---- TRACK vertical re-centering (accommodates camera tilt from forward lean) ----
+
+def _hold_h(cfg):
+    return cfg.desired_bbox_frac * cfg.frame_height   # size_err == 0 -> range term 0
+
+
+def test_track_high_target_pitches_up_to_recenter():
+    cfg = _cfg()
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    # at hold distance, target well ABOVE centre -> nose UP (re-centre / limit lean)
+    out = compute_intent(_target(cx, cy - 150, h=_hold_h(cfg)), cfg, GuidanceMode.TRACK)
+    assert out.pitch_deg > 0
+
+
+def test_track_low_target_pitches_down_to_recenter():
+    cfg = _cfg()
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    out = compute_intent(_target(cx, cy + 150, h=_hold_h(cfg)), cfg, GuidanceMode.TRACK)
+    assert out.pitch_deg < 0
+
+
+def test_track_vcenter_gain_zero_disables_recenter():
+    cfg = _cfg(track_vcenter_gain=0.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    # with re-centring off + at hold distance, vertical position has no pitch effect
+    out = compute_intent(_target(cx, cy - 150, h=_hold_h(cfg)), cfg, GuidanceMode.TRACK)
+    assert abs(out.pitch_deg) < 1e-6

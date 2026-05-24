@@ -173,9 +173,12 @@ class Pipeline:
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)
-        # STANDBY -> release the controls to the pilot's radio; engaged -> send the
-        # command (when the gate mutes, gated.intent is neutral -> hold level/alt).
-        if switch.mode is GuidanceMode.STANDBY:
+        # STANDBY -> release to the pilot's radio. Engaged -> only override if the
+        # FC is in the flight mode our control_mode expects (control_ready
+        # interlock); otherwise release, so we never push sticks into the wrong
+        # mode. (When the gate mutes while engaged, gated.intent is neutral -> hold.)
+        ready = getattr(self._fc, "control_ready", None)
+        if switch.mode is GuidanceMode.STANDBY or (ready is not None and not ready()):
             self._fc.release()
         else:
             self._fc.send_intent(gated.intent)

@@ -26,6 +26,14 @@ class FlightController(Protocol):
         """True if the FC reports itself armed (HEARTBEAT for AP, MSP_STATUS for BF)."""
         ...
 
+    def control_ready(self) -> bool:
+        """Interlock: True if it's safe to override the sticks right now. ArduPilot
+        returns False unless the FC is in the flight mode matching control_mode (so
+        we never push sticks into the wrong mode); the pipeline releases to the
+        pilot when False. Backends with no flight-mode concept (Betaflight) return
+        True."""
+        ...
+
     def send_intent(self, intent: GuidanceIntent) -> None:
         """Translate intent to the native protocol and send one command frame.
         Called by the pipeline every tick while engaged (TRACK/DIVE)."""
