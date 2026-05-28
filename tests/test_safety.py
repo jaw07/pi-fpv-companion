@@ -18,10 +18,12 @@ TARGET = FilteredTarget(
     vy_px_s=0.0,
     quality=0.9,
     timestamp=1.0,
+    measurement_timestamp=1.0,
 )
 LOWQ_TARGET = FilteredTarget(
     detection=Detection(x=360, y=288, w=40, h=40, confidence=0.2, class_id=0),
     track_id=1, vx_px_s=0.0, vy_px_s=0.0, quality=0.2, timestamp=1.0,
+    measurement_timestamp=1.0,
 )
 SWITCH_ON = SwitchState(active=True, pwm_us=1500, timestamp=1.0, mode=GuidanceMode.TRACK)
 SWITCH_OFF = SwitchState(active=False, pwm_us=1000, timestamp=1.0, mode=GuidanceMode.STANDBY)
@@ -90,6 +92,7 @@ def test_quality_at_floor_still_passes():
     floor_tgt = FilteredTarget(
         detection=Detection(x=360, y=288, w=40, h=40, confidence=0.35, class_id=0),
         track_id=1, vx_px_s=0.0, vy_px_s=0.0, quality=0.35, timestamp=1.0,
+        measurement_timestamp=1.0,
     )
     r = gate(INTENT, floor_tgt, SWITCH_ON, armed=True, now=1.0, cfg=CFG)
     assert not r.muted
