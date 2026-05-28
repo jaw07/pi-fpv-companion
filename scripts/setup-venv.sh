@@ -6,7 +6,7 @@
 #   bash scripts/setup-venv.sh
 set -euo pipefail
 
-PY="${PY:-/opt/homebrew/bin/python3.14}"
+PY="${PY:-python3}"
 VENV_DIR=".venv"
 
 if [ ! -d "$VENV_DIR" ]; then
