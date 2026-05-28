@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from pi_fpv_companion.config import load
 
 
@@ -50,3 +52,32 @@ safety: {watchdog_timeout_ms: 100}
     cfg = load(p)
     assert cfg.video.width == 1024
     assert cfg.servo.max_yaw_rate_dps == 90.0
+
+
+def _write(tmp_path, fc_line: str) -> Path:
+    p = tmp_path / "c.yaml"
+    p.write_text(f"""
+camera: {{type: synthetic}}
+detector: {{type: none}}
+tracker: {{type: iou}}
+fc: {{{fc_line}}}
+""")
+    return p
+
+
+def test_rejects_unknown_control_mode(tmp_path):
+    p = _write(tmp_path, "backend: ardupilot, control_mode: stabalize")
+    with pytest.raises(ValueError, match="control_mode"):
+        load(p)
+
+
+def test_rejects_dive_threshold_below_track(tmp_path):
+    p = _write(tmp_path, "backend: ardupilot, track_threshold_us: 1700, dive_threshold_us: 1300")
+    with pytest.raises(ValueError, match="dive_threshold_us"):
+        load(p)
+
+
+def test_equal_thresholds_allowed(tmp_path):
+    # dive == track is fine (TRACK band is just empty); only dive < track is wrong.
+    p = _write(tmp_path, "backend: ardupilot, track_threshold_us: 1500, dive_threshold_us: 1500")
+    assert load(p).fc.dive_threshold_us == 1500

@@ -244,10 +244,38 @@ def _safety(d: Dict[str, Any]) -> SafetyConfig:
     )
 
 
+_VALID_CONTROL_MODES = ("stabilize", "althold")
+
+
+def _validate(cfg: AppConfig) -> None:
+    """Catch dangerous/no-op misconfigurations at load time rather than in flight.
+
+    - control_mode typo would silently fall back to the althold throttle formula
+      AND disable the control_ready interlock (no expected mode) — so the
+      companion would push sticks regardless of the FC's actual mode.
+    - dive_threshold below track_threshold makes the 3-position switch reach DIVE
+      (full commit) before TRACK, with TRACK unreachable — it would commit the
+      aircraft where the pilot expected follow-only.
+    """
+    fc = cfg.fc
+    if fc.backend == "ardupilot":
+        if fc.control_mode not in _VALID_CONTROL_MODES:
+            raise ValueError(
+                f"fc.control_mode must be one of {_VALID_CONTROL_MODES}, "
+                f"got {fc.control_mode!r}"
+            )
+        if fc.dive_threshold_us < fc.track_threshold_us:
+            raise ValueError(
+                f"fc.dive_threshold_us ({fc.dive_threshold_us}) must be >= "
+                f"fc.track_threshold_us ({fc.track_threshold_us}); otherwise the "
+                "switch reaches DIVE before TRACK and TRACK is unreachable"
+            )
+
+
 def load(path: str | Path) -> AppConfig:
     raw = yaml.safe_load(Path(path).read_text())
     video = _video(raw.get("video", {}))
-    return AppConfig(
+    cfg = AppConfig(
         video=video,
         camera=_camera(raw.get("camera", {})),
         detector=_detector(raw.get("detector", {})),
@@ -257,3 +285,5 @@ def load(path: str | Path) -> AppConfig:
         safety=_safety(raw.get("safety", {})),
         cpu=CpuSection(pin=raw.get("cpu", {}).get("pin", True)),
     )
+    _validate(cfg)
+    return cfg
