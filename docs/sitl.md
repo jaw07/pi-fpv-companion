@@ -68,8 +68,9 @@ tests ALT_HOLD / STABILIZE enter+arm+steer):
 .venv/bin/python scripts/probe_nogps_modes.py --connect tcp:127.0.0.1:5760
 ```
 
-`scripts/demo_sitl.py --connect tcp:127.0.0.1:5760` is the interactive
-"watch it fly" variant (cv2 viewer; pilot keeps SITL in the matching mode).
+`scripts/fly_sitl.py --connect tcp:127.0.0.1:5760` runs the real production
+Pipeline against SITL (closed loop; watch it in Mission Planner — there is no
+on-screen viewer). The pilot keeps SITL in the matching mode.
 
 ### B. arm64-native, purpose-built for M1/M2 Macs
 
@@ -124,9 +125,8 @@ rc 7 1000           # ch7 LOW  -> guidance muted (safety gate stops commands)
 | `udp:127.0.0.1:14550`   | connect outbound to a MAVProxy out port          |
 | `/dev/ttyAMA0`          | real Pi UART                                     |
 
-`validate_sitl.py` defaults to `tcp:127.0.0.1:5760` (image A).
-`demo_sitl.py` defaults to `udpin:127.0.0.1:14550` — pass
-`--connect tcp:127.0.0.1:5760` for image A.
+`validate_sitl.py` and `fly_sitl.py` both default to `tcp:127.0.0.1:5760`
+(image A); pass `--connect udpin:127.0.0.1:14550` to reach a different endpoint.
 
 ## Result (2026-05-16, ArduCopter 4.0.3 SITL)
 
