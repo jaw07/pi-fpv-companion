@@ -178,21 +178,14 @@ script force-reinstalls the contrib package last so its `cv2.so` wins).
 Run the production entry point:
 
 ```
-.venv/bin/python -m pi_fpv_companion --config config/mac-dev.yaml
-.venv/bin/python -m pi_fpv_companion --config config/default.yaml      # Pi-shaped
-# On the Pi, the composited feed (bbox + HUD) goes out the analog composite / TV out.
-.venv/bin/python -m pi_fpv_companion --config config/pi-camera.yaml
+# On the Pi: IMX500 detections + composited feed (bbox + HUD) out the analog composite / TV out.
+.venv/bin/python -m pi_fpv_companion --config config/imx500.yaml
+# On a dev laptop there is no framebuffer/TV out — run headless:
+.venv/bin/python -m pi_fpv_companion --config config/mac-dev.yaml --no-gui
 ```
 
-Or run any of the focused demos:
-
-```
-.venv/bin/python scripts/demo_synthetic.py             # IMX500-style dense detections
-.venv/bin/python scripts/demo_file.py                  # PiCam path on a generated mp4
-.venv/bin/python scripts/demo_file.py --detector haar  # PiCam path, Haar face detector
-.venv/bin/python scripts/demo_webcam.py                # PiCam path on the laptop webcam
-.venv/bin/python scripts/demo_sitl.py                  # FC = real ArduPilot SITL
-```
+Dev verification is the test suite (no on-screen viewer): `.venv/bin/python -m pytest`.
+For SITL, see `docs/sitl.md` (`scripts/validate_sitl.py`, `scripts/fly_sitl.py`).
 
 ## Pi resource budget
 
@@ -287,9 +280,8 @@ dev/sim path; flight uses the IMX500.
   (NCNN + GFL decode), `Yolov8Detector` (higher-RAM boards only);
   `ClassicalCv2Tracker` (MOSSE/KCF/CSRT/MedianFlow), `IouAssociator`.
 - `AsyncDetector` — detector on a pinned worker thread; non-fatal on death.
-- Video out: `overlay`, `LiveViewer` (Mac), `LinuxFramebuffer` (`/dev/fb0`),
-  `DrmFramebuffer` (DRM dumb-buffer for Trixie default KMS), `MjpegStreamSink`
-  (dev preview only — flight is analog composite).
+- Video out: `overlay`, `LinuxFramebuffer` (`/dev/fb0`), `DrmFramebuffer`
+  (DRM dumb-buffer for Trixie default KMS) — flight is the analog composite / TV out.
 - `cpu_affinity` — pins detector and pipeline to disjoint A53 core sets.
 - `config.py` (typed YAML loader), `main.py` (component factory by config),
   `perf.py` (Pi-budget verdict).

@@ -1,13 +1,14 @@
 """Production entry point.
 
 Reads `config/<name>.yaml`, constructs the right Camera / Detector / Tracker /
-FC backend / sink, and runs the Pipeline. Same code runs on Mac dev (via a
-config that picks SyntheticCamera + LiveViewer) and on the Pi (PiCamCamera +
-LinuxFramebuffer + real UART).
+FC backend / sink, and runs the Pipeline. The flight target is the Pi (IMX500 +
+framebuffer/DRM TV out + real UART); video output goes to the analog composite,
+so the only sinks are the framebuffer/DRM ones (run headless with --no-gui where
+no framebuffer device exists, e.g. a dev laptop).
 
 Usage:
-    python -m pi_fpv_companion --config config/default.yaml
-    python -m pi_fpv_companion --config config/mac-dev.yaml
+    python -m pi_fpv_companion --config config/imx500.yaml
+    python -m pi_fpv_companion --config config/mac-dev.yaml --no-gui
 
 The factory functions below are the only place that knows about the concrete
 implementations. Everything downstream speaks Protocols.
@@ -183,7 +184,8 @@ def _build_sink(cfg: AppConfig, no_gui: bool):
 
     # Prefer the legacy /dev/fb0 path if available (older Pi OS, or fkms).
     # Fall back to DRM dumb-buffer on /dev/dri/card0 (Trixie + default KMS).
-    # If neither device is present, drop to a cv2 window (Mac dev).
+    # Flight output is the analog composite / TV out via one of these; there is
+    # no on-screen-window path. With no framebuffer device, run with --no-gui.
     fb = cfg.video.framebuffer
     if fb == "/dev/fb0" and Path(fb).exists():
         from pi_fpv_companion.video.framebuffer import LinuxFramebuffer
@@ -191,8 +193,10 @@ def _build_sink(cfg: AppConfig, no_gui: bool):
     if Path("/dev/dri/card0").exists():
         from pi_fpv_companion.video.drm_framebuffer import DrmFramebuffer
         return FramebufferSink(DrmFramebuffer())
-    from pi_fpv_companion.video.viewer import LiveViewer
-    return LiveViewer(window_name="pi-fpv-companion")
+    raise SystemExit(
+        "no framebuffer device (/dev/fb0 or /dev/dri/card0) for video output; "
+        "pass --no-gui to run headless"
+    )
 
 
 def main(argv=None) -> int:

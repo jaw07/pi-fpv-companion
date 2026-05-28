@@ -289,7 +289,7 @@ src/pi_fpv_companion/
     base.py          FlightController Protocol
     ardupilot.py     RC-override backend, AETR mapping, adaptive hover  ← the core
     betaflight.py    MSP demo backend (RX-failsafe caveat — demo only)
-  video/             overlay + framebuffer/DRM/mjpeg/viewer sinks
+  video/             overlay + framebuffer/DRM (TV out) sinks
 docs/                this file + architecture-audit, gps-denied-modes, deployment-safety, sitl
 scripts/             SITL validation + demos + Pi install
 docker/sitl-4.6/     ArduCopter 4.6.3 SITL image

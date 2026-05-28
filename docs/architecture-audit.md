@@ -27,7 +27,7 @@ Severity legend: **FOUNDATIONAL** (design doesn't work on target hardware) /
 > pivot is no longer just research + unit tests + a loopback echo.
 >
 > SITL also caught a real **doc/demo factual error** (now fixed in
-> `docs/sitl.md` + `scripts/demo_sitl.py`): `AHRS_EKF_TYPE 3` is *EKF3*, not
+> `docs/sitl.md` + the SITL scripts): `AHRS_EKF_TYPE 3` is *EKF3*, not
 > "DCM-only"; on a build with EK3 disabled it hard-fails arming
 > (`PreArm: no EKF3 cores`). Point AHRS at whichever EKF actually has cores
 > (4.0.3 → EKF2). The control surface is independent of EKF flavour/GPS.
