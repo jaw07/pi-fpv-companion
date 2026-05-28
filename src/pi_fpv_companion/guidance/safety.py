@@ -4,7 +4,10 @@ Five independent gates must all pass:
   1. Pilot switch is active (read from FC RC channel)
   2. FC is armed (when require_armed is true)
   3. A current (filtered) target exists
-  4. Its last update is within the watchdog window
+  4. Its last ACCEPTED measurement is within the watchdog window. Gated on
+     `measurement_timestamp` (not `timestamp`, which is restamped every tick) so
+     the timer actually advances while the tracker coasts on a stale/frozen box
+     — the time-bounded backstop to the quality decay in gate 5 (audit §1/§5).
   5. Track quality is above the floor — the "confidently wrong" mitigation
      (audit §5). The filter collapses quality on implausible jumps, class
      flips, and confidence decay; below the floor we will NOT command the
@@ -56,7 +59,7 @@ def gate(
         return GateResult(ZERO_INTENT, True, "fc not armed")
     if target is None:
         return GateResult(ZERO_INTENT, True, "no target")
-    if (now - target.timestamp) > cfg.watchdog_timeout_s:
+    if (now - target.measurement_timestamp) > cfg.watchdog_timeout_s:
         return GateResult(ZERO_INTENT, True, "target stale")
     if target.quality < cfg.min_track_quality:
         return GateResult(ZERO_INTENT, True, "low track quality")

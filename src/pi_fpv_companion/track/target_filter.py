@@ -62,6 +62,7 @@ class AlphaBetaTargetFilter:
         self._w = self._h = 0.0
         self._quality = 0.0
         self._last_t = 0.0
+        self._meas_t = 0.0   # time of the last ACCEPTED real measurement
 
     def reset(self) -> None:
         self._init = False
@@ -78,6 +79,7 @@ class AlphaBetaTargetFilter:
         self._w, self._h = d.w, d.h
         self._quality = max(0.0, min(1.0, d.confidence))
         self._last_t = now
+        self._meas_t = now   # a fresh lock counts as a real measurement
 
     def update(
         self, raw: Optional[Target], frame_w: int, frame_h: int, now: float
@@ -86,8 +88,12 @@ class AlphaBetaTargetFilter:
         diag = math.hypot(frame_w, frame_h)
         max_jump = cfg.max_jump_frac * diag
 
-        # --- no measurement this tick (tracker lost / between detections) ---
-        if raw is None:
+        # --- no fresh measurement this tick: either the tracker returned nothing
+        # (lost / between detections) OR it is coasting on a frozen box it can no
+        # longer confirm (raw.lost_frames > 0). In both cases we coast on the
+        # motion model and decay quality — we do NOT pull toward, recover quality
+        # from, or advance the measurement clock on an unconfirmed box (audit §1/§5).
+        if raw is None or raw.lost_frames > 0:
             if not self._init:
                 return None
             dt = max(1e-3, now - self._last_t)
@@ -138,6 +144,7 @@ class AlphaBetaTargetFilter:
         self._w += cfg.size_alpha * (d.w - self._w)
         self._h += cfg.size_alpha * (d.h - self._h)
         self._last_t = now
+        self._meas_t = now   # accepted a fresh, plausible measurement
         # quality recovers toward this measurement's confidence
         target_q = max(0.0, min(1.0, d.confidence))
         self._quality += cfg.quality_recover * (target_q - self._quality)
@@ -156,4 +163,5 @@ class AlphaBetaTargetFilter:
             vy_px_s=self._vy,
             quality=self._quality,
             timestamp=now,
+            measurement_timestamp=self._meas_t,
         )
