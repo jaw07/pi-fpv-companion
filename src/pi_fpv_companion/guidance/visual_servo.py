@@ -48,12 +48,14 @@ class ServoConfig:
     track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
                                   # (keeps target centred as lean tilts the camera; 0 = off)
     dive_forward_deg: float = 10.0  # constant forward (nose-down) lean while diving
-    # Gravity dive (DIVE only): command a descent (climb-rate below neutral) to
-    # trade altitude for speed, SCALED by how well-centred the target is — full
-    # commit dead-centre, zero once it drifts past dive_center_frac. 0 = disabled
-    # (altitude held). Needs FC GUID_OPTIONS=climb-rate + an altitude floor YOU
-    # manage; the flight-mode switch is the abort. Bench-validate before flight.
-    dive_descent: float = 0.0       # climb-rate-down at full commit (0..0.5 below neutral)
+    # Gravity dive (DIVE only): command a descent (thrust below neutral) to trade
+    # altitude for speed, SCALED by how well-centred the target is — full commit
+    # dead-centre, zero once it drifts past dive_center_frac. 0 = disabled
+    # (altitude held). thrust maps to the throttle stick (STABILIZE: direct cut;
+    # ALT_HOLD: climb-rate-down, capped by PILOT_SPEED_DN) — RC override, NO
+    # GUID_OPTIONS. YOU own the altitude floor; the flight-mode switch is the
+    # abort. Bench-validate before flight.
+    dive_descent: float = 0.0       # thrust-down at full commit (0..0.5 below neutral)
     dive_center_frac: float = 0.30  # normalised centring error within which to commit power
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
     # inverts the error->command sign -> divergent positive feedback ("spins

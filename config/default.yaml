@@ -118,8 +118,10 @@ guidance:
   track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK)
   dive_forward_deg: 10.0    # forward (nose-down) lean while diving
   # Gravity dive (DIVE only): descend to trade altitude for speed, gated on
-  # horizontal aim. 0.0 = disabled (hold altitude). Needs FC GUID_OPTIONS=climb-rate
-  # + an altitude floor you manage. Bench-validate before enabling.
+  # horizontal aim. 0.0 = disabled (hold altitude). thrust drives the throttle
+  # stick (STABILIZE: direct cut; ALT_HOLD: climb-rate, capped by PILOT_SPEED_DN)
+  # via RC override — no GUID_OPTIONS. YOU manage the altitude floor; the
+  # flight-mode switch is the abort. Bench-validate before enabling.
   dive_descent: 0.0
   dive_center_frac: 0.30
   # Sign overrides (audit §6). A mirrored/flipped camera inverts these ->
@@ -130,8 +132,7 @@ guidance:
   pitch_sign: 1.0
 
 safety:
-  command_rate_hz: 20
-  watchdog_timeout_ms: 250  # if tracker stale beyond this, mute commands
+  watchdog_timeout_ms: 250  # mute if no fresh accepted track for this long
   require_armed: true       # require FC to be armed before sending any guidance
   min_track_quality: 0.35   # below this, mute (probable wrong/drifted target — audit §5)
 
