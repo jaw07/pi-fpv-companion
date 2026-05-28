@@ -285,3 +285,36 @@ def test_standby_releases_engaged_commands():
     fc.mode = GuidanceMode.STANDBY
     pipeline.tick(cam.render_at(0.15))          # back to STANDBY -> release again
     assert fc.released == 2 and len(fc.sent) == 2
+
+
+def test_watchdog_mutes_when_detections_stop_arriving():
+    """Regression for the audit's dead-watchdog finding. Lock a target, then stop
+    feeding detections so the tracker coasts on a frozen box. The staleness
+    watchdog must fire in the INTEGRATED pipeline (it could not before, because
+    the filter restamped `timestamp=now` every tick). `measurement_timestamp`
+    freezes at the last real detection, so `now - measurement_timestamp` grows
+    and the gate mutes with reason 'target stale'."""
+    img = np.full((576, 720, 3), 64, dtype=np.uint8)
+    det = [Detection(x=360, y=288, w=60, h=60, confidence=0.9, class_id=0, class_name="t")]
+
+    def bundle(i, with_det):
+        return FrameBundle(image=img, width=720, height=576, timestamp=i * 0.05,
+                           detections=det if with_det else [])
+
+    # Tracker coasts for many frames (won't itself drop the track during the test
+    # window); watchdog window is short so staleness fires first.
+    tracker = IouAssociator(iou_threshold=0.2, max_lost_frames=100)
+    fc = StubFC()
+    safety = SafetyConfig(watchdog_timeout_s=0.2, require_armed=True)
+    pipeline = Pipeline(SyntheticCamera(), tracker, _servo(), safety, fc)
+
+    # Frames 0..2: real detections -> lock and pass the gate.
+    for i in range(3):
+        g = pipeline.tick(bundle(i, with_det=True))
+    assert not g.muted
+
+    # Frames 3+: no detections -> tracker coasts (lost_frames>0), filter coasts.
+    reasons = [pipeline.tick(bundle(i, with_det=False)).reason for i in range(3, 12)]
+    assert "target stale" in reasons                     # the watchdog actually fires
+    # ...and it fires while the target still exists (not because it dropped to None).
+    assert reasons.index("target stale") < (reasons + ["no target"]).index("no target")

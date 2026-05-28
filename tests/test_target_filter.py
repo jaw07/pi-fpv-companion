@@ -5,10 +5,10 @@ from pi_fpv_companion.types import Detection, Target
 W, H = 720, 576
 
 
-def _tgt(x, y, tid=1, conf=0.9, cls=0, w=40, h=40):
+def _tgt(x, y, tid=1, conf=0.9, cls=0, w=40, h=40, lost=0):
     return Target(
         detection=Detection(x=x, y=y, w=w, h=h, confidence=conf, class_id=cls),
-        track_id=tid, lost_frames=0, timestamp=0.0,
+        track_id=tid, lost_frames=lost, timestamp=0.0,
     )
 
 
@@ -87,3 +87,37 @@ def test_persistent_good_track_keeps_high_quality():
     for i in range(1, 20):
         ft = f.update(_tgt(360 + i, 288, conf=0.9), W, H, i * 0.05)
     assert ft.quality > 0.8
+
+
+def test_accepted_measurement_advances_measurement_timestamp():
+    f = AlphaBetaTargetFilter()
+    f.update(_tgt(360, 288, conf=0.9), W, H, 0.0)
+    ft = f.update(_tgt(362, 288, conf=0.9), W, H, 0.05)  # fresh, plausible
+    assert ft.measurement_timestamp == 0.05
+    assert ft.timestamp == 0.05
+
+
+def test_coasting_box_does_not_advance_measurement_timestamp():
+    # The tracker coasts on a frozen box (lost_frames > 0): `timestamp` keeps
+    # advancing (estimate still emitted) but `measurement_timestamp` must freeze
+    # at the last real detection, so the safety watchdog can age it out.
+    f = AlphaBetaTargetFilter()
+    f.update(_tgt(360, 288, conf=0.9), W, H, 0.0)
+    last_real = f.update(_tgt(362, 288, conf=0.9), W, H, 0.05)
+    assert last_real.measurement_timestamp == 0.05
+    ft = None
+    for i in range(2, 6):                                # frozen box, lost_frames>0
+        ft = f.update(_tgt(362, 288, conf=0.9, lost=i - 1), W, H, i * 0.05)
+    assert ft is not None
+    assert ft.measurement_timestamp == 0.05              # frozen at last real meas
+    assert ft.timestamp == 0.25                          # but the estimate is current
+    assert (ft.timestamp - ft.measurement_timestamp) > 0.15  # watchdog can see the age
+
+
+def test_coasting_box_does_not_recover_quality():
+    # A high-confidence frozen box must NOT pull quality back up — it's unconfirmed.
+    f = AlphaBetaTargetFilter()
+    f.update(_tgt(360, 288, conf=0.9), W, H, 0.0)
+    q_locked = f.update(_tgt(360, 288, conf=0.9), W, H, 0.05).quality
+    ft = f.update(_tgt(360, 288, conf=0.9, lost=1), W, H, 0.10)
+    assert ft.quality < q_locked                         # decayed, not recovered
