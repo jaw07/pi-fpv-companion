@@ -46,19 +46,22 @@ class GuidanceIntent:
     ATTITUDE domain — the universal control surface for a GPS-denied quad.
     A bare FPV quad has no EKF position/velocity estimate, so velocity
     commands are not serviceable (see docs/architecture-audit.md §1). Both
-    backends consume this:
-      - ArduPilot ALT_HOLD     -> RC_CHANNELS_OVERRIDE AETR sticks (lean angle
-        + yaw rate + throttle/climb-rate), GPS-denied
-      - Betaflight ANGLE mode  -> AETR sticks (angle = stick deflection)
+    backends consume this via RC stick override into a self-levelling pilot
+    mode (no GUIDED, no GUID_OPTIONS — see docs/gps-denied-modes.md):
+      - ArduPilot STABILIZE/ALT_HOLD -> RC_CHANNELS_OVERRIDE AETR sticks (lean
+        angle + yaw rate + throttle), GPS-denied
+      - Betaflight ANGLE mode        -> AETR sticks (angle = stick deflection)
 
     Sign conventions (MAVLink/aero body frame):
       roll_deg  : + = roll right.  0 for pure-pursuit (lateral via yaw).
       pitch_deg : + = nose UP (decelerate/back).  NEGATIVE = nose down =
                   accelerate FORWARD toward the target.
       yaw_rate_dps : + = yaw right (clockwise from above).
-      thrust    : 0..1. 0.5 = neutral. With ArduPilot GUID_OPTIONS set so
-                  thrust is interpreted as climb-rate, 0.5 = hold altitude.
-                  v1 leaves vertical to the FC: always neutral.
+      thrust    : 0..1. 0.5 = neutral. Maps to the THROTTLE stick per the
+                  backend's control_mode: STABILIZE -> direct throttle
+                  (0.5 = hover, adaptive-hover-trimmed); ALT_HOLD -> climb-rate
+                  stick (0.5 = hold altitude via baro). Below 0.5 descends (the
+                  DIVE gravity-dive); above climbs. The companion owns altitude.
     """
     roll_deg: float
     pitch_deg: float
@@ -107,8 +110,8 @@ class SwitchState:
     mode: GuidanceMode = GuidanceMode.STANDBY
 
 
-# Muted / no-guidance intent: wings level, no turn, neutral thrust (FC holds
-# altitude). This is the belt; the real gate is the pilot's flight-mode switch
-# (when not in GUIDED_NOGPS the FC ignores us entirely — audit §1).
+# Muted / no-guidance intent: wings level, no turn, neutral thrust (hover /
+# altitude hold). This is the belt; the real gate is the pilot — STANDBY on the
+# engage switch releases the RC override back to the radio (audit §1).
 HOVER_THRUST = 0.5
 ZERO_INTENT = GuidanceIntent(0.0, 0.0, 0.0, HOVER_THRUST, 0.0)

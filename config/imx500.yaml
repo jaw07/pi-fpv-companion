@@ -70,17 +70,16 @@ guidance:
   track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK re-centre)
   dive_forward_deg: 10.0    # forward (nose-down) lean while diving
   # Gravity dive: descend to gain speed (target is normally below us). Descent is
-  # gated on HORIZONTAL aim, eased off only if the target is ABOVE us.
-  # thrust=climb-rate -> REQUIRES ArduPilot GUID_OPTIONS climb-rate + you manage
-  # an altitude floor. Bench-validate. 0.0 disables (hold altitude).
-  dive_descent: 0.25        # climb-rate-down at full commit (below 0.5 neutral)
+  # gated on HORIZONTAL aim, eased off only if the target is ABOVE us. thrust
+  # drives the throttle stick (STABILIZE: direct cut) via RC override — no
+  # GUID_OPTIONS. YOU manage the altitude floor. Bench-validate. 0.0 disables.
+  dive_descent: 0.25        # thrust-down at full commit (below 0.5 neutral)
   dive_center_frac: 0.30    # horizontal aim tolerance to commit descent (+ above-us taper)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0
   pitch_sign: 1.0
 
 safety:
-  command_rate_hz: 20
   watchdog_timeout_ms: 250
   require_armed: true
   min_track_quality: 0.35
