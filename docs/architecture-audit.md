@@ -246,7 +246,8 @@ the work is salvageable:
   flight-mode channel; CPU-NanoDet → dev/sim stub; add target state-estimator
   + closure + wrong-target gating; trim `overlay.py` to target-marking only.
 - KEEP (corrected): the CVBS/DRM video subsystem IS the flight video path —
-  Pi-as-camera is the design. MJPEG stays a dev preview.
+  Pi-as-camera is the design. (The MJPEG-over-HTTP browser preview has since
+  been removed — output is IMX500 + analog composite / TV out only.)
 
 The load-bearing redesign is now just ONE external interface: the FC control
 surface (velocity-in-GUIDED → attitude-rate-in-GUIDED_NOGPS) plus the

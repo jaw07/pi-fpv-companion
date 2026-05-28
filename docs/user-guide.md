@@ -71,8 +71,8 @@ off.** Then run it by hand so you can watch it think:
 sudo systemctl stop pi-fpv-companion      # free it up
 /opt/pi-fpv-companion/.venv/bin/python -m pi_fpv_companion \
     --config /opt/pi-fpv-companion/config/imx500.yaml \
-    --stream 8080 --no-gui --force-mode track     # pretend the switch is in TRACK
-# open http://<pi-ip>:8080/ in a browser to see what it sees
+    --force-mode track     # pretend the switch is in TRACK
+# the composited feed (bbox + HUD) goes out the analog composite / TV out
 # open Mission Planner to watch the stick commands it sends
 ```
 
@@ -159,7 +159,7 @@ pi-fpv-companion`). One change at a time.
 **Abort, always:** switch to STANDBY, or change your flight-mode switch out of
 STABILIZE. Either gives you full manual control immediately.
 
-- **Watch it live:** add `--stream 8080` and open `http://<pi-ip>:8080/`.
+- **Watch it live:** the composited feed (bbox + HUD) is on the analog composite / TV out.
 - **Read the logs:** `journalctl -u pi-fpv-companion -f`
 - **Restart it:** `sudo systemctl restart pi-fpv-companion`
 

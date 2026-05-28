@@ -180,9 +180,8 @@ Run the production entry point:
 ```
 .venv/bin/python -m pi_fpv_companion --config config/mac-dev.yaml
 .venv/bin/python -m pi_fpv_companion --config config/default.yaml      # Pi-shaped
-# On the Pi, add a dev preview you can watch from a browser (flight uses the
-# analog composite out — this MJPEG stream is only for inspection):
-.venv/bin/python -m pi_fpv_companion --config config/pi-camera.yaml --stream 8080
+# On the Pi, the composited feed (bbox + HUD) goes out the analog composite / TV out.
+.venv/bin/python -m pi_fpv_companion --config config/pi-camera.yaml
 ```
 
 Or run any of the focused demos:
