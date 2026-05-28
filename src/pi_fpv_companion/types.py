@@ -84,7 +84,14 @@ class FilteredTarget:
     vx_px_s: float            # estimated image-plane velocity
     vy_px_s: float
     quality: float            # 0..1; below SafetyConfig.min_track_quality -> muted
-    timestamp: float
+    timestamp: float          # when this estimate was produced (emit/now time)
+    # When the last ACCEPTED real measurement arrived. Unlike `timestamp` (which
+    # is restamped every tick, even while coasting), this only advances on a
+    # fresh, plausible detection — so `now - measurement_timestamp` is a true
+    # staleness age the safety watchdog can gate on (audit §1/§5). While the
+    # tracker coasts on a frozen box (raw.lost_frames > 0) or a measurement is
+    # rejected, it is NOT advanced.
+    measurement_timestamp: float = 0.0
 
 
 @dataclass(frozen=True)
