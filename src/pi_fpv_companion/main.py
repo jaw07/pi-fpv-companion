@@ -1,13 +1,14 @@
 """Production entry point.
 
 Reads `config/<name>.yaml`, constructs the right Camera / Detector / Tracker /
-FC backend / sink, and runs the Pipeline. Same code runs on Mac dev (via a
-config that picks SyntheticCamera + LiveViewer) and on the Pi (PiCamCamera +
-LinuxFramebuffer + real UART).
+FC backend / sink, and runs the Pipeline. The flight target is the Pi (IMX500 +
+framebuffer/DRM TV out + real UART); video output goes to the analog composite,
+so the only sinks are the framebuffer/DRM ones (run headless with --no-gui where
+no framebuffer device exists, e.g. a dev laptop).
 
 Usage:
-    python -m pi_fpv_companion --config config/default.yaml
-    python -m pi_fpv_companion --config config/mac-dev.yaml
+    python -m pi_fpv_companion --config config/imx500.yaml
+    python -m pi_fpv_companion --config config/mac-dev.yaml --no-gui
 
 The factory functions below are the only place that knows about the concrete
 implementations. Everything downstream speaks Protocols.
@@ -183,7 +184,8 @@ def _build_sink(cfg: AppConfig, no_gui: bool):
 
     # Prefer the legacy /dev/fb0 path if available (older Pi OS, or fkms).
     # Fall back to DRM dumb-buffer on /dev/dri/card0 (Trixie + default KMS).
-    # If neither device is present, drop to a cv2 window (Mac dev).
+    # Flight output is the analog composite / TV out via one of these; there is
+    # no on-screen-window path. With no framebuffer device, run with --no-gui.
     fb = cfg.video.framebuffer
     if fb == "/dev/fb0" and Path(fb).exists():
         from pi_fpv_companion.video.framebuffer import LinuxFramebuffer
@@ -191,24 +193,16 @@ def _build_sink(cfg: AppConfig, no_gui: bool):
     if Path("/dev/dri/card0").exists():
         from pi_fpv_companion.video.drm_framebuffer import DrmFramebuffer
         return FramebufferSink(DrmFramebuffer())
-    from pi_fpv_companion.video.viewer import LiveViewer
-    return LiveViewer(window_name="pi-fpv-companion")
+    raise SystemExit(
+        "no framebuffer device (/dev/fb0 or /dev/dri/card0) for video output; "
+        "pass --no-gui to run headless"
+    )
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="pi-fpv-companion")
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--no-gui", action="store_true")
-    ap.add_argument("--stream", type=int, metavar="PORT", default=0,
-                    help="serve composited frames as MJPEG over HTTP on this port "
-                         "(dev preview; view at http://<pi-ip>:<port>/)")
-    ap.add_argument("--stream-quality", type=int, default=88, metavar="Q",
-                    help="MJPEG preview JPEG quality 1-100 (default 88; "
-                         "preview only — flight uses analog composite, no JPEG)")
-    ap.add_argument("--stream-fps", type=float, default=0.0, metavar="FPS",
-                    help="cap MJPEG preview frame rate (0 = uncapped; lower for slow WiFi)")
-    ap.add_argument("--stream-scale", type=float, default=1.0, metavar="S",
-                    help="downscale MJPEG preview by this factor (e.g. 0.6) to cut bandwidth")
     ap.add_argument("--force-mode", choices=["standby", "track", "dive"], default=None,
                     help="bench/test: force the guidance mode, ignoring the RC switch")
     ap.add_argument("--duration", type=float, default=0.0,
@@ -242,13 +236,7 @@ def main(argv=None) -> int:
     camera = _build_camera(cfg)
     tracker = _build_tracker(cfg)
     fc = _build_fc(cfg)
-    if args.stream:
-        from pi_fpv_companion.video.mjpeg_sink import MjpegStreamSink
-        sink = MjpegStreamSink(port=args.stream, jpeg_quality=args.stream_quality,
-                               max_fps=args.stream_fps, scale=args.stream_scale)
-        print(f"  stream   http://<pi-ip>:{args.stream}/  (q={args.stream_quality})")
-    else:
-        sink = _build_sink(cfg, no_gui=args.no_gui)
+    sink = _build_sink(cfg, no_gui=args.no_gui)
     perf = PerfMonitor(PiBudget(max_tick_ms=33.0, max_rss_mb=200.0, pi_scale_factor=args.pi_scale))
 
     fc.open()

@@ -1,5 +1,5 @@
 """Smoke tests for HaarFaceDetector. We don't bundle a face image as a test asset,
-so we can't validate detection accuracy here — that's manual via `demo_webcam.py`.
+so we can't validate detection accuracy here — that's a manual/live check.
 What we verify: the detector loads OpenCV's bundled cascade, accepts BGR images,
 and returns a proper list of Detection objects (empty when no face is present).
 """

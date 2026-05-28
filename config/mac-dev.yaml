@@ -7,7 +7,7 @@ video:
   tv_mode: PAL
   width: 720
   height: 576
-  framebuffer: ""           # empty -> falls back to cv2 LiveViewer
+  framebuffer: ""           # no framebuffer/TV out on a laptop -> run with --no-gui
 
 camera:
   type: synthetic
@@ -23,7 +23,7 @@ tracker:
 
 fc:
   backend: ardupilot
-  uart_device: "udpin:127.0.0.1:14550"   # point at SITL or run demo_synthetic for the fake
+  uart_device: "udpin:127.0.0.1:14550"   # point at SITL (or a loopback fake endpoint)
   baud: 0
   switch_channel: 7
   switch_threshold_us: 1700
