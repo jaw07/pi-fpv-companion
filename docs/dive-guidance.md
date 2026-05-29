@@ -99,7 +99,13 @@ backward and stall the closure; an above-target climb is the throttle's job.
   geometry-matched dive only offsets thrust by `dive_descent` (~0.12), so the
   band **must** be below that (it is 0.05) or the hold loop silently cancels the
   descent and the aircraft never dives. The closed-loop sim models this band so
-  the failure can't hide.
+  the failure can't hide. SITL-confirmed: a gentle 0.38-thrust dive descends
+  ~4 m/s (vs the sim's −3.84 m/s prediction) — but **only** once adaptive hover
+  has learned the real hover. The gentle dive's small throttle offset is swamped
+  by a wrong hover guess, so **VFR_HUD must be streaming** (`SR*_EXTRA2`) and the
+  loop drained every tick (the pipeline does this via `read_switch`). A full
+  throttle-cut dive descends regardless; a *gentle* one needs the calibration.
+  Climb is slower than descent (gravity): SITL +1.2 m/s at 0.62 vs −4.2 at 0.38.
 - **Above-target closure is geometrically limited.** A fixed forward camera can
   only keep an above target framed by pitching *up*, which drives the aircraft
   *backward* — the opposite of closing. So DIVE on an above target climbs toward
@@ -151,6 +157,9 @@ Tuned in the closed-loop sim against a SITL-grounded airframe (`v_climb_max` 16,
 
 # SITL dive physics (ArduCopter 4.6.3 container)
 .venv/bin/python scripts/measure_dive_sitl.py --connect tcp:127.0.0.1:5760
+# SITL: a GENTLE geometry-matched dive really descends through the production
+# backend (hold-band fix + adaptive-hover dependency)
+.venv/bin/python scripts/validate_dive_descent_sitl.py --connect tcp:127.0.0.1:5760
 ```
 
 See also: `gps-denied-modes.md` (why STABILIZE for the dive),
