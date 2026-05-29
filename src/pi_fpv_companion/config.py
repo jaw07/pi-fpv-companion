@@ -89,6 +89,10 @@ class FcSection:
     stab_hover_learn: bool = True
     stab_hover_learn_kp: float = 50.0    # PWM per (m/s) climb (immediate damping)
     stab_hover_learn_gain: float = 20.0  # Ki: PWM per (m/s) climb per second (slow trim)
+    # Adaptive hover HOLDS altitude only while |thrust-0.5| < this; outside it a
+    # commanded climb/dive passes through. MUST be below guidance.dive_descent or
+    # the hold loop silently cancels a gentle dive (validated at load).
+    stab_hover_learn_band: float = 0.05
     stab_hover_min_us: int = 1200        # safety clamp on the learned hover
     stab_hover_max_us: int = 1700
     angle_max_deg: float = 45.0
@@ -199,6 +203,7 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         stab_hover_learn=d.get("stab_hover_learn", True),
         stab_hover_learn_kp=d.get("stab_hover_learn_kp", 50.0),
         stab_hover_learn_gain=d.get("stab_hover_learn_gain", 20.0),
+        stab_hover_learn_band=d.get("stab_hover_learn_band", 0.05),
         stab_hover_min_us=d.get("stab_hover_min_us", 1200),
         stab_hover_max_us=d.get("stab_hover_max_us", 1700),
         angle_max_deg=d.get("angle_max_deg", 45.0),
@@ -273,6 +278,16 @@ def _validate(cfg: AppConfig) -> None:
                 f"fc.dive_threshold_us ({fc.dive_threshold_us}) must be >= "
                 f"fc.track_threshold_us ({fc.track_threshold_us}); otherwise the "
                 "switch reaches DIVE before TRACK and TRACK is unreachable"
+            )
+        # A geometry-matched dive only offsets throttle by dive_descent; if the
+        # adaptive-hover hold band is as wide or wider, the hold loop cancels the
+        # descent and the aircraft never dives (see docs/dive-guidance.md).
+        if (fc.control_mode == "stabilize" and fc.stab_hover_learn
+                and 0.0 < cfg.servo.dive_descent <= fc.stab_hover_learn_band):
+            raise ValueError(
+                f"guidance.dive_descent ({cfg.servo.dive_descent}) must exceed "
+                f"fc.stab_hover_learn_band ({fc.stab_hover_learn_band}) or the "
+                "adaptive-hover hold loop will cancel the dive (it never descends)"
             )
 
     s = cfg.servo

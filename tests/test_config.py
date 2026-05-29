@@ -119,6 +119,21 @@ def test_rejects_implausible_vfov(tmp_path):
         load(_write_guidance(tmp_path, "camera_vfov_deg: 0"))
 
 
+def test_rejects_dive_descent_swallowed_by_hover_band(tmp_path):
+    # dive_descent must exceed the adaptive-hover hold band, or the hold loop
+    # cancels the descent and the aircraft never dives.
+    p = tmp_path / "c.yaml"
+    p.write_text("""
+camera: {type: synthetic}
+detector: {type: none}
+tracker: {type: iou}
+fc: {backend: ardupilot, control_mode: stabilize, stab_hover_learn_band: 0.20}
+guidance: {dive_descent: 0.12}
+""")
+    with pytest.raises(ValueError, match="dive_descent"):
+        load(p)
+
+
 def test_vfov_defaults_to_imx500_when_absent(tmp_path):
     # A guidance section that doesn't mention the camera still gets the IMX500 VFoV.
     cfg = load(_write_guidance(tmp_path, "max_yaw_rate_dps: 60"))
