@@ -81,3 +81,46 @@ def test_equal_thresholds_allowed(tmp_path):
     # dive == track is fine (TRACK band is just empty); only dive < track is wrong.
     p = _write(tmp_path, "backend: ardupilot, track_threshold_us: 1500, dive_threshold_us: 1500")
     assert load(p).fc.dive_threshold_us == 1500
+
+
+def _write_guidance(tmp_path, guidance_line: str) -> Path:
+    p = tmp_path / "g.yaml"
+    p.write_text(f"""
+camera: {{type: synthetic}}
+detector: {{type: none}}
+tracker: {{type: iou}}
+fc: {{backend: ardupilot}}
+guidance: {{{guidance_line}}}
+""")
+    return p
+
+
+def test_imx500_enables_tuned_agnostic_dive():
+    cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
+    s = cfg.servo
+    assert s.dive_vertical_bias_frac == 0.40
+    assert s.dive_los_band_deg == 8.0
+    assert s.dive_pitch_up_max_deg == 2.0
+    assert s.camera_vfov_deg == 52.3      # real IMX500 vertical FoV (product brief)
+
+
+def test_rejects_out_of_range_vertical_bias(tmp_path):
+    with pytest.raises(ValueError, match="dive_vertical_bias_frac"):
+        load(_write_guidance(tmp_path, "dive_vertical_bias_frac: 1.5"))
+
+
+def test_rejects_nonpositive_los_band(tmp_path):
+    with pytest.raises(ValueError, match="dive_los_band_deg"):
+        load(_write_guidance(tmp_path, "dive_los_band_deg: 0"))
+
+
+def test_rejects_implausible_vfov(tmp_path):
+    with pytest.raises(ValueError, match="camera_vfov_deg"):
+        load(_write_guidance(tmp_path, "camera_vfov_deg: 0"))
+
+
+def test_vfov_defaults_to_imx500_when_absent(tmp_path):
+    # A guidance section that doesn't mention the camera still gets the IMX500 VFoV.
+    cfg = load(_write_guidance(tmp_path, "max_yaw_rate_dps: 60"))
+    assert cfg.servo.camera_vfov_deg == 52.3
+    assert cfg.servo.dive_pitch_up_max_deg is None   # legacy (no cap) by default

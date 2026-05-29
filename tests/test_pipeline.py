@@ -149,6 +149,42 @@ def test_pipeline_does_not_run_detector_when_camera_provided_detections():
     assert detector.call_count == 0
 
 
+def test_pipeline_feeds_airframe_pitch_into_dive_guidance():
+    """End-to-end wiring: a backend that reports airframe pitch must steer the
+    agnostic DIVE's vertical decision. Same target framed high → climb when the
+    nose is level, but descend when the nose is steeply down (true LOS is below
+    the horizon — a ground target). Proves pitch reaches compute_intent."""
+    # Target high in the frame (above centre).
+    bundle = FrameBundle(
+        image=np.full((576, 720, 3), 64, dtype=np.uint8),
+        width=720, height=576, timestamp=0.0,
+        detections=[Detection(x=360, y=140, w=40, h=40, confidence=0.9, class_id=0, class_name="t")],
+    )
+
+    class StubCamera:
+        def open(self): pass
+        def close(self): pass
+        def frames(self): yield bundle
+
+    servo = ServoConfig(
+        frame_width=720, frame_height=576, max_yaw_rate_dps=60.0, max_pitch_deg=15.0,
+        pixel_deadzone_px=10.0, yaw_p_gain=0.3, yaw_ff_gain=0.0, desired_bbox_frac=0.30,
+        closure_p_gain=50.0, dive_descent=0.3, dive_vertical_bias_frac=0.4,
+        dive_pitch_up_max_deg=2.0, camera_vfov_deg=52.3,
+    )
+
+    def run_with_pitch(pitch_deg):
+        fc = StubFC()
+        fc.mode = GuidanceMode.DIVE
+        fc.pitch_deg = lambda: pitch_deg          # backend reports airframe pitch
+        pipe = Pipeline(StubCamera(), IouAssociator(iou_threshold=0.2), servo, _safety(), fc)
+        pipe.tick(bundle)
+        return fc.sent[-1]
+
+    assert run_with_pitch(0.0).thrust > 0.5       # nose level → high target reads "above" → climb
+    assert run_with_pitch(-30.0).thrust < 0.5     # nose 30° down → true LOS below → descend
+
+
 def test_pipeline_kcf_path_reseeds_on_detection_burst():
     """KCF locked to one position; on a later frame the detector returns a
     detection at a new position — KCF should re-seed to the new box (refresh scale)."""
