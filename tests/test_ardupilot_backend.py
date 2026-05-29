@@ -189,6 +189,25 @@ def test_adaptive_hover_clamped_to_max():
     assert b._hover_pwm <= 1700.0
 
 
+def test_gentle_dive_commit_is_not_swallowed_by_the_hold_band():
+    # A geometry-matched dive commands only a small thrust offset (e.g. 0.12).
+    # The hold band MUST be below that, or the adaptive-hover PI loop cancels the
+    # descent and the aircraft never dives. thrust 0.38 → throttle below hover.
+    b = _stab_backend()
+    _seed(b, 0.0)                       # level, fresh telemetry
+    out = b._adaptive_throttle(_hold(thrust=0.38))   # gentle commanded descent
+    assert out < 1400                  # below the learned hover → it descends
+    assert b._hover_pwm == 1400.0      # learning frozen (not "holding")
+
+
+def test_gentle_climb_commit_raises_throttle_above_hover():
+    b = _stab_backend()
+    _seed(b, 0.0)
+    out = b._adaptive_throttle(_hold(thrust=0.62))   # gentle commanded climb (above target)
+    assert out > 1400                  # above hover → it climbs
+    assert b._hover_pwm == 1400.0
+
+
 # ---- airframe pitch feedback (agnostic DIVE LOS-elevation framing) ----
 
 def test_pitch_deg_reports_fresh_attitude():

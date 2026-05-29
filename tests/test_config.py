@@ -100,7 +100,7 @@ def test_imx500_enables_tuned_agnostic_dive():
     s = cfg.servo
     assert s.dive_vertical_bias_frac == 0.50
     assert s.dive_los_band_deg == 30.0    # geometry-match descent to depression
-    assert s.dive_pitch_up_max_deg == 2.0
+    assert s.dive_pitch_up_max_deg == 0.0   # commit: never pitch nose-up
     assert s.camera_vfov_deg == 52.3      # real IMX500 vertical FoV (product brief)
 
 

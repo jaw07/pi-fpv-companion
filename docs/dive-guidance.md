@@ -76,18 +76,38 @@ SITL shows STABILIZE drops ~16 m/s but only makes ~3–5 m/s forward at a 30° l
    in-frame elevation. A ground target correctly framed *high* still reads
    "below the horizon", so the dive keeps diving instead of false-flipping to a
    climb. Absent fresh ATTITUDE, pitch falls back to 0 (level) — a safe
-   degradation. This is what makes DIVE **altitude-agnostic**:
-   - below the horizon → descend onto it (gravity dive);
+   degradation. This is what makes DIVE **altitude-aware** in all three regimes:
+   - below the horizon → descend onto it (gravity dive) — the mission;
    - level → hold altitude, pursue horizontally (do **not** dive under it);
-   - above → climb toward it (throttle), keep the nose forward.
+   - above → climb toward it (throttle) and keep it framed — but see the
+     fixed-camera limitation below: aggressive closure on an above target is
+     **not** supported.
 
 3. **Geometry-match the descent.** The vertical commit scales with the LOS
    depression over `dive_los_band_deg`, so the flight path follows the LOS:
    gentle descent on a far/shallow target (no pancake), full commit on a steep/
    near one. A narrow band makes every dive an aggressive cut and pancakes.
 
-`dive_pitch_up_max_deg` caps nose-up in DIVE: it is a commit mode, so an
-above-target climb is the throttle's job, not a stall-inducing pitch-up.
+`dive_pitch_up_max_deg` is **0** (shipped): DIVE is commit, so it never pitches
+nose-up. Pitching up to frame an above target would point the velocity vector
+backward and stall the closure; an above-target climb is the throttle's job.
+
+### Two integration constraints that bit (and how they're handled)
+
+- **The adaptive-hover hold band.** In STABILIZE the companion's adaptive-hover
+  PI loop *holds altitude* whenever `|thrust-0.5| < hover_learn_band`. The
+  geometry-matched dive only offsets thrust by `dive_descent` (~0.12), so the
+  band **must** be below that (it is 0.05) or the hold loop silently cancels the
+  descent and the aircraft never dives. The closed-loop sim models this band so
+  the failure can't hide.
+- **Above-target closure is geometrically limited.** A fixed forward camera can
+  only keep an above target framed by pitching *up*, which drives the aircraft
+  *backward* — the opposite of closing. So DIVE on an above target climbs toward
+  it (throttle) and holds it framed, but cannot run it down. The committed strike
+  is a *downward* attack: get above the target first. The closure also stalls a
+  few degrees short of co-altitude where the gentle climb command falls back into
+  the hold band — full robustness needs the deferred closed-loop flight-path
+  control.
 
 ### Tuning (shipped, `config/imx500.yaml`)
 
@@ -95,9 +115,9 @@ above-target climb is the throttle's job, not a stall-inducing pitch-up.
 |---|---|---|
 | `dive_vertical_bias_frac` | 0.50 | bias setpoint toward the leading edge |
 | `dive_los_band_deg` | 30.0 | depression band the descent/climb ramps over |
-| `dive_descent` | 0.12 | throttle delta at full commit (0.5 ± this) |
+| `dive_descent` | 0.12 | throttle delta at full commit (0.5 ± this); **must exceed `hover_learn_band` = 0.05** |
 | `dive_forward_deg` | 12.0 | forward (nose-down) lean while diving |
-| `dive_pitch_up_max_deg` | 2.0 | nose-up cap (commit, don't back off) |
+| `dive_pitch_up_max_deg` | 0.0 | never pitch nose-up (commit; nose-up = backward) |
 | `camera_vfov_deg` | 52.3 | IMX500 vertical FoV; **must match the lens** |
 
 Tuned in the closed-loop sim against a SITL-grounded airframe (`v_climb_max` 16,
@@ -107,8 +127,9 @@ Tuned in the closed-loop sim against a SITL-grounded airframe (`v_climb_max` 16,
 
 - **TRACK**: keeps the target framed for all reasonable crossing speeds; converges
   to the closure hold range (~6 m for a 1.7 m subject).
-- **DIVE, agnostic direction & framing**: correct for below / level / above — the
-  target stays in frame and altitude moves the right way (descend / hold / climb).
+- **DIVE direction & framing**: correct for below / level / above — the target
+  stays in frame and altitude moves the right way (descend / hold / climb), and it
+  never dives away from or flies backward at an above target.
 - **DIVE closure**: robust at **20–35 m engagement altitude** across the whole
   acquirable cone. Closure is forward-speed limited (~4 m/s on the grounded
   airframe), so far/shallow high-altitude dives close slowly; full robustness

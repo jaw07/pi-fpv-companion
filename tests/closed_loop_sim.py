@@ -141,6 +141,12 @@ class Airframe:
     # speed; v_climb_max so a full throttle deflection approaches the measured 16 m/s.
     drag: float = 1.1                # linear drag (1/s) → cruise = g·tan(pitch)/drag
     v_climb_max: float = 16.0        # |vertical speed| at full throttle deflection (SITL)
+    # Adaptive-hover hold band (STABILIZE): a thrust within ±this of neutral is
+    # treated as "hold altitude" and produces NO vertical motion — exactly as the
+    # backend's adaptive-hover PI loop does (ArduCopterRcMapping.hover_learn_band).
+    # Modelled here so the sim is faithful: a DIVE whose commit falls inside the
+    # band would silently fail to descend, and the sim must show that.
+    hover_hold_band: float = 0.05
 
     def step(self, intent: GuidanceIntent, dt: float) -> None:
         # Yaw: +dps = yaw RIGHT = clockwise from above = DECREASING ψ.
@@ -153,10 +159,14 @@ class Airframe:
         a_fwd = G * math.tan(-self.phi)
         self.v_fwd += (a_fwd - self.drag * self.v_fwd) * dt
         # Translate along heading (horizontal); vertical is the throttle's job.
+        # A near-neutral thrust is held by the adaptive-hover loop → no vertical
+        # motion (mirrors the backend's hover_learn_band, see above).
+        dev = intent.thrust - 0.5
+        v_vert = 0.0 if abs(dev) < self.hover_hold_band else dev * 2.0 * self.v_climb_max
         self.pos = (
             self.pos[0] + self.v_fwd * math.cos(self.psi) * dt,
             self.pos[1] + self.v_fwd * math.sin(self.psi) * dt,
-            self.pos[2] + (intent.thrust - 0.5) * 2.0 * self.v_climb_max * dt,
+            self.pos[2] + v_vert * dt,
         )
 
 
@@ -308,7 +318,7 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         closure_p_gain=50.0, pitch_p_gain=0.15, track_vcenter_gain=0.10,
         dive_forward_deg=12.0, dive_descent=0.12, dive_center_frac=0.30,
         dive_vertical_bias_frac=0.50, dive_los_band_deg=30.0,
-        dive_pitch_up_max_deg=2.0, camera_vfov_deg=52.3,
+        dive_pitch_up_max_deg=0.0, camera_vfov_deg=52.3,
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)
