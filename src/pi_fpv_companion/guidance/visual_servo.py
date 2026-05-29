@@ -72,7 +72,13 @@ class ServoConfig:
     # then unused). Needs camera_vfov_deg to convert vertical pixels<->angle.
     # Bench/SITL validate; steep engagements stay bounded by max_pitch_deg + VFoV.
     dive_vertical_bias_frac: float = 0.0   # bias setpoint this fraction of half-frame
-    dive_los_band_deg: float = 8.0         # LOS-elev band over which the bias/commit ramps
+    # LOS-elevation band over which the dive/climb commit ramps in. Acts as a
+    # GEOMETRY MATCH: the vertical commit scales with the target's depression, so
+    # a far/shallow target gets a gentle descent (flight path follows the LOS)
+    # while a steep/near one gets full commit. A narrow band makes every dive an
+    # aggressive throttle-cut, which pancakes short of a shallow ground target
+    # (descent capability >> forward closure — see scripts/measure_dive_sitl.py).
+    dive_los_band_deg: float = 30.0
     # VERTICAL field of view spanned by the frame height — the ONLY pixel<->angle
     # conversion the servo needs (the dive's LOS elevation). Default 52.3° is the
     # Raspberry Pi AI Camera (Sony IMX500) spec (HFoV 66.3°, VFoV 52.3°, full-FoV

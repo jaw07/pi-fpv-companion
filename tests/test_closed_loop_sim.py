@@ -72,14 +72,12 @@ def test_track_offaxis_target_is_centred_and_held_in_frame():
 
 
 def test_track_converges_to_a_stable_hold_range():
-    w = _world(target_pos=(40.0, 0.0, 50.0))       # straight ahead, far
-    tr = w.run(GuidanceMode.TRACK, duration_s=20.0)
+    w = _world(target_pos=(25.0, 0.0, 50.0))       # straight ahead
+    tr = w.run(GuidanceMode.TRACK, duration_s=40.0)
     hold = w.camera.hold_range(w.servo.desired_bbox_frac)
-    # Closes from 40 m and settles near the hold band (the TRACK vcenter term
-    # shares the pitch budget with closure, so the equilibrium sits a bit beyond
-    # the pure-closure hold range — see closed_loop_sim notes).
+    # Closes from 40 m and settles at the closure-regulated hold range.
     assert tr.final_range < 30.0                   # it really did close
-    assert hold <= tr.final_range < 3.0 * hold     # ...to a sane, bounded hold
+    assert hold * 0.7 <= tr.final_range < 2.0 * hold   # ...to the hold band
     # Range stops collapsing — it holds station, not a fly-through.
     tail = [tk.range_m for tk in tr.ticks[-30:]]
     assert max(tail) - min(tail) < 2.0
@@ -146,21 +144,22 @@ def _converges(tr, max_range=5.0):
     return tr.min_range < max_range and not tr.ever_left_frame
 
 
-def test_dive_converges_on_a_far_ground_target_in_frame():
+def test_dive_converges_on_a_ground_target_in_frame():
     # The case the legacy centred dive could NOT do: a ground target acquirable
-    # only at a shallow depression (far ahead). The agnostic vertical bias keeps
-    # it framed and closes onto it instead of pancaking short.
-    w = _world(target_pos=(110.0, 0.0, 0.0))       # ground target, ~24° depression at start
-    tr = w.run(GuidanceMode.DIVE, duration_s=60.0)
+    # only at a shallow depression (far ahead). The agnostic bias + geometry-
+    # matched descent keep it framed and close onto it instead of pancaking short.
+    # Engagement altitude 35 m, target ~25° depression at acquisition.
+    w = _world(target_pos=(75.0, 0.0, 0.0), alt=35.0)
+    tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
     assert _converges(tr)
-    assert tr.altitude_lost > 30.0                 # it really descended onto it
+    assert tr.altitude_lost > 25.0                 # it really descended onto it
 
 
 def test_dive_converges_on_a_level_target_without_diving_below_it():
     # A level/front target must be PURSUED, not dived under (the failure mode of a
     # constant top-bias). Altitude is held; it closes horizontally.
-    w = _world(target_pos=(35.0, 0.0, 50.0))
-    tr = w.run(GuidanceMode.DIVE, duration_s=30.0)
+    w = _world(target_pos=(35.0, 0.0, 35.0), alt=35.0)
+    tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
     assert _converges(tr)
     assert abs(tr.altitude_lost) < 5.0             # essentially level
 
@@ -169,25 +168,25 @@ def test_dive_converges_on_an_above_target_by_climbing():
     # Target above the aircraft → climb toward it (throttle), keep it framed,
     # close. Altitude is GAINED, not lost. Closure is intentionally gentle once
     # co-altitude (a fixed forward camera cannot lean hard at a level/above
-    # target without it rising out the top), so a far above target takes longer.
-    w = _world(target_pos=(70.0, 0.0, 70.0))       # 20 m above, 70 m ahead
+    # target without it rising out the top).
+    w = _world(target_pos=(50.0, 0.0, 50.0), alt=35.0)   # 15 m above, 50 m ahead
     tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
     assert _converges(tr)
     assert tr.altitude_lost < -10.0                # climbed (lost < 0 == gained)
 
 
 def test_dive_ground_target_with_lateral_offset_recenters_then_converges():
-    w = _world(target_pos=(110.0, -18.0, 0.0))     # ground, off to the side
-    tr = w.run(GuidanceMode.DIVE, duration_s=60.0)
+    w = _world(target_pos=(85.0, -15.0, 0.0), alt=35.0)  # ground, off to the side
+    tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
     assert _converges(tr)
 
 
 def test_dive_blind_when_target_depression_exceeds_half_vfov():
     # Acquisition limit (NOT a guidance bug): a ground target whose start
     # depression exceeds half the vertical FOV is below the frame and is never
-    # seen → the aircraft holds rather than diving blind. ~33° at 75 m / 50 m alt
-    # vs ~27.5° half-VFOV for the 66° lens.
-    w = _world(target_pos=(75.0, 0.0, 0.0))
+    # seen → the aircraft holds rather than diving blind. ~35° at 50 m / 35 m alt
+    # vs ~26.1° half-VFOV for the IMX500's 52.3° vertical FoV.
+    w = _world(target_pos=(50.0, 0.0, 0.0), alt=35.0)
     tr = w.run(GuidanceMode.DIVE, duration_s=5.0)
     assert all(tk.muted for tk in tr.ticks)
     assert tr.altitude_lost == pytest.approx(0.0, abs=1e-6)

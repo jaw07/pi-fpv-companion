@@ -98,8 +98,8 @@ guidance: {{{guidance_line}}}
 def test_imx500_enables_tuned_agnostic_dive():
     cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
     s = cfg.servo
-    assert s.dive_vertical_bias_frac == 0.40
-    assert s.dive_los_band_deg == 8.0
+    assert s.dive_vertical_bias_frac == 0.50
+    assert s.dive_los_band_deg == 30.0    # geometry-match descent to depression
     assert s.dive_pitch_up_max_deg == 2.0
     assert s.camera_vfov_deg == 52.3      # real IMX500 vertical FoV (product brief)
 
