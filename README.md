@@ -111,6 +111,14 @@ The guidance layer emits one backend-agnostic intent —
 each backend translates. Thrust `0.5` ≈ hold (hover throttle in STABILIZE; baro
 hold in ALT_HOLD); the Pi steers yaw, forward pitch, and (for DIVE) descent.
 
+TRACK follows and holds range; DIVE commits and is **altitude-agnostic** — it
+dives onto a target below, pursues one level ahead, and climbs toward one above,
+keyed on the target's true line-of-sight elevation (FC attitude + in-frame
+position). Because the camera is bolted to the airframe, every command rotates
+the field of view; the FOV-retention and dive geometry are verified by a
+closed-loop simulator (`tests/closed_loop_sim.py`, `scripts/sim_track_dive.py`).
+See `docs/dive-guidance.md`.
+
 **Why RC override into STABILIZE (GPS-denied):** velocity setpoints
 (`SET_POSITION_TARGET_LOCAL_NED`) need an EKF position solution a GPS-denied quad
 lacks. GUIDED_NOGPS + `SET_ATTITUDE_TARGET` (also GPS-free) was the first design;

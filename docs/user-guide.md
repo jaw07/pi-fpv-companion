@@ -57,8 +57,15 @@ fc:
   rc_yaw_sign: 1
 guidance:
   classes_of_interest: [person, car, truck, boat]   # what to lock onto
-  dive_descent: 0.0           # 0 = DIVE just leans in. Set 0.3–0.5 to actually drop.
+  dive_descent: 0.12          # 0 = DIVE just leans in; >0 lets it change altitude
+                              # (descend/climb) onto the target. See dive-guidance.md.
 ```
+
+> DIVE is **altitude-agnostic**: it dives onto a target below you, pursues one
+> level ahead, and climbs toward one above you — see `docs/dive-guidance.md`. The
+> shipped `config/imx500.yaml` already enables the tuned dive; you normally only
+> touch `dive_descent` (aggressiveness) and must keep `camera_vfov_deg` matched to
+> your lens.
 
 ---
 
@@ -115,9 +122,15 @@ smooth, hands-off chase that keeps the target the same size in frame.
 **5. Follow as long as you like.** Re-take the sticks anytime by flicking to
 STANDBY. TRACK won't dive — it just follows and holds range.
 
-**6. Commit — flick to DIVE (up).** It noses down hard toward the target. With
-`dive_descent` set above 0 it also drops altitude onto it; at 0 it only leans in.
-There is **no automatic pull-up** — *you* end the dive.
+**6. Commit — flick to DIVE (up).** It commits to the target and closes. With
+`dive_descent` above 0 it also moves altitude onto it — **dives** onto a target
+below you, **holds** for one level ahead, **climbs** toward one above you (it
+knows which from the FC's attitude; see `docs/dive-guidance.md`). At 0 it only
+leans in. There is **no automatic pull-up** — *you* end the dive.
+
+> A fixed forward camera can only *see* a ground target once it's far enough
+> ahead (shallow enough); something steeply below you is below the frame. Engage
+> from a moderate altitude for the most reliable closure.
 
 **7. Bail out / finish — flick to STANDBY (down).** Instant manual control. Pull
 up, recover, fly home.
@@ -129,8 +142,9 @@ back.
 - **STANDBY** — nothing different; you're flying.
 - **TRACK** — hands-off; it gently yaws and leans to keep the target centered and
   the same distance away, holding height. Following, not attacking.
-- **DIVE** — committed and aggressive: nose down toward the target, descending if
-  you enabled it. Short and decisive — you pull out by going STANDBY.
+- **DIVE** — committed and aggressive: closes on the target and moves altitude
+  onto it (descend / hold / climb depending on where it is). Short and decisive —
+  you pull out by going STANDBY.
 
 ---
 
@@ -145,8 +159,10 @@ pi-fpv-companion`). One change at a time.
 | Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
 | Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
-| DIVE to actually lose altitude | `guidance.dive_descent` → 0.3–0.5 |
-| Steeper / shallower dive | `dive_descent` (drop) + `max_pitch_deg` (forward) |
+| DIVE to actually change altitude | `guidance.dive_descent` → 0.10–0.20 (descend/climb authority) |
+| Steeper / shallower dive | `dive_descent` (vertical) + `max_pitch_deg` (forward) |
+| Tighten dive geometry-match | `dive_los_band_deg` (lower = more aggressive descent) |
+| DIVE loses target out of frame | raise `dive_vertical_bias_frac`; confirm `camera_vfov_deg` matches lens |
 | It holds altitude poorly | confirm `SRn_EXTRA2` is streaming; nudge `stab_hover_throttle_us` |
 | Altitude bounces/hunts | lower `stab_hover_learn_kp`, then `stab_hover_learn_gain` |
 | Stop chasing wrong objects | trim `classes_of_interest`; raise `safety.min_track_quality` |

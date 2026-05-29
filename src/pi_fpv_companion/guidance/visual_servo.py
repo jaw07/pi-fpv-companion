@@ -4,7 +4,9 @@ backend-agnostic ATTITUDE intent (the GPS-denied control surface).
   horizontal pixel error -> yaw RATE   (turn the nose toward the target)
   "approach"             -> forward PITCH (nose-down lean = accelerate at it)
   roll                   -> 0           (pure pursuit; lateral via yaw only)
-  thrust                 -> neutral     (FC holds altitude in v1)
+  thrust                 -> neutral in TRACK (FC/adaptive-hover holds altitude);
+                            in DIVE it moves altitude onto the target — see the
+                            agnostic DIVE block below and docs/dive-guidance.md
 
 Yaw is P + velocity FEEDFORWARD (audit §4): pure-P against a moving target
 leaves a structural steady-state lag (the target sits permanently off-centre,
@@ -49,14 +51,15 @@ class ServoConfig:
     track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
                                   # (keeps target centred as lean tilts the camera; 0 = off)
     dive_forward_deg: float = 10.0  # constant forward (nose-down) lean while diving
-    # Gravity dive (DIVE only): command a descent (thrust below neutral) to trade
-    # altitude for speed, SCALED by how well-centred the target is — full commit
-    # dead-centre, zero once it drifts past dive_center_frac. 0 = disabled
-    # (altitude held). thrust maps to the throttle stick (STABILIZE: direct cut;
-    # ALT_HOLD: climb-rate-down, capped by PILOT_SPEED_DN) — RC override, NO
-    # GUID_OPTIONS. YOU own the altitude floor; the flight-mode switch is the
-    # abort. Bench-validate before flight.
-    dive_descent: float = 0.0       # thrust-down at full commit (0..0.5 below neutral)
+    # DIVE vertical commit (DIVE only): move altitude ONTO the target — descend at
+    # one below us, climb toward one above us, hold for one level ahead. Magnitude
+    # is gated on horizontal aim (re-centre yaw first) and signed + ramped by the
+    # target's line-of-sight elevation (see dive_los_band_deg), so the flight path
+    # follows the LOS instead of pancaking. thrust maps to the throttle stick
+    # (STABILIZE: direct cut/boost; ALT_HOLD: climb-rate, capped by PILOT_SPEED_DN)
+    # — RC override, NO GUID_OPTIONS. YOU own the altitude floor; the flight-mode
+    # switch is the abort. 0 = disabled (altitude held). Bench/SITL-validate.
+    dive_descent: float = 0.0       # thrust delta at full commit (0.5 ± this)
     dive_center_frac: float = 0.30  # normalised centring error within which to commit power
     # Agnostic vertical framing (DIVE). A centred dive on a target BELOW us
     # pancakes: the line-of-sight depression sweeps down faster than we close, so
@@ -182,7 +185,7 @@ def compute_intent(
         # re-centre it (limiting the lean) so it stays in view. The two share the
         # pitch budget — closure dominates, vcentre keeps the target from drifting
         # out the top. (Accommodating a target at a different *altitude* is a
-        # throttle job, not pitch — see docs camera-pitch-coupling.)
+        # throttle job, not pitch — see docs/dive-guidance.md.)
         cy = cfg.frame_height / 2.0
         dy = _deadband(det.y - cy, cfg.pixel_deadzone_px)
         size_frac = (det.h / cfg.frame_height) if cfg.frame_height else 0.0
