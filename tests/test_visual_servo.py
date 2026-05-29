@@ -197,6 +197,23 @@ def test_dive_pitch_up_is_capped_when_configured():
     assert capped <= 0.0           # capped: stays level-or-forward
 
 
+def test_dive_descent_is_geometry_matched_to_los_depression():
+    # The vertical commit ramps with the LOS depression (dive_los_band_deg), so a
+    # steeper/deeper target gets a stronger descent than a shallow one — that's
+    # what makes a far/shallow ground dive gentle (no pancake) and a near/steep one
+    # full-commit. Use aircraft pitch to vary true LOS depression at a fixed frame
+    # position (centred).
+    cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3, dive_los_band_deg=30.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    centred = _target(cx, cy)
+    shallow = compute_intent(centred, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-10.0).thrust
+    deep = compute_intent(centred, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-25.0).thrust
+    assert deep < shallow < 0.5            # deeper depression → stronger descent
+    # Beyond the band it saturates (no more than full commit).
+    saturated = compute_intent(centred, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-60.0).thrust
+    assert saturated == pytest.approx(0.5 - cfg.dive_descent, abs=1e-6)
+
+
 def test_dive_vertical_bias_keys_on_aircraft_pitch_not_frame_position():
     # A ground target framed HIGH (above centre) while the aircraft is pitched
     # steeply DOWN is still below the horizon -> must keep diving (descend), not
