@@ -151,6 +151,7 @@ def _build_fc(cfg: AppConfig):
                 hover_learn=cfg.fc.stab_hover_learn,
                 hover_learn_kp=cfg.fc.stab_hover_learn_kp,
                 hover_learn_gain=cfg.fc.stab_hover_learn_gain,
+                hover_learn_band=cfg.fc.stab_hover_learn_band,
                 hover_min_us=cfg.fc.stab_hover_min_us,
                 hover_max_us=cfg.fc.stab_hover_max_us,
                 angle_max_deg=cfg.fc.angle_max_deg,
