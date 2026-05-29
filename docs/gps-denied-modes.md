@@ -89,6 +89,10 @@ to descend onto a target, and altitude-floor/closed-loop-vertical work is tracke
 separately (`dynamic-vertical-control`). Use `control_mode: althold` if you want
 the altitude-safe behaviour instead.
 
+How the companion actually aims and commits the dive — including the fixed-camera
+FOV constraint, the altitude-agnostic (descend/hold/climb) logic, and the
+geometry-matched descent — is in `dive-guidance.md`.
+
 The mapping is `intent_to_rc_overrides()` / `_throttle_pwm()` in `fc/ardupilot.py`
 (AETR PWM, like the Betaflight mapping but over MAVLink RC override). Stick signs
 default to SITL-validated (+1,+1,+1); `ArduCopterRcMapping` exposes per-axis flips
