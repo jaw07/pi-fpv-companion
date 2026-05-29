@@ -98,21 +98,23 @@ def dive_ground_envelope(vfov):
 
 
 def dive_agnostic_geometries(vfov):
-    hdr("DIVE — altitude-agnostic engagement (below / level / above), shipped gains")
+    hdr("DIVE — altitude-aware engagement (below / level / above), shipped gains")
     cases = [
-        ("BELOW  ground   110 m ahead", (110.0, 0.0, 0.0), 50.0),
-        ("BELOW  ground   110 m +offset", (110.0, -18.0, 0.0), 50.0),
-        ("LEVEL  front     35 m, same alt", (35.0, 0.0, 50.0), 50.0),
-        ("LEVEL  front     35 m +offset", (35.0, -8.0, 50.0), 50.0),
-        ("ABOVE  +15 m,    50 m ahead", (50.0, 0.0, 65.0), 50.0),
-        ("ABOVE  +20 m,    70 m ahead", (70.0, 0.0, 70.0), 50.0),
+        ("BELOW  ground   75 m  (alt 35)", (75.0, 0.0, 0.0), 35.0),
+        ("BELOW  ground   85 m  +offset", (85.0, -15.0, 0.0), 35.0),
+        ("LEVEL  front    35 m, same alt", (35.0, 0.0, 35.0), 35.0),
+        ("LEVEL  front    35 m  +offset", (35.0, -8.0, 35.0), 35.0),
+        ("ABOVE  +15 m,   50 m ahead", (50.0, 0.0, 50.0), 35.0),
+        ("ABOVE  +10 m,   40 m ahead", (40.0, 0.0, 45.0), 35.0),
     ]
     print(f"  {'geometry':<32} {'outcome':>8} {'min_rng':>8} {'alt_d':>7}")
     for name, tp, alt in cases:
-        tr = world(tp, vfov=vfov, alt=alt).run(GuidanceMode.DIVE, duration_s=100.0)
+        tr = world(tp, vfov=vfov, alt=alt).run(GuidanceMode.DIVE, duration_s=110.0)
         ad = -tr.altitude_lost   # +climb, -descend
         print(f"  {name:<32} {outcome(tr):>8} {tr.min_range:>8.1f} {ad:>+7.1f}")
     print("  (alt_d: + = climbed toward an above target, - = descended onto a below one)")
+    print("  BELOW + LEVEL close fully. ABOVE only climbs toward (a fixed forward camera")
+    print("  cannot run down a target above its path — get above it first for a strike).")
 
 
 def vfov_sensitivity():

@@ -88,7 +88,9 @@ guidance:
   # false-flips a high-framed ground target into a climb.
   dive_vertical_bias_frac: 0.50   # bias setpoint by this fraction of the half-frame
   dive_los_band_deg: 30.0         # LOS-elev band: geometry-match the descent to depression
-  dive_pitch_up_max_deg: 2.0      # DIVE is commit: cap nose-up so forward lean leads
+  dive_pitch_up_max_deg: 0.0      # DIVE is commit: never pitch nose-up (would fly
+                                  # backward / stall closure — an above target is a
+                                  # throttle climb, not a pitch-up). See dive-guidance.md.
   camera_vfov_deg: 52.3           # IMX500 vertical FoV (product brief); MUST match lens
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0
