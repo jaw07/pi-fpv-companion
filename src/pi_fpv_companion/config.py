@@ -231,7 +231,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_descent=d.get("dive_descent", 0.0),
         dive_center_frac=d.get("dive_center_frac", 0.30),
         dive_vertical_bias_frac=d.get("dive_vertical_bias_frac", 0.0),
-        dive_los_band_deg=d.get("dive_los_band_deg", 8.0),
+        dive_los_band_deg=d.get("dive_los_band_deg", 30.0),
         dive_pitch_up_max_deg=d.get("dive_pitch_up_max_deg", None),
         camera_vfov_deg=d.get("camera_vfov_deg", 52.3),
         yaw_sign=d.get("yaw_sign", 1.0),

@@ -73,19 +73,28 @@ def track_crossing_envelope(vfov):
 
 def dive_ground_envelope(vfov):
     hdr("DIVE — ground-target engagement envelope (agnostic vs legacy centred)")
-    print("rows = config, cols = ground range (m), aircraft alt 50 m.")
-    ranges = [80, 95, 110, 130, 160, 200]
-    print(f"  {'config':<22} | " + " ".join(f"{r:>7}" for r in ranges))
-    configs = [
-        ("legacy centred (bias0)", dict(dive_vertical_bias_frac=0.0, dive_pitch_up_max_deg=None)),
-        ("agnostic (shipped)", dict()),   # imx500_servo defaults = tuned values
+    print("rows = config × engagement altitude, cols = ground range (m).")
+    print("Closure is forward-speed limited (~4 m/s on the SITL-grounded airframe),")
+    print("so far targets converge slowly — the run is 120 s. 'blind' = depression")
+    print("at acquisition exceeds half the VFoV (the fixed-camera cone, not a bug).")
+    ranges = [50, 70, 90, 110, 140, 180]
+    print(f"  {'config @ alt':<26} | " + " ".join(f"{r:>6}" for r in ranges))
+    # legacy = the pre-change behaviour: centred, narrow band (aggressive fixed
+    # throttle-cut), no nose-up cap. agnostic = bias + geometry-matched descent.
+    legacy = dict(dive_vertical_bias_frac=0.0, dive_los_band_deg=8.0,
+                  dive_descent=0.25, dive_pitch_up_max_deg=None)
+    rows = [
+        ("legacy centred @35 m", 35.0, legacy),
+        ("agnostic @35 m", 35.0, dict()),
+        ("agnostic @50 m", 50.0, dict()),
     ]
-    for name, sv in configs:
+    for name, alt, sv in rows:
         cells = []
         for r in ranges:
-            tr = world((r, 0.0, 0.0), vfov=vfov, **sv).run(GuidanceMode.DIVE, duration_s=70.0)
-            cells.append(f"{outcome(tr):>7}")
-        print(f"  {name:<22} | " + " ".join(cells))
+            tr = world((r, 0.0, 0.0), vfov=vfov, alt=alt, **sv).run(
+                GuidanceMode.DIVE, duration_s=120.0)
+            cells.append(f"{outcome(tr):>6}")
+        print(f"  {name:<26} | " + " ".join(cells))
 
 
 def dive_agnostic_geometries(vfov):

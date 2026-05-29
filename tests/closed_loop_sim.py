@@ -134,8 +134,13 @@ class Airframe:
     phi: float = 0.0                 # pitch attitude (rad), + = nose up
     v_fwd: float = 0.0               # body forward speed (m/s)
     tau_att: float = 0.12            # attitude (pitch) first-order time constant (s)
-    drag: float = 0.5                # linear drag (1/s) → cruise = a/drag
-    v_climb_max: float = 8.0         # |vertical speed| at full throttle deflection
+    # Defaults grounded in SITL (scripts/measure_dive_sitl.py on ArduCopter 4.6.3):
+    # STABILIZE full throttle-cut gives ~16 m/s descent, and a 30° lean yields only
+    # ~3–5 m/s groundspeed in a 4 s window → descent capability far exceeds forward
+    # closure. drag is set so cruise = g·tan(lean)/drag matches that modest forward
+    # speed; v_climb_max so a full throttle deflection approaches the measured 16 m/s.
+    drag: float = 1.1                # linear drag (1/s) → cruise = g·tan(pitch)/drag
+    v_climb_max: float = 16.0        # |vertical speed| at full throttle deflection (SITL)
 
     def step(self, intent: GuidanceIntent, dt: float) -> None:
         # Yaw: +dps = yaw RIGHT = clockwise from above = DECREASING ψ.
@@ -301,8 +306,8 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         max_yaw_rate_dps=60.0, max_pitch_deg=15.0, pixel_deadzone_px=20.0,
         yaw_p_gain=0.15, yaw_ff_gain=0.05, desired_bbox_frac=0.30,
         closure_p_gain=50.0, pitch_p_gain=0.15, track_vcenter_gain=0.10,
-        dive_forward_deg=10.0, dive_descent=0.25, dive_center_frac=0.30,
-        dive_vertical_bias_frac=0.40, dive_los_band_deg=8.0,
+        dive_forward_deg=12.0, dive_descent=0.12, dive_center_frac=0.30,
+        dive_vertical_bias_frac=0.50, dive_los_band_deg=30.0,
         dive_pitch_up_max_deg=2.0, camera_vfov_deg=52.3,
         yaw_sign=1.0, pitch_sign=1.0,
     )
