@@ -81,6 +81,15 @@ def test_backend_reads_switch_channel_pwm(ap_pair):
     assert s.mode is GuidanceMode.STANDBY
 
 
+def test_backend_reads_attitude_pitch_over_the_wire(ap_pair):
+    import math
+    backend, fake = ap_pair
+    fake.pitch_rad = math.radians(-18.0)     # FC reports an 18° nose-down dive
+    time.sleep(0.25)
+    backend.read_switch()                     # drains inbound telemetry (incl. ATTITUDE)
+    assert backend.pitch_deg() == pytest.approx(-18.0, abs=1.0)
+
+
 def test_send_intent_overrides_aetr_channels(ap_pair):
     backend, fake = ap_pair
 
@@ -178,6 +187,29 @@ def test_adaptive_hover_clamped_to_max():
     _seed(b, -50.0)                     # huge descent would push past the clamp
     b._adaptive_throttle(_hold())
     assert b._hover_pwm <= 1700.0
+
+
+# ---- airframe pitch feedback (agnostic DIVE LOS-elevation framing) ----
+
+def test_pitch_deg_reports_fresh_attitude():
+    import math
+    b = _stab_backend()
+    b._pitch_rad = math.radians(-25.0)        # nose 25° down (a dive)
+    b._pitch_t = time.monotonic()
+    assert b.pitch_deg() == pytest.approx(-25.0, abs=0.01)
+
+
+def test_pitch_deg_falls_back_to_level_when_stale():
+    import math
+    b = _stab_backend()
+    b._pitch_rad = math.radians(-25.0)
+    b._pitch_t = time.monotonic() - 2.0       # stale (>0.5 s) → unsafe to trust
+    assert b.pitch_deg() == 0.0
+
+
+def test_pitch_deg_falls_back_to_level_before_any_attitude():
+    b = _stab_backend()
+    assert b.pitch_deg() == 0.0               # never received ATTITUDE yet
 
 
 # ---- control_ready interlock (don't override into the wrong FC mode) ----

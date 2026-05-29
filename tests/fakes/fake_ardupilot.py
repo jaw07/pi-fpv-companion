@@ -23,6 +23,7 @@ class FakeArduCopter:
         self._stop = threading.Event()
         self.armed: bool = False
         self.rc_channels: List[int] = [1500] * 18
+        self.pitch_rad: float = 0.0          # ATTITUDE.pitch to emit (+nose-up)
         self.captured_overrides: List = []   # inbound RC_CHANNELS_OVERRIDE messages
 
     def start(self) -> None:
@@ -50,6 +51,7 @@ class FakeArduCopter:
             if now - last_emit >= 0.05:
                 self._emit_heartbeat()
                 self._emit_rc_channels()
+                self._emit_attitude()
                 last_emit = now
             msg = self._mav.recv_match(blocking=False)
             if msg is not None and msg.get_type() == "RC_CHANNELS_OVERRIDE":
@@ -77,3 +79,7 @@ class FakeArduCopter:
             ch[16], ch[17],
             255,
         )
+
+    def _emit_attitude(self) -> None:
+        # roll, pitch, yaw (rad) + body rates; only pitch is consumed.
+        self._mav.mav.attitude_send(0, 0.0, self.pitch_rad, 0.0, 0.0, 0.0, 0.0)
