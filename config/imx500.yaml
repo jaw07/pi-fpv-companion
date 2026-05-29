@@ -69,12 +69,24 @@ guidance:
   pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
   track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK re-centre)
   dive_forward_deg: 10.0    # forward (nose-down) lean while diving
-  # Gravity dive: descend to gain speed (target is normally below us). Descent is
-  # gated on HORIZONTAL aim, eased off only if the target is ABOVE us. thrust
-  # drives the throttle stick (STABILIZE: direct cut) via RC override — no
-  # GUID_OPTIONS. YOU manage the altitude floor. Bench-validate. 0.0 disables.
-  dive_descent: 0.25        # thrust-down at full commit (below 0.5 neutral)
-  dive_center_frac: 0.30    # horizontal aim tolerance to commit descent (+ above-us taper)
+  # Gravity dive / powered climb: trade altitude for speed onto a BELOW target,
+  # climb toward an ABOVE one, hold level for one straight ahead. Gated on
+  # HORIZONTAL aim and signed by the target's true line-of-sight elevation.
+  # thrust drives the throttle stick (STABILIZE: direct cut/boost) via RC
+  # override — no GUID_OPTIONS. YOU manage the altitude floor. Bench-validate.
+  dive_descent: 0.25        # thrust delta at full commit (0.5±this)
+  dive_center_frac: 0.30    # horizontal aim tolerance to commit vertical power
+  # Agnostic vertical framing (sim-tuned, see tests/closed_loop_sim.py + scripts/
+  # sim_track_dive.py). A centred dive on a ground target pancakes: the LOS
+  # depression sweeps down faster than the aircraft closes and the target falls
+  # out the bottom. Biasing the setpoint toward the dive's leading edge keeps it
+  # framed AND sustains the forward lean that closes. Direction is keyed on TRUE
+  # LOS elevation (FC ATTITUDE pitch + in-frame elevation), so it stays altitude-
+  # agnostic and never false-flips a high-framed ground target into a climb.
+  dive_vertical_bias_frac: 0.40   # bias setpoint by this fraction of the half-frame
+  dive_los_band_deg: 8.0          # LOS-elev band over which bias + commit ramp in
+  dive_pitch_up_max_deg: 2.0      # DIVE is commit: cap nose-up so forward lean leads
+  camera_vfov_deg: 52.3           # IMX500 vertical FoV (product brief); MUST match lens
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0
   pitch_sign: 1.0

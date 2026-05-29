@@ -1,3 +1,5 @@
+import pytest
+
 from pi_fpv_companion.types import Detection, FilteredTarget, GuidanceMode
 from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
 
@@ -167,17 +169,45 @@ def test_dive_still_centers_yaw():
     assert compute_intent(t, cfg, GuidanceMode.DIVE).yaw_rate_dps > 0
 
 
-def test_dive_descends_when_aimed_target_below_holds_when_off_or_above():
+def test_dive_vertical_commit_is_agnostic_descend_below_climb_above_hold_level():
+    # Agnostic DIVE: the vertical commit is signed by the target's LINE-OF-SIGHT
+    # elevation (here aircraft_pitch_deg defaults to 0, so LOS == in-frame elev).
     cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    # target below us + horizontally aimed -> gravity dive (descend)
+    # below us + horizontally aimed -> gravity dive (descend)
     assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).thrust < 0.5
-    # horizontally off-centre -> hold altitude, re-aim first
-    assert compute_intent(_target(cx + 0.6 * cx, cy), cfg, GuidanceMode.DIVE).thrust == 0.5
-    # target above us -> do NOT descend away from it
-    assert compute_intent(_target(cx, cy - 0.6 * cy), cfg, GuidanceMode.DIVE).thrust == 0.5
-    # TRACK never descends
+    # above us + horizontally aimed -> powered climb toward it (NOT a hold)
+    assert compute_intent(_target(cx, cy - 150), cfg, GuidanceMode.DIVE).thrust > 0.5
+    # level (centred vertically) -> hold altitude, just close horizontally
+    assert compute_intent(_target(cx, cy), cfg, GuidanceMode.DIVE).thrust == pytest.approx(0.5)
+    # horizontally off-centre -> hold altitude, re-aim (yaw-centre) first
+    assert compute_intent(_target(cx + 0.6 * cx, cy + 150), cfg, GuidanceMode.DIVE).thrust == pytest.approx(0.5)
+    # TRACK never changes altitude on its own
     assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.TRACK).thrust == 0.5
+
+
+def test_dive_pitch_up_is_capped_when_configured():
+    # With a nose-up cap, an above-centre target cannot command a stalling pitch-up
+    # (the climb is the throttle's job). Without the cap it could pitch up freely.
+    cx, cy = 360.0, 288.0
+    high = _target(cx, cy - 200)
+    uncapped = compute_intent(high, _cfg(), GuidanceMode.DIVE).pitch_deg
+    capped = compute_intent(high, _cfg(dive_pitch_up_max_deg=0.0), GuidanceMode.DIVE).pitch_deg
+    assert uncapped > 0.0          # legacy: free to pitch nose-up
+    assert capped <= 0.0           # capped: stays level-or-forward
+
+
+def test_dive_vertical_bias_keys_on_aircraft_pitch_not_frame_position():
+    # A ground target framed HIGH (above centre) while the aircraft is pitched
+    # steeply DOWN is still below the horizon -> must keep diving (descend), not
+    # flip to climb. This is the whole point of keying on LOS elevation.
+    cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3, dive_vertical_bias_frac=0.4)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    high_in_frame = _target(cx, cy - 120)          # above centre in the image
+    # nose level: in-frame elevation says "above" -> would climb
+    assert compute_intent(high_in_frame, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=0.0).thrust > 0.5
+    # nose pitched 30° down: true LOS is below the horizon -> still descend
+    assert compute_intent(high_in_frame, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-30.0).thrust < 0.5
 
 
 def test_dive_descent_disabled_by_default():

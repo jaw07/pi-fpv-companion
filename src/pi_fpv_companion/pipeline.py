@@ -169,7 +169,14 @@ class Pipeline:
             preview_mode = (
                 switch.mode if switch.mode is not GuidanceMode.STANDBY else GuidanceMode.TRACK
             )
-            intent = compute_intent(target, self._servo_cfg, preview_mode)
+            # Airframe pitch (if the backend reports it) lets DIVE key its vertical
+            # framing on true line-of-sight elevation, not just frame position;
+            # absent it, 0.0 (level) is a safe fallback (see ServoConfig docs).
+            pitch_fn = getattr(self._fc, "pitch_deg", None)
+            aircraft_pitch_deg = pitch_fn() if callable(pitch_fn) else 0.0
+            intent = compute_intent(
+                target, self._servo_cfg, preview_mode, aircraft_pitch_deg
+            )
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)

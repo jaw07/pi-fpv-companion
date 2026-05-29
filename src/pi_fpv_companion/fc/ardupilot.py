@@ -35,6 +35,7 @@ Stick signs are TX/RCMAP/airframe dependent — bench/SITL-validate them
 """
 from __future__ import annotations
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -153,6 +154,8 @@ class ArduPilotBackend:
         self._hover_t: float = 0.0           # last adapt time (for dt)
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
+        self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
+        self._pitch_t: float = 0.0           # when _pitch_rad was last updated
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
         self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
@@ -175,15 +178,17 @@ class ArduPilotBackend:
         self._request_streams()
 
     def _request_streams(self, rate_hz: int = 10) -> None:
-        """ArduPilot does not stream RC_CHANNELS / VFR_HUD on a MAVLink serial port
-        until a GCS asks. Without RC_CHANNELS the engage switch is stuck; without
-        VFR_HUD adaptive hover has no climb-rate feedback (and falls back to the
-        fixed hover guess). Try the modern per-message interval, fall back to the
-        legacy data streams."""
+        """ArduPilot does not stream RC_CHANNELS / VFR_HUD / ATTITUDE on a MAVLink
+        serial port until a GCS asks. Without RC_CHANNELS the engage switch is
+        stuck; without VFR_HUD adaptive hover has no climb-rate feedback; without
+        ATTITUDE the agnostic dive has no airframe pitch and falls back to 0
+        (treating in-frame elevation as true LOS elevation). Try the modern
+        per-message interval, fall back to the legacy data streams."""
         if self._mav is None:
             return
         mav = self._mavutil.mavlink
-        for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD):
+        for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD,
+                       mav.MAVLINK_MSG_ID_ATTITUDE):
             try:
                 self._mav.mav.command_long_send(
                     self._mav.target_system, self._mav.target_component,
@@ -192,7 +197,8 @@ class ArduPilotBackend:
                 )
             except Exception:
                 pass
-        for stream in (mav.MAV_DATA_STREAM_RC_CHANNELS, mav.MAV_DATA_STREAM_EXTRA2):
+        for stream in (mav.MAV_DATA_STREAM_RC_CHANNELS, mav.MAV_DATA_STREAM_EXTRA2,
+                       mav.MAV_DATA_STREAM_EXTRA1):
             try:
                 self._mav.mav.request_data_stream_send(
                     self._mav.target_system, self._mav.target_component,
@@ -244,6 +250,19 @@ class ArduPilotBackend:
             elif t == "VFR_HUD":
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._climb_t = time.monotonic()
+            elif t == "ATTITUDE":
+                self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
+                self._pitch_t = time.monotonic()
+
+    def pitch_deg(self) -> float:
+        """Airframe pitch in degrees (+nose-up) from ATTITUDE, for the agnostic
+        dive's LOS-elevation framing. Returns 0.0 (level) when no fresh ATTITUDE
+        has arrived — the dive then keys on in-frame elevation alone, which is a
+        safe degradation (it just can't tell a high-framed ground target from a
+        truly-above one until telemetry resumes)."""
+        if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
+            return 0.0
+        return math.degrees(self._pitch_rad)
 
     def read_switch(self) -> SwitchState:
         self._drain()

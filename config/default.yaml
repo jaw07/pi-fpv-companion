@@ -124,6 +124,15 @@ guidance:
   # flight-mode switch is the abort. Bench-validate before enabling.
   dive_descent: 0.0
   dive_center_frac: 0.30
+  # Agnostic vertical framing (see docs/dive-guidance.md). Keys the dive/climb on
+  # the target's TRUE line-of-sight elevation (FC ATTITUDE pitch + in-frame
+  # elevation) so it works for a target below, level, or above — biasing the
+  # setpoint toward the dive's leading edge to keep it framed while closing.
+  # Inert here while dive_descent is 0; the IMX500 deployment enables it.
+  dive_vertical_bias_frac: 0.40   # bias setpoint by this fraction of the half-frame
+  dive_los_band_deg: 8.0          # LOS-elev band over which bias + commit ramp in
+  dive_pitch_up_max_deg: 2.0      # DIVE is commit: cap nose-up so forward lean leads
+  camera_vfov_deg: 52.3           # camera vertical FoV (IMX500: 52.3); MUST match lens
   # Sign overrides (audit §6). A mirrored/flipped camera inverts these ->
   # divergent positive feedback ("spins away from target"). MUST be
   # bench-validated — see docs/deployment-safety.md §4. Flip to -1 if the
