@@ -230,6 +230,10 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_forward_deg=d.get("dive_forward_deg", 10.0),
         dive_descent=d.get("dive_descent", 0.0),
         dive_center_frac=d.get("dive_center_frac", 0.30),
+        dive_vertical_bias_frac=d.get("dive_vertical_bias_frac", 0.0),
+        dive_los_band_deg=d.get("dive_los_band_deg", 8.0),
+        dive_pitch_up_max_deg=d.get("dive_pitch_up_max_deg", None),
+        camera_vfov_deg=d.get("camera_vfov_deg", 52.3),
         yaw_sign=d.get("yaw_sign", 1.0),
         pitch_sign=d.get("pitch_sign", 1.0),
     )
@@ -270,6 +274,23 @@ def _validate(cfg: AppConfig) -> None:
                 f"fc.track_threshold_us ({fc.track_threshold_us}); otherwise the "
                 "switch reaches DIVE before TRACK and TRACK is unreachable"
             )
+
+    s = cfg.servo
+    if not 0.0 <= s.dive_vertical_bias_frac < 1.0:
+        raise ValueError(
+            f"guidance.dive_vertical_bias_frac ({s.dive_vertical_bias_frac}) must be "
+            "in [0, 1): it biases the dive setpoint by this fraction of the half-frame"
+        )
+    if s.dive_los_band_deg <= 0.0:
+        raise ValueError(
+            f"guidance.dive_los_band_deg ({s.dive_los_band_deg}) must be > 0 "
+            "(it is the LOS-elevation ramp width for the dive bias/commit)"
+        )
+    if not 0.0 < s.camera_vfov_deg < 180.0:
+        raise ValueError(
+            f"guidance.camera_vfov_deg ({s.camera_vfov_deg}) must be in (0, 180); "
+            "set it to the camera's actual vertical field of view (IMX500: 52.3)"
+        )
 
 
 def load(path: str | Path) -> AppConfig:
