@@ -140,7 +140,11 @@ class Airframe:
     # closure. drag is set so cruise = g·tan(lean)/drag matches that modest forward
     # speed; v_climb_max so a full throttle deflection approaches the measured 16 m/s.
     drag: float = 1.1                # linear drag (1/s) → cruise = g·tan(pitch)/drag
-    v_climb_max: float = 16.0        # |vertical speed| at full throttle deflection (SITL)
+    v_climb_max: float = 16.0        # descent speed at full throttle-cut (SITL: ~16 m/s)
+    # Climbing is much slower than descending (gravity): SITL measured +1.2 m/s
+    # climb vs -4.2 m/s descent at symmetric throttle offsets → ~0.3×. Modelled so
+    # the sim doesn't overstate an above-target climb.
+    climb_factor: float = 0.3
     # Adaptive-hover hold band (STABILIZE): a thrust within ±this of neutral is
     # treated as "hold altitude" and produces NO vertical motion — exactly as the
     # backend's adaptive-hover PI loop does (ArduCopterRcMapping.hover_learn_band).
@@ -162,7 +166,12 @@ class Airframe:
         # A near-neutral thrust is held by the adaptive-hover loop → no vertical
         # motion (mirrors the backend's hover_learn_band, see above).
         dev = intent.thrust - 0.5
-        v_vert = 0.0 if abs(dev) < self.hover_hold_band else dev * 2.0 * self.v_climb_max
+        if abs(dev) < self.hover_hold_band:
+            v_vert = 0.0                                   # held by adaptive hover
+        else:
+            v_vert = dev * 2.0 * self.v_climb_max
+            if dev > 0.0:
+                v_vert *= self.climb_factor               # climbing is slower (gravity)
         self.pos = (
             self.pos[0] + self.v_fwd * math.cos(self.psi) * dt,
             self.pos[1] + self.v_fwd * math.sin(self.psi) * dt,
