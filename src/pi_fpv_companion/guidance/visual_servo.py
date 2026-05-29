@@ -161,8 +161,9 @@ def compute_intent(
         # the bottom. The bias also sustains the forward lean that actually closes.
         setpoint_y = cy - cfg.dive_vertical_bias_frac * (cfg.frame_height / 2.0) * s
         dy = _deadband(det.y - setpoint_y, cfg.pixel_deadzone_px)
-        # DIVE is commit: cap nose-UP so forward lean dominates (closing an ABOVE
-        # target is the throttle's job, not nose-up that would stall the approach).
+        # DIVE is commit: cap nose-UP (shipped 0 = never). Pitching up to frame an
+        # ABOVE target points the velocity vector backward and stalls the approach;
+        # an above-target climb is the throttle's job. None = no cap (legacy).
         up = cfg.dive_pitch_up_max_deg if cfg.dive_pitch_up_max_deg is not None \
             else cfg.max_pitch_deg
         pitch = _clamp(
