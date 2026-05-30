@@ -81,6 +81,26 @@ def test_backend_reads_switch_channel_pwm(ap_pair):
     assert s.mode is GuidanceMode.STANDBY
 
 
+def test_backend_reads_select_channel_over_the_wire():
+    # ch8 (the target-select channel) must reach select_pwm() so the pipeline can
+    # edge-detect a cycle. Build a select-enabled backend against a fake FC.
+    port = _free_udp_port()
+    backend = ArduPilotBackend(device=f"udpin:127.0.0.1:{port}", baud=0, switch_channel=7,
+                               select_channel=8, track_threshold_us=1300, dive_threshold_us=1700)
+    backend.open()
+    fake = FakeArduCopter(target_port=port)
+    fake.start()
+    try:
+        backend.wait_ready(timeout=3.0)
+        fake.rc_channels[7] = 1900            # ch8 (0-indexed 7) high
+        time.sleep(0.25)
+        backend.read_switch()                 # drains RC_CHANNELS
+        assert backend.select_pwm() == 1900
+    finally:
+        backend.close()
+        fake.stop()
+
+
 def test_backend_reads_attitude_pitch_over_the_wire(ap_pair):
     import math
     backend, fake = ap_pair
