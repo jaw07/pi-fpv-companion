@@ -88,6 +88,24 @@ def test_track_converges_to_a_stable_hold_range():
     assert max(tail) - min(tail) < 2.0
 
 
+def test_track_pi_holds_standoff_on_a_receding_target():
+    # The "maintain distance" requirement: TRACK should hold the configured
+    # standoff on a target moving away, not lag farther and farther behind. The PI
+    # closure integral makes the steady-state range == the hold distance; pure-P
+    # (closure_i_gain=0) settles meaningfully farther back (a residual size error
+    # is needed to sustain the chase lean). Both run from the hold distance.
+    hold = CameraModel(W, H).hold_range(0.15)
+    pi = _world(target_pos=(hold, 0.0, 50.0), target_vel=(1.0, 0.0, 0.0)) \
+        .run(GuidanceMode.TRACK, duration_s=70.0)
+    pure_p = _world(target_pos=(hold, 0.0, 50.0), target_vel=(1.0, 0.0, 0.0),
+                    closure_i_gain=0.0).run(GuidanceMode.TRACK, duration_s=70.0)
+    assert abs(pi.final_range - hold) < 1.5          # PI settles AT the hold distance
+    assert pure_p.final_range > pi.final_range + 3.0  # pure-P lags well beyond it
+    assert not pi.lost_before_impact(2.0)             # stays framed throughout
+    tail = [tk.range_m for tk in pi.ticks[-60:]]
+    assert max(tail) - min(tail) < 1.5                # settled, no limit cycle
+
+
 def test_track_keeps_a_crossing_target_within_yaw_authority():
     # Target crossing laterally slowly enough that the required LOS rate stays
     # under max_yaw_rate at the hold range → yaw keeps up, target stays framed.

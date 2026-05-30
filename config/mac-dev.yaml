@@ -35,7 +35,7 @@ guidance:
   yaw_p_gain: 0.2
   yaw_ff_gain: 0.05
   desired_bbox_frac: 0.30
-  closure_p_gain: 50.0
+  closure_p_gain: 4.0       # range-linear closure error (inverse-size scale)
 
 safety:
   watchdog_timeout_ms: 500

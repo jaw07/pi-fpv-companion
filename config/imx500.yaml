@@ -70,8 +70,16 @@ guidance:
   pixel_deadzone_px: 20
   yaw_p_gain: 0.15
   yaw_ff_gain: 0.05
-  desired_bbox_frac: 0.30
-  closure_p_gain: 50.0
+  # Standoff: hold when the target bbox-height ≈ 15% of the frame (~11.5 m for a
+  # 1.7 m subject at this FoV) — a sensible follow distance, far enough that a
+  # below target stays inside the camera cone.
+  desired_bbox_frac: 0.15
+  # Closure gains act on the RANGE-LINEAR error (1/desired - 1/size_frac), so the
+  # scale is inverse-size (a few, not tens). PI: P closes, the integral drives the
+  # steady-state standoff to exactly desired_bbox_frac on a moving target (sim:
+  # +0.1 m, no oscillation). Same gains hold across distances (loop is conditioned).
+  closure_p_gain: 4.0
+  closure_i_gain: 1.0
   # Vertical centring (TRACK pitch P on vertical pixel error). TRACK adds
   # track_vcenter_gain on top of range-hold so the target stays centred as a
   # forward lean tilts the fixed camera down (target rises in frame). 0 = off.

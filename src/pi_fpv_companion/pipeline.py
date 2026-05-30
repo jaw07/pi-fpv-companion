@@ -22,7 +22,7 @@ from pi_fpv_companion.camera.base import Camera, FrameBundle
 from pi_fpv_companion.detect.async_detector import AsyncDetector
 from pi_fpv_companion.detect.base import Detector
 from pi_fpv_companion.guidance.safety import GateResult, SafetyConfig, gate
-from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
+from pi_fpv_companion.guidance.visual_servo import ClosureState, ServoConfig, compute_intent
 from pi_fpv_companion.track.base import Tracker
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode, SwitchState, Target, ZERO_INTENT
 from typing import List
@@ -72,6 +72,7 @@ class Pipeline:
         self._last_select_pwm = 0
         self._tracks: Optional[list] = None
         self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
+        self._closure = ClosureState()                  # TRACK PI closure integrator
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -203,7 +204,15 @@ class Pipeline:
             else:
                 self._dive_entered_t = None
                 dive_elapsed_s = 1e9
-            intent = compute_intent(target, self._servo_cfg, preview_mode, dive_elapsed_s)
+            # PI closure integrator: active only when actually engaged in TRACK.
+            # STANDBY (preview-as-TRACK) and DIVE must not wind it, so reset + skip.
+            if switch.mode is GuidanceMode.TRACK:
+                closure = self._closure
+            else:
+                self._closure.reset()
+                closure = None
+            intent = compute_intent(target, self._servo_cfg, preview_mode,
+                                    dive_elapsed_s, closure)
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)

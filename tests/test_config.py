@@ -147,6 +147,20 @@ def test_rejects_negative_vertical_clamps(tmp_path):
         load(_write_guidance(tmp_path, "dive_max_descent_mps: -2"))
 
 
+def test_rejects_negative_closure_i_gain(tmp_path):
+    # A negative closure integral inverts the range loop (drives away from hold).
+    with pytest.raises(ValueError, match="closure_i_gain"):
+        load(_write_guidance(tmp_path, "closure_i_gain: -1"))
+
+
+def test_imx500_enables_pi_closure_and_a_sensible_standoff():
+    cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
+    s = cfg.servo
+    assert s.desired_bbox_frac == 0.15    # ~11.5 m follow distance (retuned from 0.30)
+    assert s.closure_p_gain == 4.0        # range-linear (inverse-size) gain scale
+    assert s.closure_i_gain == 1.0        # PI integral -> exact standoff on a mover
+
+
 def test_dive_defaults_to_vertical_homing_off(tmp_path):
     # A guidance section that doesn't enable the dive leaves vertical homing off.
     cfg = load(_write_guidance(tmp_path, "max_yaw_rate_dps: 60"))
