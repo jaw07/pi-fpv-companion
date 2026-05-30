@@ -128,8 +128,11 @@ falls back to an open-loop throttle map (degraded but still descends). There is
   dropout (≥30%), and detector latency (~5 frames) by smoothing/coasting; a
   **misdetection** (centroid teleport) is innovation-gated → quality collapses →
   the safety gate **mutes** (the aircraft holds, does not chase it) and recovers;
-  a **class flip** is class-consistency-gated → mutes. A seeded Monte-Carlo over
-  randomized noisy ground engagements hits ~93% (miss-distance p90 ~1.5 m).
+  a **class flip** is class-consistency-gated → mutes. An **occlusion** (target
+  behind cover for seconds) → the filter coasts, quality decays, the gate mutes
+  (the aircraft holds, doesn't fly blind), and on reappearance it **re-acquires**
+  and the dive resumes. A seeded Monte-Carlo over randomized noisy ground
+  engagements hits ~93% (miss-distance p90 ~1.5 m).
 - **Speed limit**: closure is forward-speed limited (~2 m/s at the gentle 8° lean
   on the SITL-grounded airframe), so a target **translating laterally faster than
   that** stays framed (yaw keeps up) but isn't run down — a kinematic limit, not a

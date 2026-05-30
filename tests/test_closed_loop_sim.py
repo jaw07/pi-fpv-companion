@@ -252,6 +252,22 @@ def test_misdetection_teleport_is_gated_and_mutes_then_recovers():
     assert _converges(tr)                          # and recovered onto the real target
 
 
+def test_occluded_target_mutes_then_reacquires_and_converges():
+    # Target occluded (detector returns nothing — e.g. behind cover) for ~2 s
+    # mid-dive: the filter coasts, quality decays, and the safety gate MUTES (the
+    # aircraft holds, does not fly blind). When it reappears the filter re-acquires
+    # and the dive resumes onto it.
+    def occlude(i, det):
+        return None if 90 <= i < 150 else det          # ~t 3.0–5.0 s
+    w = _world(target_pos=(120.0, 0.0, 0.0), glitch=occlude)
+    tr = w.run(GuidanceMode.DIVE, duration_s=130.0)
+    occ = [tk for tk in tr.ticks if 90 <= round(tk.t * 30) - 1 < 150]
+    assert sum(tk.muted for tk in occ) >= 0.7 * len(occ)   # held for most of the gap
+    post = [tk for tk in tr.ticks if round(tk.t * 30) - 1 >= 165]
+    assert any(not tk.muted for tk in post)            # re-acquired after reappearance
+    assert _converges(tr)                              # and closed onto it
+
+
 def test_monte_carlo_hit_rate_over_noisy_engagements():
     # Headline robustness: randomized engagement altitude, acquirable depression,
     # lateral offset, detection noise and dropout → the closed loop should hit a
