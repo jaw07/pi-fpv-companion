@@ -115,10 +115,11 @@ guidance:
                             # drifted far -> nose down (chase, -15deg clamp); held->0;
                             # too close -> +deg (nose up, back off — collision guard)
   # closure_i_gain: 1.0     # optional PI integral -> holds engage distance on a mover (off here)
-  # TRACK: re-centre the target vertically as a forward lean tilts the fixed
-  # camera down (target rises in frame). Added on top of range-hold; 0 disables.
-  pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
-  track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK)
+  # TRACK is pure range-hold; the vertical re-centre nudge fights it on a fixed
+  # camera (centring a low target = nose-down = forward drift = closing range), so
+  # it is OFF. DIVE does the vertical aiming.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  track_vcenter_gain: 0.0   # TRACK vertical re-centre — OFF (fights range-hold)
   # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
   # Fixed forward lean (PITCH) + a commanded vertical RATE (THROTTLE) that holds
   # the target's vertical frame position → the flight path follows the line of
