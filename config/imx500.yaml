@@ -84,7 +84,7 @@ guidance:
   # track_vcenter_gain on top of range-hold so the target stays centred as a
   # forward lean tilts the fixed camera down (target rises in frame). 0 = off.
   pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
-  track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK re-centre)
+  track_vcenter_gain: 0.03  # deg pitch per px of vertical error (TRACK re-centre; small=no nod)
   # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
   # PITCH is a fixed gentle forward lean (a steeper lean over-depresses the fixed
   # camera and pushes an ABOVE target out the top); the THROTTLE flies a commanded
