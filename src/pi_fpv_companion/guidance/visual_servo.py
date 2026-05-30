@@ -35,7 +35,7 @@ size noise. See track/target_filter.py / audit §5.
 """
 from __future__ import annotations
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from pi_fpv_companion.types import HOVER_THRUST, FilteredTarget, GuidanceIntent, GuidanceMode
@@ -58,29 +58,47 @@ class ClosureState:
     Feedforward can't fix it — at steady state the apparent size is constant, so
     the size RATE is ~0.
 
+    The setpoint is the MEDIAN apparent-size over the first `settle_n` frames of
+    the lock, not the single first frame: the first detection after a fresh lock
+    is often transient (motion blur, a GUIDED->STABILIZE attitude handoff, a
+    partial bbox) and capturing it verbatim freezes a wrong hold distance for the
+    whole engagement — the loop then leans hard to "close" a gap that isn't there.
+    Medianing the settle window discards that one bad sample, and because the
+    running setpoint tracks the samples DURING the window the range error stays
+    ~0 there, so engage produces no dramatic pitch transient.
+
     Owned by the caller (one instance per pipeline), reset when the lock changes
     or guidance leaves TRACK, so the setpoint and windup never carry across
     targets/modes."""
     integral: float = 0.0          # accumulated range-error·seconds
     track_id: int = -1
     last_t: Optional[float] = None
-    setpoint_inv: Optional[float] = None   # inverse-size (1/size_frac) captured at engage
+    setpoint_inv: Optional[float] = None   # inverse-size (1/size_frac), median over the settle window
+    settle_n: int = 5              # frames to median the engage setpoint over before freezing it
+    _settle: list = field(default_factory=list)   # inverse-size samples collected during settle
 
     def reset(self) -> None:
         self.integral = 0.0
         self.track_id = -1
         self.last_t = None
         self.setpoint_inv = None
+        self._settle = []
 
     def hold_setpoint(self, inv: float, track_id: int, now: float) -> float:
-        """Capture the engage-distance hold setpoint (current inverse-size) on a
-        fresh lock / first TRACK frame, and return it. On subsequent frames of the
-        same lock it returns the captured value, so the loop holds THAT distance."""
-        if track_id != self.track_id or self.setpoint_inv is None:
+        """Capture the engage-distance hold setpoint and return it. On a fresh lock
+        it restarts a short settle window; while settling, the setpoint tracks the
+        running median of the samples so far (range error stays ~0, no engage
+        transient); once `settle_n` samples are in, the median is frozen and held
+        for the rest of the lock, so the loop holds THAT distance."""
+        if track_id != self.track_id:
             self.track_id = track_id
-            self.setpoint_inv = inv
+            self.setpoint_inv = None
+            self._settle = []
             self.integral = 0.0
             self.last_t = now
+        if len(self._settle) < self.settle_n:
+            self._settle.append(inv)
+            self.setpoint_inv = sorted(self._settle)[len(self._settle) // 2]  # running median
         return self.setpoint_inv
 
     def accumulate(self, err: float, now: float) -> float:
@@ -165,6 +183,16 @@ class ServoConfig:
                                   # closure lean tilts the camera. Kept small: a large gain
                                   # over-drives the pitch trying to centre a far-below target,
                                   # which fights range-hold closure into a nose nod. 0 = off.
+    # The range-hold closure leans the nose FORWARD to "close distance" — valid for a
+    # target ahead at your own altitude (an air chase), but WRONG when you are high
+    # above a ground target: leaning forward only overflies it (constant altitude
+    # never reaches a target below), and the apparent-size growth then drives a
+    # nose-UP back-off that tilts the fixed camera up and loses the low target out
+    # the bottom. So the closure's authority is faded out as the target sits farther
+    # BELOW frame-centre: at/above centre -> full closure; this fraction of the frame
+    # below centre -> zero closure (TRACK then just holds and frames it gently, and
+    # DIVE does the descent). 0 disables the gate (closure always full authority).
+    track_closure_below_falloff_frac: float = 0.15
     # DIVE forward lean is ADAPTIVE to the engagement: STEEP when descending onto a
     # target BELOW the flight path (a fast, committed ground attack — and a steep
     # nose-down also points the fixed camera down at the target, keeping it framed),
@@ -299,22 +327,26 @@ def compute_intent(
                 -cfg.dive_max_descent_mps, cfg.dive_max_climb_mps,
             )
 
-        # PITCH: forward commit lean, ADAPTIVE to the descent. Steep (fast) when
-        # diving onto a below target — a steep nose-down also aims the fixed camera
-        # down at it, keeping it framed. Gentle when level/climbing toward an above
-        # target — there a steep lean would push it out the top. Ramps gentle→steep
-        # as the commanded descent rises (full steep by ~1/4 of max descent). The
-        # throttle (vertical rate), not pitch, does the vertical aiming.
-        descend_mps = (-vertical_rate_mps) if vertical_rate_mps is not None \
-            else (cfg.dive_max_descent_mps if e_y > 0.0 else 0.0)
+        # PITCH: forward commit lean. A committed dive holds the STEEP lean so it keeps
+        # intercept speed all the way to the target — tying the lean to the INSTANTANEOUS
+        # descent (the old design) collapsed it to gentle the moment the vertical homing
+        # centred the target, so a high dive descended onto the line of sight and then
+        # CRAWLED forward at ~1 m/s, never arriving. So stay steep by default and ease
+        # toward gentle only when actually CLIMBING to an ABOVE target (there a steep
+        # lean over-depresses the fixed camera and pushes the target out the top faster
+        # than the gravity-limited climb can re-centre it). A below/level target keeps
+        # the camera framed via the nose-down lean itself. The throttle (vertical rate),
+        # not pitch, does the vertical aiming.
         ramp = max(1e-3, 0.25 * cfg.dive_max_descent_mps)
-        descent_frac = _clamp(descend_mps / ramp, 0.0, 1.0)
-        # Soft-start: at commit, ramp the steep contribution in over dive_lean_ramp_s
-        # so the camera doesn't slew faster than the filter can track.
+        climb_mps = max(0.0, vertical_rate_mps) if vertical_rate_mps is not None else 0.0
+        climb_frac = _clamp(climb_mps / ramp, 0.0, 1.0)               # 0 = level/descending, 1 = climbing hard
+        committed = cfg.dive_forward_deg \
+            - (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * climb_frac
+        # Soft-start: at commit, ramp the lean up from gentle over dive_lean_ramp_s so
+        # the camera doesn't slew faster than the filter can track.
         soft = _clamp(dive_elapsed_s / cfg.dive_lean_ramp_s, 0.0, 1.0) \
             if cfg.dive_lean_ramp_s > 0.0 else 1.0
-        lean = cfg.dive_climb_forward_deg \
-            + (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * descent_frac * soft
+        lean = cfg.dive_climb_forward_deg + (committed - cfg.dive_climb_forward_deg) * soft
         # Low-pass the lean so the nose travels STEADILY to the target centroid: the
         # adaptive lean would otherwise flip steep<->gentle as the commanded descent
         # crosses its threshold (the vertical homing momentarily centring the target
@@ -354,8 +386,20 @@ def compute_intent(
         # PI closure: the integral cancels the steady-state range offset that pure-P
         # leaves on a receding target. The integrator is only active when the caller
         # supplies its state (i.e. actually in TRACK) and the gain is enabled.
+        # Fade the forward-lean closure out as the target sits below frame-centre: a
+        # range-hold that flies forward cannot reach a target you are ABOVE (it just
+        # overflies), and the size-growth would otherwise drive a nose-up back-off
+        # that loses the low target out the bottom. Below the falloff band -> hold
+        # and frame only; DIVE handles the descent. (dy < 0, target above -> full.)
+        if cfg.track_closure_below_falloff_frac > 0.0:
+            below_norm = max(0.0, dy) / (cfg.frame_height * cfg.track_closure_below_falloff_frac)
+            closure_authority = _clamp(1.0 - below_norm, 0.0, 1.0)
+        else:
+            closure_authority = 1.0
+        cp = closure_authority * cfg.closure_p_gain
+        ci = closure_authority * cfg.closure_i_gain
         integ = closure.accumulate(range_err, target.timestamp) \
-            if (closure is not None and cfg.closure_i_gain > 0.0) else 0.0
+            if (closure is not None and ci > 0.0) else 0.0
         # Vertical re-centring is a GENTLE nudge (small track_vcenter_gain): it keeps
         # the target from drifting out the top as the closure lean tilts the camera —
         # it does NOT try to fully centre a far-below target (that needs a big pitch
@@ -364,17 +408,17 @@ def compute_intent(
         # ±13° on a ground target; 0.03 holds steady and framed.
         vcenter = cfg.track_vcenter_gain * dy
         unclamped = (
-            cfg.pitch_sign * (cfg.closure_p_gain * range_err + cfg.closure_i_gain * integ)
+            cfg.pitch_sign * (cp * range_err + ci * integ)
             - cfg.pitch_sign * vcenter
         )
         pitch = _clamp(unclamped, -cfg.max_pitch_deg, cfg.max_pitch_deg)
         # Back-calculation anti-windup: when the command saturates, roll the integral
         # back to exactly the value that holds pitch at the clamp, so it can't keep
         # winding (and instantly unwinds the moment the error reverses).
-        if closure is not None and cfg.closure_i_gain > 0.0 and pitch != unclamped:
+        if closure is not None and ci > 0.0 and pitch != unclamped:
             closure.integral = (
-                cfg.pitch_sign * pitch - cfg.closure_p_gain * range_err + vcenter
-            ) / cfg.closure_i_gain
+                cfg.pitch_sign * pitch - cp * range_err + vcenter
+            ) / ci
 
     return GuidanceIntent(
         roll_deg=0.0,

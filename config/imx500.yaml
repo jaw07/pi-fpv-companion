@@ -92,20 +92,29 @@ guidance:
   # frame point is a constant bearing -> a collision course, so the flight path
   # follows the line of sight onto a target below, level, OR above. Sim + SITL
   # validated (closed_loop_sim.py, validate_vrate_sitl.py).
-  # Forward lean is adaptive: STEEP (fast) diving onto a below target, GENTLE when
-  # level/climbing toward an above one (a steep lean would push it out the top).
-  dive_forward_deg: 14.0    # forward lean at full descent. LOWER = steeper dive: reaches a
-                            # below/ground target's altitude sooner so its depression stays
-                            # shallow and it stays framed to impact, instead of a fast-forward
-                            # overfly that slides a ground target under the fixed camera (Gazebo:
-                            # tracks a small ground target to frame-fill vs losing it at ~10 m).
-  dive_climb_forward_deg: 6.0   # gentle lean when level/climbing (keeps an above target framed)
+  # Forward lean is COMMITTED: held steep so the dive keeps intercept speed all the
+  # way in, eased toward gentle only when actually CLIMBING to an above target (a
+  # steep lean there pushes it out the top). Tying the lean to the instantaneous
+  # descent instead let it collapse to gentle the moment the homing centred the
+  # target, so a high dive descended onto the line of sight then CRAWLED and never
+  # arrived — the committed lean fixes that (sim: hits from 15-55 m altitude).
+  dive_forward_deg: 14.0    # committed forward lean (held steep through the dive)
+  dive_climb_forward_deg: 6.0   # gentle lean reached only when climbing hard to an above target
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
   dive_lean_tau_s: 1.5       # low-pass on the dive lean: nose travels steadily, no up/down nod
+  track_closure_below_falloff_frac: 0.15   # TRACK: fade the forward-lean range-hold out as the
+                            # target sits this fraction of the frame BELOW centre. A range-hold that
+                            # leans forward can't reach a target you're high ABOVE (it just overflies,
+                            # and the size-growth drives a nose-up back-off that loses the low target);
+                            # below this band TRACK just holds & frames it, and DIVE does the descent.
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
-  dive_vrate_gain: 12.0     # m/s of climb command per unit normalised vertical frame error
-  dive_vrate_damp: 3.0      # derivative damping (m/s per err/s) — kills the dive up/down wiggle
+  dive_vrate_gain: 18.0     # m/s of climb command per unit normalised vertical frame error.
+                            # Higher gain -> smaller pure-P steady-state offset: the terminal aim
+                            # sat ~17px LOW at gain 12 (a sustained descent needs a residual error);
+                            # 18 brings it to ~11px, a cleaner centre hit.
+  dive_vrate_damp: 6.0      # derivative damping (m/s per err/s) — kills the dive up/down wiggle;
+                            # scaled up with the gain so the higher-gain homing stays non-oscillatory
   dive_max_descent_mps: 8.0 # clamp on commanded descent
   dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
