@@ -21,12 +21,11 @@ selection falls back to the highest-confidence track (re-acquire) so guidance is
 never left pointing at nothing once targets are present.
 """
 from __future__ import annotations
-import math
 from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 
 from pi_fpv_companion.types import Detection, Target
-from pi_fpv_companion.track.iou_associator import _iou
+from pi_fpv_companion.track.iou_associator import best_match
 
 
 class MultiObjectTracker:
@@ -103,18 +102,9 @@ class MultiObjectTracker:
         for tid in sorted(self._tracks):
             cur = self._tracks[tid]
             vx, vy = self._vel.get(tid, (0.0, 0.0))
-            px, py = cur.detection.x + vx * dt, cur.detection.y + vy * dt
-            pred = replace(cur.detection, x=px, y=py)
-            # Best match: prefer highest IoU (of the predicted box); else nearest
-            # centroid to the prediction within the gate (robust for tiny boxes).
-            best, best_key = None, None
-            for d in unmatched:
-                iou = _iou(pred, d)
-                dist = math.hypot(px - d.x, py - d.y)
-                if iou >= self._iou_threshold or dist <= self._max_match_dist_px:
-                    key = (iou, -dist)
-                    if best_key is None or key > best_key:
-                        best, best_key = d, key
+            pred = replace(cur.detection, x=cur.detection.x + vx * dt,
+                           y=cur.detection.y + vy * dt)
+            best = best_match(pred, unmatched, self._iou_threshold, self._max_match_dist_px)
             if best is not None:
                 unmatched.remove(best)
                 if dt > 1e-3:
