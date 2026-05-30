@@ -252,6 +252,32 @@ def test_misdetection_teleport_is_gated_and_mutes_then_recovers():
     assert _converges(tr)                          # and recovered onto the real target
 
 
+def test_monte_carlo_hit_rate_over_noisy_engagements():
+    # Headline robustness: randomized engagement altitude, acquirable depression,
+    # lateral offset, detection noise and dropout → the closed loop should hit a
+    # large majority. Seeded for determinism; small N to stay fast (the full sweep
+    # is scripts/sim_track_dive.py). Guards against a regression in the loop.
+    import math
+    import random
+    m = random.Random(0)
+    hits = engaged = 0
+    for k in range(30):
+        alt = m.uniform(30.0, 50.0)
+        dep = m.uniform(14.0, 25.0)
+        hr = alt / math.tan(math.radians(dep))
+        off = m.uniform(-0.25, 0.25) * hr
+        tr = _world((hr, off, 0.0), alt=alt, detection_noise_px=m.uniform(0.0, 10.0),
+                    detection_dropout_prob=m.uniform(0.0, 0.3), seed=k).run(
+            GuidanceMode.DIVE, duration_s=130.0)
+        if not any(tk.in_frame for tk in tr.ticks):
+            continue                                # blind (not acquirable) — not counted
+        engaged += 1
+        if tr.min_range < 5.0 and not tr.lost_before_impact(5.0):
+            hits += 1
+    assert engaged >= 25
+    assert hits / engaged >= 0.8                    # ≥80% of acquirable engagements hit
+
+
 def test_class_flip_is_gated_and_mutes():
     # The tracker hands over a different class mid-engagement (re-locked the wrong
     # object) → class-consistency gating collapses quality → safety mutes.

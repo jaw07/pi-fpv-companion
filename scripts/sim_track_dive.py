@@ -19,6 +19,8 @@ Outcomes:  HIT = closed < impact range, in frame throughout
 """
 from __future__ import annotations
 import argparse
+import math
+import random
 import sys
 from pathlib import Path
 
@@ -44,11 +46,16 @@ def outcome(tr) -> str:
     return f"miss{tr.min_range:.0f}"
 
 
-def world(target_pos, *, vfov, alt=50.0, target_vel=(0.0, 0.0, 0.0), **servo):
+_WORLD_KW = {"target_vel", "target_accel", "detection_noise_px",
+             "detection_dropout_prob", "detect_latency_frames", "seed", "glitch"}
+
+
+def world(target_pos, *, vfov, alt=50.0, **kw):
     cam = CameraModel(W, H, vfov_deg=vfov)
-    return SimWorld(camera=cam, servo=imx500_servo(**servo), safety=imx500_safety(),
+    world_kw = {k: kw.pop(k) for k in list(kw) if k in _WORLD_KW}
+    return SimWorld(camera=cam, servo=imx500_servo(**kw), safety=imx500_safety(),
                     airframe=Airframe(pos=(0.0, 0.0, alt)),
-                    target_pos=target_pos, target_vel=target_vel)
+                    target_pos=target_pos, **world_kw)
 
 
 def hdr(title):
@@ -111,6 +118,39 @@ def dive_altitude_geometries(vfov):
     print("  commanded vertical rate holds the framing so the path follows the LOS.")
 
 
+def monte_carlo(vfov, n=150):
+    hdr(f"Monte-Carlo robustness — {n} randomized noisy ground engagements")
+    print("Randomized engagement altitude, acquirable depression, lateral offset,")
+    print("detection noise (0-10 px) and dropout (0-30%). Reports hit-rate among")
+    print("acquirable engagements + miss-distance percentiles. Seeded (reproducible).")
+    m = random.Random(0)
+    hits = miss = blind = 0
+    minds = []
+    for k in range(n):
+        alt = m.uniform(30.0, 50.0)
+        dep = m.uniform(14.0, 25.0)                       # within the acquisition cone
+        hr = alt / math.tan(math.radians(dep))
+        off = m.uniform(-0.25, 0.25) * hr
+        tr = world((hr, off, 0.0), vfov=vfov, alt=alt,
+                   detection_noise_px=m.uniform(0.0, 10.0),
+                   detection_dropout_prob=m.uniform(0.0, 0.3),
+                   seed=k).run(GuidanceMode.DIVE, duration_s=130.0)
+        if not any(tk.in_frame for tk in tr.ticks):
+            blind += 1
+        elif tr.min_range < 5.0 and not tr.lost_before_impact(5.0):
+            hits += 1
+            minds.append(tr.min_range)
+        else:
+            miss += 1
+    eng = hits + miss
+    minds.sort()
+    def pct(p):
+        return minds[min(len(minds) - 1, int(len(minds) * p))] if minds else float("nan")
+    print(f"  acquirable {eng}/{n} (blind {blind})  HIT {hits}  miss {miss}  "
+          f"hit-rate {100*hits/eng:.0f}%")
+    print(f"  miss-distance  p50 {pct(0.5):.1f} m  p90 {pct(0.9):.1f} m  max {pct(1.0):.1f} m")
+
+
 def vfov_sensitivity():
     hdr("FOV sensitivity — DIVE on a 110 m ground target across lens VFoV")
     print("  Narrower VFoV raises the start-depression that is acquirable.")
@@ -133,6 +173,7 @@ def main():
     dive_ground_envelope(args.vfov)
     dive_altitude_geometries(args.vfov)
     vfov_sensitivity()
+    monte_carlo(args.vfov)
     return 0
 
 
