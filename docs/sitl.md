@@ -11,6 +11,25 @@
 > port as `-p 127.0.0.1:5760:5760` (IPv6-only publish blocks IPv4). The
 > GUIDED_NOGPS material below is historical context.
 
+## Validated on `main` (2026-05-30, ArduCopter 4.6.3, commit 4eccd75)
+
+Re-run after the config/FC-enforcement/association hardening (PR #5) to confirm
+the live control surface still holds. Image `pifpv-sitl:4.6`, run by id with
+`-p 127.0.0.1:5760:5760` (forcing `--platform linux/amd64` fails to find the
+local image — drop it), driven through the production `ArduPilotBackend`:
+
+| Script                          | Result | Measured |
+|---------------------------------|--------|----------|
+| `validate_steep_dive_sitl.py`   | PASS   | cmd −10/−25/−30° → −8.5/−24.2/−29.3° (monotonic, ≤1.5° err) |
+| `validate_vrate_sitl.py`        | PASS   | hold +0.00, desc cmd −3.0 → −2.81, climb cmd +2.0 → +1.58 m/s |
+| `validate_dive_descent_sitl.py` | PASS   | gentle dive −1.75 m/s, gentle climb +3.50 m/s (hold band −0.00) |
+| `ensure_params()` live          | PASS   | ANGLE_MAX 4500→4000 & RC7_OPTION 7→0 written + re-read verified |
+| `ensure_params()` abort path    | PASS   | 3 unresponsive params abort after one ~2 s read (2.1 s, not 6 s) |
+
+The tracker/association change (PR #5 `best_match` + constant-velocity
+prediction) is perception-side — SITL has no camera — so it is covered by the
+closed-loop FoV sim and unit tests, not these flight validators.
+
 The MAVLink backend is wire-protocol-complete and was validated against a
 loopback fake — but that fake only echoes messages. SITL is the gate that proves
 a real ArduCopter flight stack accepts our commands and responds in the correct
