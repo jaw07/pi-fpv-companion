@@ -153,12 +153,12 @@ def test_rejects_negative_closure_i_gain(tmp_path):
         load(_write_guidance(tmp_path, "closure_i_gain: -1"))
 
 
-def test_imx500_enables_pi_closure_and_a_sensible_standoff():
+def test_imx500_enables_pi_closure():
     cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
     s = cfg.servo
-    assert s.desired_bbox_frac == 0.15    # ~11.5 m follow distance (retuned from 0.30)
+    assert s.desired_bbox_frac == 0.15    # STANDBY-preview nominal (flight holds engage dist)
     assert s.closure_p_gain == 4.0        # range-linear (inverse-size) gain scale
-    assert s.closure_i_gain == 1.0        # PI integral -> exact standoff on a mover
+    assert s.closure_i_gain == 1.0        # PI integral -> holds the engage distance on a mover
 
 
 def test_dive_defaults_to_vertical_homing_off(tmp_path):

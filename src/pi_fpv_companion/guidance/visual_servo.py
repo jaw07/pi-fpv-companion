@@ -18,14 +18,16 @@ proportional to how much smaller the target's apparent size is than the
 desired hold size. Far target (small bbox) -> full forward lean (saturated);
 as it grows to the hold size -> lean eases to zero; if it overshoots (too
 close) -> nose-up to back off. This replaces the old constant-forward-velocity
-behavior that drove the aircraft into the subject at constant speed. A closure
-INTEGRAL (closure_i_gain, PI control via ClosureState) removes the residual:
-pure-P holds a target moving away FARTHER than desired (a steady size error is
-needed to sustain the chase lean), and the integral winds up to supply that lean
-so the standoff settles exactly at desired_bbox_frac — TRACK truly maintains its
-distance on a mover. (A feedforward can't do this: at steady state the apparent
-size is constant, so its rate is zero.) Back-calculation anti-windup keeps the
-integral off the pitch clamp.
+behavior that drove the aircraft into the subject at constant speed. TRACK holds
+the distance AT ENGAGEMENT — it captures the apparent size when you flick to
+TRACK and keeps that gap, so it never flies in to a fixed standoff (it maintains;
+it does not close). A closure INTEGRAL (closure_i_gain, PI control via
+ClosureState) removes the residual: pure-P holds a target moving away FARTHER than
+the captured distance (a steady size error is needed to sustain the chase lean),
+and the integral winds up to supply that lean so the captured distance is held
+exactly. (A feedforward can't do this: at steady state the apparent size is
+constant, so its rate is zero.) Back-calculation anti-windup keeps the integral
+off the pitch clamp.
 
 Consumes a `FilteredTarget` (never the raw tracker output) — its bbox size is
 the alpha-beta-smoothed value, so closure isn't chattering on raw detection
@@ -40,37 +42,52 @@ from pi_fpv_companion.types import HOVER_THRUST, FilteredTarget, GuidanceIntent,
 
 @dataclass
 class ClosureState:
-    """Per-lock integrator state for the TRACK closure loop.
+    """Per-lock state for the TRACK closure loop.
 
-    Pure-P closure leaves a steady-state RANGE offset against a target moving
-    away at constant speed: it settles farther than desired_bbox_frac because a
-    nonzero size error is needed to produce the chase lean. An integral term
-    drives that offset to zero (the integrator winds up to supply the standoff-
-    holding lean, so the size error returns to ~0). Feedforward can't fix this —
-    at steady state the apparent size is constant, so the size RATE is ~0.
+    TRACK holds the distance AT ENGAGEMENT: on a fresh lock (or the first TRACK
+    frame) it CAPTURES the target's current apparent size as the hold setpoint,
+    then the PI loop keeps the target at that size — i.e. that distance — as the
+    target moves. It does NOT converge to a fixed standoff, so locking a far
+    target keeps it far and locking a near one keeps it near. It maintains; it
+    never closes in.
+
+    Pure-P alone leaves a steady-state RANGE offset against a target moving away
+    (a residual size error is needed to produce the chase lean); the integral
+    winds up to supply that lean so the captured distance is held exactly.
+    Feedforward can't fix it — at steady state the apparent size is constant, so
+    the size RATE is ~0.
 
     Owned by the caller (one instance per pipeline), reset when the lock changes
-    or guidance leaves TRACK, so windup never carries across targets/modes."""
-    integral: float = 0.0          # accumulated size-frac·seconds
+    or guidance leaves TRACK, so the setpoint and windup never carry across
+    targets/modes."""
+    integral: float = 0.0          # accumulated range-error·seconds
     track_id: int = -1
     last_t: Optional[float] = None
+    setpoint_inv: Optional[float] = None   # inverse-size (1/size_frac) captured at engage
 
     def reset(self) -> None:
         self.integral = 0.0
         self.track_id = -1
         self.last_t = None
+        self.setpoint_inv = None
 
-    def accumulate(self, size_err: float, track_id: int, now: float) -> float:
-        """Advance the integral by size_err·dt; reset on a new lock. Anti-windup
-        clamping is applied by the caller (back-calculation against saturation)."""
-        if track_id != self.track_id or self.last_t is None:
-            self.integral = 0.0
+    def hold_setpoint(self, inv: float, track_id: int, now: float) -> float:
+        """Capture the engage-distance hold setpoint (current inverse-size) on a
+        fresh lock / first TRACK frame, and return it. On subsequent frames of the
+        same lock it returns the captured value, so the loop holds THAT distance."""
+        if track_id != self.track_id or self.setpoint_inv is None:
             self.track_id = track_id
+            self.setpoint_inv = inv
+            self.integral = 0.0
             self.last_t = now
-            return self.integral
-        dt = max(0.0, now - self.last_t)
+        return self.setpoint_inv
+
+    def accumulate(self, err: float, now: float) -> float:
+        """Advance the integral by err·dt. Anti-windup clamping is applied by the
+        caller (back-calculation against saturation)."""
+        dt = max(0.0, now - self.last_t) if self.last_t is not None else 0.0
         self.last_t = now
-        self.integral += size_err * dt
+        self.integral += err * dt
         return self.integral
 
 
@@ -83,15 +100,19 @@ class ServoConfig:
     pixel_deadzone_px: float
     yaw_p_gain: float             # deg/s of yaw rate per pixel of horizontal error
     yaw_ff_gain: float            # deg/s of yaw rate per (px/s) of target image vx
-    desired_bbox_frac: float      # target bbox-height / frame-height at the hold distance
-    # Closure gains operate on the RANGE-LINEAR error (1/desired_bbox_frac -
-    # 1/size_frac), which is ∝ (hold_range - range) — NOT on raw size error. This
+    # NOMINAL hold size, used only for the STANDBY HUD preview (and as a fallback
+    # when no ClosureState is supplied). In flight TRACK does NOT converge to this:
+    # it captures the apparent size at the moment of engagement and holds THAT
+    # distance (see ClosureState). Setting it just frames the preview sensibly.
+    desired_bbox_frac: float      # target bbox-height / frame-height (preview nominal)
+    # Closure gains operate on the RANGE-LINEAR error (hold_setpoint_inv -
+    # 1/size_frac), which is ∝ (hold_distance - range) — NOT on raw size error. This
     # conditions the loop the same at every distance (see compute_intent). Because
     # the units are inverse-size, the gain scale differs from a raw-size loop
     # (closure_p_gain ~ a few, not tens).
     closure_p_gain: float         # deg of pitch per unit range-linear error
     # Closure INTEGRAL (TRACK): deg of pitch per (range-linear-error · second). Pure-P
-    # holds the target FARTHER than desired_bbox_frac when it is moving away (a
+    # holds the target FARTHER than the engage distance when it is moving away (a
     # residual error is needed to sustain the chase lean); the integral winds up to
     # supply that lean so the steady-state offset → 0. Back-calculation anti-windup
     # (in compute_intent) stops it winding against the pitch clamp, and ClosureState
@@ -172,12 +193,12 @@ def compute_intent(
     lean (dive_lean_ramp_s). Defaults to fully ramped, so TRACK and any caller that
     doesn't track it are unaffected.
 
-    `closure` is the TRACK integrator state (PI closure). When supplied AND
-    cfg.closure_i_gain > 0, the closure loop adds an integral term that drives the
-    steady-state range offset to zero; the caller passes it only while actually in
-    TRACK and resets it on leaving TRACK / changing target. None = pure-P closure.
+    `closure` is the TRACK closure state. It captures the engage-distance setpoint
+    and (when cfg.closure_i_gain > 0) carries the PI integral that holds it exactly;
+    the caller passes it only while actually in TRACK and resets it on leaving TRACK
+    / changing target. None = no setpoint capture + pure-P (STANDBY preview / DIVE).
 
-    TRACK holds range (closure regulated to desired_bbox_frac) at constant altitude.
+    TRACK holds the distance at engagement (PI closure) at constant altitude.
     DIVE commits: PITCH leans forward to close, and a commanded vertical RATE
     (constant-bearing homing — the backend tracks it on VFR_HUD.climb) holds the
     target's vertical frame position so the flight path follows the line of sight,
@@ -265,11 +286,18 @@ def compute_intent(
         #   ~ 0  -> at the hold distance
         #   > 0  -> too CLOSE (big box)          -> nose up, back off
         inv = 1.0 / size_frac if size_frac > _MIN_SIZE_FRAC else 1.0 / _MIN_SIZE_FRAC
-        range_err = (1.0 / cfg.desired_bbox_frac) - inv
+        # Hold the distance AT ENGAGEMENT: the setpoint is the inverse-size captured
+        # on the first TRACK frame of this lock, NOT a fixed desired_bbox_frac — so
+        # TRACK maintains whatever gap you locked at and never flies in. (No closure
+        # state — STANDBY preview / DIVE — falls back to the nominal desired_bbox_frac
+        # for the HUD preview only; the gate mutes that command anyway.)
+        hold_inv = closure.hold_setpoint(inv, target.track_id, target.timestamp) \
+            if closure is not None else (1.0 / cfg.desired_bbox_frac)
+        range_err = hold_inv - inv     # <0 target drifted FARTHER than hold -> nose down
         # PI closure: the integral cancels the steady-state range offset that pure-P
         # leaves on a receding target. The integrator is only active when the caller
         # supplies its state (i.e. actually in TRACK) and the gain is enabled.
-        integ = closure.accumulate(range_err, target.track_id, target.timestamp) \
+        integ = closure.accumulate(range_err, target.timestamp) \
             if (closure is not None and cfg.closure_i_gain > 0.0) else 0.0
         unclamped = (
             cfg.pitch_sign * (cfg.closure_p_gain * range_err + cfg.closure_i_gain * integ)
