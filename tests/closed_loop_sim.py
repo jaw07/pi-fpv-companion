@@ -55,7 +55,7 @@ from typing import Callable, List, Optional, Tuple
 from pi_fpv_companion.types import (
     Detection, Target, GuidanceMode, GuidanceIntent, SwitchState, ZERO_INTENT,
 )
-from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
+from pi_fpv_companion.guidance.visual_servo import ClosureState, ServoConfig, compute_intent
 from pi_fpv_companion.guidance.safety import SafetyConfig, gate
 from pi_fpv_companion.track.target_filter import AlphaBetaTargetFilter, FilterConfig
 
@@ -315,6 +315,7 @@ class SimWorld:
         rng_gen = random.Random(self.seed)
         det_buffer: List[Optional[Detection]] = []   # for detector latency
         dive_entered_t: Optional[float] = None        # for the DIVE lean soft-start
+        closure = ClosureState()                       # TRACK PI closure integrator
         t = 0.0
         n = int(duration_s / dt)
         for i in range(n):
@@ -367,7 +368,14 @@ class SimWorld:
                 intent = ZERO_INTENT
                 muted, reason, q = True, "no target", 0.0
             else:
-                proposed = compute_intent(filtered, servo, mode, dive_elapsed_s)
+                # PI closure runs only when actually in TRACK (mirrors the pipeline).
+                if mode is GuidanceMode.TRACK:
+                    track_closure = closure
+                else:
+                    closure.reset()
+                    track_closure = None
+                proposed = compute_intent(filtered, servo, mode, dive_elapsed_s,
+                                          track_closure)
                 res = gate(proposed, filtered, switch, self.armed, t, self.safety)
                 intent = res.intent
                 muted, reason, q = res.muted, res.reason, filtered.quality
@@ -395,8 +403,9 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
     base = dict(
         frame_width=width, frame_height=height,
         max_yaw_rate_dps=60.0, max_pitch_deg=15.0, pixel_deadzone_px=20.0,
-        yaw_p_gain=0.15, yaw_ff_gain=0.05, desired_bbox_frac=0.30,
-        closure_p_gain=50.0, pitch_p_gain=0.15, track_vcenter_gain=0.10,
+        yaw_p_gain=0.15, yaw_ff_gain=0.05, desired_bbox_frac=0.15,
+        closure_p_gain=4.0, closure_i_gain=1.0, pitch_p_gain=0.15,
+        track_vcenter_gain=0.10,
         dive_forward_deg=25.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0,
         dive_center_frac=0.30,
         dive_vrate_gain=17.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
