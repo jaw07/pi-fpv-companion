@@ -178,21 +178,14 @@ class ServoConfig:
     # the velocity. 0 = pure pursuit. Applies to yaw and the DIVE vertical aim.
     lead_time_s: float = 0.0
     pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (TRACK/DIVE aim)
-    track_vcenter_gain: float = 0.03  # TRACK: deg of pitch per px of vertical error — a GENTLE
-                                  # nudge that keeps the target from drifting out the top as the
-                                  # closure lean tilts the camera. Kept small: a large gain
-                                  # over-drives the pitch trying to centre a far-below target,
-                                  # which fights range-hold closure into a nose nod. 0 = off.
-    # The range-hold closure leans the nose FORWARD to "close distance" — valid for a
-    # target ahead at your own altitude (an air chase), but WRONG when you are high
-    # above a ground target: leaning forward only overflies it (constant altitude
-    # never reaches a target below), and the apparent-size growth then drives a
-    # nose-UP back-off that tilts the fixed camera up and loses the low target out
-    # the bottom. So the closure's authority is faded out as the target sits farther
-    # BELOW frame-centre: at/above centre -> full closure; this fraction of the frame
-    # below centre -> zero closure (TRACK then just holds and frames it gently, and
-    # DIVE does the descent). 0 disables the gate (closure always full authority).
-    track_closure_below_falloff_frac: float = 0.15
+    # TRACK pitch = pure range-hold closure. A vertical re-centring nudge was tried
+    # (track_vcenter_gain) but on a fixed camera it FIGHTS the range-hold: pulling a
+    # low ground target up to centre means nose-down, which drifts the aircraft
+    # forward and closes the range it is meant to hold (and at higher gain it nods).
+    # TRACK holds RANGE; it does not vertically centre — the target sits at its
+    # natural depression (low for a target you are above) but stays framed, and DIVE
+    # does the vertical aiming. Left as a tunable but 0 by default (off).
+    track_vcenter_gain: float = 0.0   # deg of pitch per px of vertical error; 0 = off (see above)
     # DIVE forward lean is ADAPTIVE to the engagement: STEEP when descending onto a
     # target BELOW the flight path (a fast, committed ground attack — and a steep
     # nose-down also points the fixed camera down at the target, keeping it framed),
@@ -385,40 +378,30 @@ def compute_intent(
         range_err = hold_inv - inv     # <0 target drifted FARTHER than hold -> nose down
         # PI closure: the integral cancels the steady-state range offset that pure-P
         # leaves on a receding target. The integrator is only active when the caller
-        # supplies its state (i.e. actually in TRACK) and the gain is enabled.
-        # Fade the forward-lean closure out as the target sits below frame-centre: a
-        # range-hold that flies forward cannot reach a target you are ABOVE (it just
-        # overflies), and the size-growth would otherwise drive a nose-up back-off
-        # that loses the low target out the bottom. Below the falloff band -> hold
-        # and frame only; DIVE handles the descent. (dy < 0, target above -> full.)
-        if cfg.track_closure_below_falloff_frac > 0.0:
-            below_norm = max(0.0, dy) / (cfg.frame_height * cfg.track_closure_below_falloff_frac)
-            closure_authority = _clamp(1.0 - below_norm, 0.0, 1.0)
-        else:
-            closure_authority = 1.0
-        cp = closure_authority * cfg.closure_p_gain
-        ci = closure_authority * cfg.closure_i_gain
+        # supplies its state (i.e. actually in TRACK) and the gain is enabled. This is
+        # the WHOLE of the TRACK pitch — it holds RANGE and nothing else (see
+        # track_vcenter_gain): the closure noses down when the target drifts farther
+        # (smaller) and noses up when it drifts closer (bigger), so the aircraft holds
+        # the engage distance instead of closing in.
         integ = closure.accumulate(range_err, target.timestamp) \
-            if (closure is not None and ci > 0.0) else 0.0
-        # Vertical re-centring is a GENTLE nudge (small track_vcenter_gain): it keeps
-        # the target from drifting out the top as the closure lean tilts the camera —
-        # it does NOT try to fully centre a far-below target (that needs a big pitch
-        # that fights the range-hold closure → a sustained nose nod / limit cycle; it
-        # is DIVE's job to put a below target on the boresight). Sim: gain 0.10 nods
-        # ±13° on a ground target; 0.03 holds steady and framed.
+            if (closure is not None and cfg.closure_i_gain > 0.0) else 0.0
+        # Vertical re-centring nudge (track_vcenter_gain, 0 by default): on a fixed
+        # camera it fights the range-hold (centring a low target = nose-down = forward
+        # drift = closing the range), so it is off — TRACK lets the target sit at its
+        # natural vertical position and DIVE does the vertical aiming.
         vcenter = cfg.track_vcenter_gain * dy
         unclamped = (
-            cfg.pitch_sign * (cp * range_err + ci * integ)
+            cfg.pitch_sign * (cfg.closure_p_gain * range_err + cfg.closure_i_gain * integ)
             - cfg.pitch_sign * vcenter
         )
         pitch = _clamp(unclamped, -cfg.max_pitch_deg, cfg.max_pitch_deg)
         # Back-calculation anti-windup: when the command saturates, roll the integral
         # back to exactly the value that holds pitch at the clamp, so it can't keep
         # winding (and instantly unwinds the moment the error reverses).
-        if closure is not None and ci > 0.0 and pitch != unclamped:
+        if closure is not None and cfg.closure_i_gain > 0.0 and pitch != unclamped:
             closure.integral = (
-                cfg.pitch_sign * pitch - cp * range_err + vcenter
-            ) / ci
+                cfg.pitch_sign * pitch - cfg.closure_p_gain * range_err + vcenter
+            ) / cfg.closure_i_gain
 
     return GuidanceIntent(
         roll_deg=0.0,

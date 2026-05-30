@@ -376,15 +376,17 @@ def _hold_h(cfg):
 
 
 def test_track_high_target_pitches_up_to_recenter():
-    cfg = _cfg()
+    # The vertical re-centre is OFF by default (it fights the range-hold); when
+    # explicitly enabled it pitches toward the target. At hold distance, target well
+    # ABOVE centre -> nose UP.
+    cfg = _cfg(track_vcenter_gain=0.1)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    # at hold distance, target well ABOVE centre -> nose UP (re-centre / limit lean)
     out = compute_intent(_target(cx, cy - 150, h=_hold_h(cfg)), cfg, GuidanceMode.TRACK)
     assert out.pitch_deg > 0
 
 
 def test_track_low_target_pitches_down_to_recenter():
-    cfg = _cfg()
+    cfg = _cfg(track_vcenter_gain=0.1)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
     out = compute_intent(_target(cx, cy + 150, h=_hold_h(cfg)), cfg, GuidanceMode.TRACK)
     assert out.pitch_deg < 0

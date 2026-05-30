@@ -80,11 +80,14 @@ guidance:
   # gains hold across distances (the loop is conditioned). closure_i_gain 0 = pure-P.
   closure_p_gain: 4.0
   closure_i_gain: 1.0
-  # Vertical centring (TRACK pitch P on vertical pixel error). TRACK adds
-  # track_vcenter_gain on top of range-hold so the target stays centred as a
-  # forward lean tilts the fixed camera down (target rises in frame). 0 = off.
-  pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
-  track_vcenter_gain: 0.03  # deg pitch per px of vertical error (TRACK re-centre; small=no nod)
+  # TRACK pitch is PURE range-hold (the closure above): it holds the engage distance
+  # and does not vertically centre. A vertical re-centring nudge (track_vcenter_gain)
+  # fights the range-hold on a fixed camera — centring a low target means nose-down,
+  # which drifts forward and CLOSES the range TRACK is meant to hold (and nods) — so
+  # it is OFF. The target sits at its natural depression (low when you're above it)
+  # but stays framed; DIVE does the vertical aiming.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  track_vcenter_gain: 0.0   # TRACK vertical re-centre — OFF (fights range-hold; see above)
   # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
   # PITCH is a fixed gentle forward lean (a steeper lean over-depresses the fixed
   # camera and pushes an ABOVE target out the top); the THROTTLE flies a commanded
@@ -103,11 +106,6 @@ guidance:
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
   dive_lean_tau_s: 1.5       # low-pass on the dive lean: nose travels steadily, no up/down nod
-  track_closure_below_falloff_frac: 0.15   # TRACK: fade the forward-lean range-hold out as the
-                            # target sits this fraction of the frame BELOW centre. A range-hold that
-                            # leans forward can't reach a target you're high ABOVE (it just overflies,
-                            # and the size-growth drives a nose-up back-off that loses the low target);
-                            # below this band TRACK just holds & frames it, and DIVE does the descent.
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 18.0     # m/s of climb command per unit normalised vertical frame error.
                             # Higher gain -> smaller pure-P steady-state offset: the terminal aim
