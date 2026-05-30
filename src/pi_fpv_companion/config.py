@@ -294,6 +294,27 @@ def _validate(cfg: AppConfig) -> None:
                 f"fc.track_threshold_us ({fc.track_threshold_us}); otherwise the "
                 "switch reaches DIVE before TRACK and TRACK is unreachable"
             )
+        # angle_max_deg is auto-written to the FC's ANGLE_MAX on boot, so a typo
+        # here becomes a dangerous lean limit on the aircraft. Bound it.
+        if not 0.0 < fc.angle_max_deg <= 80.0:
+            raise ValueError(
+                f"fc.angle_max_deg ({fc.angle_max_deg}) must be in (0, 80] — it is "
+                "written to the FC's ANGLE_MAX, so an out-of-range value is unsafe"
+            )
+
+    # select_channel only does anything with the multi-target tracker; a non-zero
+    # value on a single-target tracker silently no-ops the operator's select switch.
+    if fc.select_channel and cfg.tracker.type != "multi_iou":
+        raise ValueError(
+            f"fc.select_channel ({fc.select_channel}) needs tracker.type 'multi_iou' "
+            f"(got {cfg.tracker.type!r}); single-target trackers can't cycle targets"
+        )
+
+    if cfg.video.width <= 0 or cfg.video.height <= 0:
+        raise ValueError(
+            f"video.width/height must be > 0 (got {cfg.video.width}x{cfg.video.height}); "
+            "the guidance servo divides by the frame size"
+        )
 
     s = cfg.servo
     if s.dive_vrate_gain < 0.0:

@@ -45,6 +45,22 @@ def test_no_overlap_increments_lost_count():
     assert t.lost_frames == 1
 
 
+def test_prediction_keeps_lock_on_mover_when_decoy_crosses():
+    # With velocity established, the single tracker matches its PREDICTED position,
+    # so a decoy crossing into the target's wake (at the target's previous spot)
+    # does not steal the lock — it stays on the mover at the predicted position.
+    assoc = IouAssociator(iou_threshold=0.3, max_lost_frames=5, max_match_dist_px=60.0)
+    assoc.consume(None, [_det(200, 300, w=4, h=4)], now=0.0)
+    x = 200
+    for i in range(1, 4):                          # 3 clean frames → build velocity
+        x += 25
+        assoc.consume(None, [_det(x, 300, w=4, h=4)], now=i * 0.033)
+    prev = x
+    x += 25                                        # target keeps moving; decoy at the old spot
+    assoc.consume(None, [_det(x, 300, w=4, h=4), _det(prev, 300, w=4, h=4)], now=4 * 0.033)
+    assert assoc._target.detection.x == x          # followed the prediction, not the decoy
+
+
 def test_small_box_under_motion_stays_associated_by_distance():
     # A tiny box (a distant target) that shifts more than its own width has ZERO
     # IoU overlap frame-to-frame; the centroid-distance gate keeps the lock instead

@@ -102,6 +102,24 @@ def test_ensure_params_writes_mismatched_and_leaves_correct():
         fake.stop()
 
 
+def test_ensure_params_aborts_after_first_unresponsive_read():
+    # A dead/wrong-baud FC must not stall boot: the first no-response read aborts
+    # the whole pass (no timeout × N params). read_param is stubbed to return None.
+    b = _stab_backend()
+    calls = []
+    b.read_param = lambda name, timeout=2.0: calls.append(name) or None
+    status = b.ensure_params({"ANGLE_MAX": 4500.0, "RC7_OPTION": 0.0, "RC9_OPTION": 0.0})
+    assert len(calls) == 1                      # bailed after the first failed read
+    assert all(v == "read-fail" for v in status.values())
+
+
+def test_release_resets_vertical_rate_integral():
+    b = _stab_backend()
+    b._vrate_i = 123.0
+    b.release()                                  # STANDBY handback
+    assert b._vrate_i == 0.0                      # no stale bias carried into next DIVE
+
+
 def test_backend_reads_select_channel_over_the_wire():
     # The target-select channel (ch9 — the first free CRSF channel on the Tango 2)
     # must reach select_pwm() so the pipeline can edge-detect a cycle.

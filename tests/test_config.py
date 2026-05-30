@@ -106,6 +106,37 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_max_climb_mps == 4.0
 
 
+def test_rejects_out_of_range_angle_max(tmp_path):
+    # angle_max_deg is auto-written to the FC's ANGLE_MAX — a typo must be caught.
+    with pytest.raises(ValueError, match="angle_max_deg"):
+        load(_write(tmp_path, "backend: ardupilot, angle_max_deg: 120"))
+
+
+def test_rejects_select_channel_without_multi_tracker(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("""
+camera: {type: synthetic}
+detector: {type: none}
+tracker: {type: iou}
+fc: {backend: ardupilot, select_channel: 9}
+""")
+    with pytest.raises(ValueError, match="select_channel"):
+        load(p)
+
+
+def test_rejects_zero_frame_size(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("""
+video: {width: 0, height: 576}
+camera: {type: synthetic}
+detector: {type: none}
+tracker: {type: iou}
+fc: {backend: ardupilot}
+""")
+    with pytest.raises(ValueError, match="width/height"):
+        load(p)
+
+
 def test_rejects_negative_vrate_gain(tmp_path):
     with pytest.raises(ValueError, match="dive_vrate_gain"):
         load(_write_guidance(tmp_path, "dive_vrate_gain: -1"))
