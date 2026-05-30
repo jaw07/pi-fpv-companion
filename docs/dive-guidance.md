@@ -102,7 +102,13 @@ DIVE breaks the coupling:
   vertical **frame position**. The servo emits `GuidanceIntent.vertical_rate_mps`
   (+up); the ArduPilot backend's climb-rate PI loop tracks it against
   `VFR_HUD.climb`. Below centre (target drifted low) → descend (raises it back);
-  above centre → climb (lowers it).
+  above centre → climb (lowers it). The vertical command is **PD**, not P:
+  `vertical_rate = -dive_vrate_gain·e_y − dive_vrate_damp·(d e_y/dt)`, where the
+  derivative (the filter's vertical image velocity) damps the loop. A pure-P rate
+  command oscillates against the inner rate-loop lag + the pitch/camera coupling
+  (an up/down "wiggle" in the dive, seen first in Gazebo); the derivative term
+  removes it. Keep `dive_vrate_damp` modest — too much, and a delayed `vy` (high
+  detector latency on a far target) over-corrects and briefly drops framing.
 
 Holding a target at a fixed point in the frame is a **constant bearing**, which
 (constant-bearing-decreasing-range) is a **collision course**. So the flight path
