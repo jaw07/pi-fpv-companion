@@ -98,7 +98,7 @@ guidance: {{{guidance_line}}}
 def test_imx500_enables_closed_loop_dive():
     cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
     s = cfg.servo
-    assert s.dive_forward_deg == 25.0     # steep lean at full descent (fast ground attack)
+    assert s.dive_forward_deg == 14.0     # steeper dive keeps a below/ground target framed to impact
     assert s.dive_climb_forward_deg == 6.0   # gentle when level/climbing
     assert s.dive_max_pitch_deg == 30.0   # DIVE's own steeper clamp
     assert s.dive_vrate_gain == 12.0      # closed-loop vertical homing (P)
