@@ -23,7 +23,8 @@ detector:
   classes_of_interest: [person, car, truck, motorcycle, bus, boat]
 
 tracker:
-  type: iou                  # associate the dense per-frame sensor detections
+  type: multi_iou            # track ALL detections + operator selection (select_channel).
+                             # 'iou' = single auto-locked target (no manual select).
   iou_threshold: 0.3
   reacquire_after_lost_frames: 30
 
@@ -32,6 +33,9 @@ fc:
   uart_device: /dev/serial0  # PL011 on header pins 8/10 (after dtoverlay=disable-bt)
   baud: 115200
   switch_channel: 7          # 3-position mode switch (STANDBY / TRACK / DIVE)
+  select_channel: 8          # momentary switch: a pulse (>1700 µs) cycles the locked
+                             # target among detections. 0 = disabled (auto-lock highest
+                             # confidence). Lock persists into TRACK/DIVE.
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied path: ch7 engages. On TRACK/DIVE the Pi injects AETR sticks via

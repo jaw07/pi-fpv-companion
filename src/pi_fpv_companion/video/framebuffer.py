@@ -193,9 +193,10 @@ class FramebufferSink:
         switch: SwitchState,
         armed: bool,
         frame: FrameBundle,
+        tracks=None,
     ) -> None:
         if not self._opened:
             self.open()
         img = frame.image.copy()
-        draw_overlay(img, target, intent, switch, armed, gated)
+        draw_overlay(img, target, intent, switch, armed, gated, tracks)
         self._fb.write(img)

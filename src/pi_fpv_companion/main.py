@@ -125,6 +125,12 @@ def _build_tracker(cfg: AppConfig):
             iou_threshold=cfg.tracker.iou_threshold,
             max_lost_frames=cfg.tracker.reacquire_after_lost_frames,
         )
+    if t == "multi_iou":   # multi-target IoU + operator selection (fc.select_channel)
+        from pi_fpv_companion.track.multi_target import MultiObjectTracker
+        return MultiObjectTracker(
+            iou_threshold=cfg.tracker.iou_threshold,
+            max_lost_frames=cfg.tracker.reacquire_after_lost_frames,
+        )
     if t == "classical":
         from pi_fpv_companion.track.cv2_tracker import ClassicalCv2Tracker
         return ClassicalCv2Tracker(
@@ -143,6 +149,7 @@ def _build_fc(cfg: AppConfig):
         return ArduPilotBackend(
             device=cfg.fc.uart_device, baud=cfg.fc.baud,
             switch_channel=cfg.fc.switch_channel,
+            select_channel=cfg.fc.select_channel,
             track_threshold_us=cfg.fc.track_threshold_us,
             dive_threshold_us=cfg.fc.dive_threshold_us,
             mapping=ArduCopterRcMapping(
@@ -247,10 +254,10 @@ def main(argv=None) -> int:
         except Exception as e:
             print(f"WARN: FC didn't return heartbeat within timeout: {e}")
 
-    def on_status(target, intent, gated, switch, armed, frame):
+    def on_status(target, intent, gated, switch, armed, frame, tracks=None):
         perf.tick_end(on_status._t0)
         if sink is not None:
-            sink.show(target, intent, gated, switch, armed, frame)
+            sink.show(target, intent, gated, switch, armed, frame, tracks)
 
     on_status._t0 = 0.0
 
