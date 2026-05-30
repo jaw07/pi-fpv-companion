@@ -423,7 +423,7 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         max_yaw_rate_dps=60.0, max_pitch_deg=15.0, pixel_deadzone_px=8.0,
         yaw_p_gain=0.15, yaw_ff_gain=0.05, desired_bbox_frac=0.15,
         closure_p_gain=4.0, closure_i_gain=1.0, pitch_p_gain=0.15,
-        track_vcenter_gain=0.03, track_closure_below_falloff_frac=0.15,
+        track_vcenter_gain=0.0,
         dive_forward_deg=14.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0, dive_lean_tau_s=1.5,
         dive_center_frac=0.30,
         dive_vrate_gain=18.0, dive_vrate_damp=6.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
