@@ -112,14 +112,14 @@ GuidanceIntent(roll_deg, pitch_deg, yaw_rate_dps, thrust, timestamp)
 - **TRACK:** pitch regulates **range** — bbox size vs `desired_bbox_frac`: too far
   → nose down (accelerate forward), too close → ease off / nose up (a collision
   guard, not a ram gain). `thrust = 0.5` (hold altitude).
-- **DIVE:** leans **forward** (`dive_forward_deg` + a vertical-aim term biased
-  toward the engagement's leading edge so the target stays framed) to close, and
-  moves altitude **onto** the target — `thrust < 0.5` to descend on a target below
-  you, `> 0.5` to climb toward one above, `0.5` (hold) for one level ahead. The
-  direction comes from the target's **true line-of-sight elevation** (FC attitude
-  + in-frame position), and the vertical commit is gated on horizontal aim and
-  geometry-matched to the LOS depression. It is a **downward** attack: it never
-  pitches nose-up. See `docs/dive-guidance.md` (incl. the fixed-camera FOV limits).
+- **DIVE:** closed-loop constant-bearing homing. A *fixed* gentle forward lean
+  (`dive_forward_deg`) closes the gap, and a commanded vertical **rate**
+  (`vertical_rate_mps`, tracked by the backend on `VFR_HUD.climb`) holds the
+  target's vertical **frame position**. Holding a fixed frame point is a constant
+  bearing → a collision course, so the flight path follows the line of sight and
+  moves altitude **onto** the target — descend onto one below, hold for one level,
+  climb toward one above. Gated on horizontal aim; never pitches nose-up. See
+  `docs/dive-guidance.md` (incl. the fixed-camera FOV limits).
 
 Sign conventions: `pitch_deg < 0` = nose-down = forward; `yaw_rate_dps > 0` = yaw
 right; `thrust 0.5` = hold. `yaw_sign`/`pitch_sign` exist to correct a mirrored or

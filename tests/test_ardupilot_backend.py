@@ -189,10 +189,9 @@ def test_adaptive_hover_clamped_to_max():
     assert b._hover_pwm <= 1700.0
 
 
-def test_gentle_dive_commit_is_not_swallowed_by_the_hold_band():
-    # A geometry-matched dive commands only a small thrust offset (e.g. 0.12).
-    # The hold band MUST be below that, or the adaptive-hover PI loop cancels the
-    # descent and the aircraft never dives. thrust 0.38 → throttle below hover.
+def test_gentle_thrust_stick_descent_is_not_swallowed_by_the_hold_band():
+    # The open-loop thrust-stick path: a small thrust offset (e.g. 0.38) must pass
+    # the hold band (0.05) and descend, not be cancelled by the hover PI loop.
     b = _stab_backend()
     _seed(b, 0.0)                       # level, fresh telemetry
     out = b._adaptive_throttle(_hold(thrust=0.38))   # gentle commanded descent

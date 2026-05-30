@@ -89,9 +89,9 @@ class FcSection:
     stab_hover_learn: bool = True
     stab_hover_learn_kp: float = 50.0    # PWM per (m/s) climb (immediate damping)
     stab_hover_learn_gain: float = 20.0  # Ki: PWM per (m/s) climb per second (slow trim)
-    # Adaptive hover HOLDS altitude only while |thrust-0.5| < this; outside it a
-    # commanded climb/dive passes through. MUST be below guidance.dive_descent or
-    # the hold loop silently cancels a gentle dive (validated at load).
+    # Adaptive hover HOLDS altitude only while |thrust-0.5| < this on the open-loop
+    # THRUST-STICK vertical path (the fallback); the closed-loop DIVE commands a
+    # vertical RATE instead, which the loop tracks directly (band not used).
     stab_hover_learn_band: float = 0.05
     stab_hover_min_us: int = 1200        # safety clamp on the learned hover
     stab_hover_max_us: int = 1700

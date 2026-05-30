@@ -92,11 +92,11 @@ class ArduCopterRcMapping:
     # slowly trims the learned hover throttle to remove the steady-state bias.
     hover_learn_kp: float = 50.0         # PWM per (m/s) of climb (immediate damping)
     hover_learn_gain: float = 20.0       # Ki: PWM per (m/s) of climb per second (slow trim)
-    # Only the adaptive-hover PI loop HOLDS altitude while |thrust-0.5| < this;
-    # outside it the commanded climb/dive passes through open-loop. TRACK always
-    # emits EXACTLY 0.5, so this only needs to catch neutral — and it MUST be
-    # below the DIVE vertical commit (guidance.dive_descent, ~0.12) or the hold
-    # loop silently cancels a gentle geometry-matched dive (it never descends).
+    # Hold deadband for the open-loop THRUST-STICK vertical path: the PI loop holds
+    # altitude while |thrust-0.5| < this, outside it the stick passes through.
+    # (The closed-loop DIVE commands a vertical RATE instead — see _adaptive_throttle
+    # — which is tracked directly and does not use this band.) TRACK emits EXACTLY
+    # 0.5, so this only needs to catch neutral.
     hover_learn_band: float = 0.05
     hover_min_us: int = 1200             # safety clamp on the learned hover
     hover_max_us: int = 1700

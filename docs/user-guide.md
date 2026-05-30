@@ -57,15 +57,15 @@ fc:
   rc_yaw_sign: 1
 guidance:
   classes_of_interest: [person, car, truck, boat]   # what to lock onto
-  dive_descent: 0.12          # 0 = DIVE just leans in; >0 lets it change altitude
-                              # (descend/climb) onto the target. See dive-guidance.md.
+  dive_vrate_gain: 17.0       # closed-loop dive vertical homing (0 = DIVE just
+                              # leans in). See dive-guidance.md.
 ```
 
-> DIVE is **altitude-agnostic**: it dives onto a target below you, pursues one
-> level ahead, and climbs toward one above you — see `docs/dive-guidance.md`. The
-> shipped `config/imx500.yaml` already enables the tuned dive; you normally only
-> touch `dive_descent` (aggressiveness) and must keep `camera_vfov_deg` matched to
-> your lens.
+> DIVE **closes onto a target below, level, or above you** — it commits a gentle
+> forward lean and uses the throttle to hold the target's frame position, so the
+> flight path follows the line of sight (constant-bearing homing). See
+> `docs/dive-guidance.md`. The shipped `config/imx500.yaml` already enables the
+> tuned dive; it needs `VFR_HUD` streaming (`SR*_EXTRA2`) to close the loop.
 
 ---
 
@@ -122,11 +122,12 @@ smooth, hands-off chase that keeps the target the same size in frame.
 **5. Follow as long as you like.** Re-take the sticks anytime by flicking to
 STANDBY. TRACK won't dive — it just follows and holds range.
 
-**6. Commit — flick to DIVE (up).** It commits to the target and closes. With
-`dive_descent` above 0 it also moves altitude onto it — **dives** onto a target
-below you, **holds** for one level ahead, **climbs** toward one above you (it
-knows which from the FC's attitude; see `docs/dive-guidance.md`). At 0 it only
-leans in. There is **no automatic pull-up** — *you* end the dive.
+**6. Commit — flick to DIVE (up).** It commits to the target and closes, moving
+altitude onto it — **dives** onto a target below you, **holds** for one level
+ahead, **climbs** toward one above you. It works this out from where the target
+sits in the frame (constant-bearing homing; see `docs/dive-guidance.md`). With
+`dive_vrate_gain` at 0 it only leans in. There is **no automatic pull-up** — *you*
+end the dive.
 
 > A fixed forward camera can only *see* a ground target once it's far enough
 > ahead (shallow enough); something steeply below you is below the frame. Engage
@@ -159,10 +160,10 @@ pi-fpv-companion`). One change at a time.
 | Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
 | Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
-| DIVE to actually change altitude | `guidance.dive_descent` → 0.10–0.20 (descend/climb authority) |
-| Steeper / shallower dive | `dive_descent` (vertical) + `max_pitch_deg` (forward) |
-| Tighten dive geometry-match | `dive_los_band_deg` (lower = more aggressive descent) |
-| DIVE loses target out of frame | raise `dive_vertical_bias_frac`; confirm `camera_vfov_deg` matches lens |
+| DIVE to actually change altitude | `guidance.dive_vrate_gain` > 0 (0 = just leans); needs VFR_HUD |
+| Faster / slower dive vertical | `dive_max_descent_mps` / `dive_max_climb_mps` |
+| DIVE loses an above target out the top | lower `dive_forward_deg` (gentler lean) |
+| DIVE won't descend | confirm `VFR_HUD` streams (`SR*_EXTRA2`); the rate loop needs it |
 | It holds altitude poorly | confirm `SRn_EXTRA2` is streaming; nudge `stab_hover_throttle_us` |
 | Altitude bounces/hunts | lower `stab_hover_learn_kp`, then `stab_hover_learn_gain` |
 | Stop chasing wrong objects | trim `classes_of_interest`; raise `safety.min_track_quality` |
