@@ -109,6 +109,21 @@ def test_track_pi_holds_the_engage_distance_on_a_receding_target():
     assert max(tail) - min(tail) < 2.0                # settled, no limit cycle
 
 
+def test_track_does_not_nod_on_a_below_ground_target():
+    # A far-below (ground) target must NOT send TRACK's pitch into a limit cycle. The
+    # vertical re-centring is a gentle nudge, not an attempt to fully centre a below
+    # target (that fights range-hold closure → a sustained nose nod). At the old gain
+    # 0.10 this swung the pitch ~26° with ~17 reversals and lost the target.
+    w = _world(target_pos=(50.0, 0.0, 0.0), alt=15.0)
+    tr = w.run(GuidanceMode.TRACK, duration_s=25.0)
+    assert not tr.ever_left_frame                       # stays framed (didn't oscillate out)
+    pc = [tk.pitch_cmd for tk in tr.ticks if tk.in_frame]
+    d = [pc[i] - pc[i - 1] for i in range(1, len(pc))]
+    reversals = sum(1 for i in range(1, len(d)) if d[i] * d[i - 1] < 0 and abs(d[i]) > 0.05)
+    assert reversals < 6                                # no sustained nod
+    assert max(pc) - min(pc) < 18.0                     # bounded pitch travel
+
+
 def test_track_keeps_a_crossing_target_within_yaw_authority():
     # Target crossing laterally slowly enough that the required LOS rate stays
     # under max_yaw_rate at the hold range → yaw keeps up, target stays framed.
