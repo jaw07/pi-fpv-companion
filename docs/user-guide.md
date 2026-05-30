@@ -32,16 +32,19 @@ bash scripts/install-pi.sh      # installs to /opt/pi-fpv-companion, sets up the
 Say yes to the IMX500 firmware and the boot config when asked, then **reboot**.
 
 ### c. Set up the flight controller (ArduCopter 4.6+)
-In Mission Planner → Full Parameter List, set and reboot the FC:
+On every boot the companion **validates the FC params it needs and writes any that
+are wrong** (logged at startup; disable with `fc.enforce_params_on_start: false`).
+It auto-enforces **`ANGLE_MAX`** (= `fc.angle_max_deg`, so commanded lean = actual
+lean) and **`RC7_OPTION`/`RC9_OPTION` = 0** (so the FC leaves the companion's mode
++ select channels alone). Add more with `fc.enforce_params: {SR2_EXTRA2: 5, ...}`.
+
+What it will **not** touch (set these yourself in Mission Planner, once):
 
 | Param | Value | Meaning |
 |-------|-------|---------|
-| `SERIALn_PROTOCOL` / `_BAUD` | `2` / `115` | MAVLink on the UART wired to the Pi |
-| `SRn_EXTRA2` | `≥ 5` | streams climb rate (the companion holds height with it) |
-| `ANGLE_MAX` | `4500` | 45° max lean — must match `fc.angle_max_deg` |
-| `RC7_OPTION` | `0` | leave ch7 alone — it's the companion's engage switch |
-| `RC9_OPTION` | `0` | leave ch9 alone — it's the companion's target-select input |
-| flight-mode switch | → **STABILIZE** | the mode the companion flies in |
+| `SERIALn_PROTOCOL` / `_BAUD` | `2` / `115` | MAVLink on the UART wired to the Pi (the link itself — can't auto-fix the port it's on) |
+| `SRn_EXTRA2` | `≥ 5` | streams climb rate / attitude (or add to `enforce_params`) |
+| flight-mode switch | → **STABILIZE** | the mode the companion flies in (your modes, not ours) |
 | ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
 | ch9 (a spare input, e.g. rocker) | cycle target (tap) | maps in FreedomTX → ch9 |
 

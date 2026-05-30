@@ -81,6 +81,27 @@ def test_backend_reads_switch_channel_pwm(ap_pair):
     assert s.mode is GuidanceMode.STANDBY
 
 
+def test_ensure_params_writes_mismatched_and_leaves_correct():
+    # Startup FC validation: a param at the wrong value is written + verified; one
+    # already correct is left alone.
+    port = _free_udp_port()
+    backend = ArduPilotBackend(device=f"udpin:127.0.0.1:{port}", baud=0, switch_channel=7,
+                               track_threshold_us=1300, dive_threshold_us=1700)
+    backend.open()
+    fake = FakeArduCopter(target_port=port)
+    fake.params = {"ANGLE_MAX": 3000.0, "RC7_OPTION": 0.0}   # ANGLE_MAX wrong, RC7 right
+    fake.start()
+    try:
+        backend.wait_ready(timeout=3.0)
+        status = backend.ensure_params({"ANGLE_MAX": 4500.0, "RC7_OPTION": 0.0})
+        assert status["ANGLE_MAX"] == "set"        # corrected
+        assert status["RC7_OPTION"] == "ok"        # already right, untouched
+        assert fake.params["ANGLE_MAX"] == 4500.0  # write landed on the FC
+    finally:
+        backend.close()
+        fake.stop()
+
+
 def test_backend_reads_select_channel_over_the_wire():
     # The target-select channel (ch9 — the first free CRSF channel on the Tango 2)
     # must reach select_pwm() so the pipeline can edge-detect a cycle.

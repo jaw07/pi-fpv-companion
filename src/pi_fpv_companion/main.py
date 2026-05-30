@@ -185,6 +185,32 @@ def _build_fc(cfg: AppConfig):
     raise SystemExit(f"unknown fc backend: {cfg.fc.backend}")
 
 
+def _enforce_fc_params(cfg: AppConfig, fc) -> None:
+    """Startup FC validation: confirm the params the companion needs and write any
+    that differ. Always enforces ANGLE_MAX (= angle_max_deg, so commanded lean =
+    actual lean) and the companion's RC channels' *_OPTION = 0 (so the FC leaves
+    them for us); plus any fc.enforce_params overrides. Does NOT touch serial/baud
+    (the link we're on must already be right). Skipped if disabled or unsupported."""
+    if not getattr(cfg.fc, "enforce_params_on_start", False):
+        return
+    ensure = getattr(fc, "ensure_params", None)
+    if not callable(ensure):
+        return
+    desired: dict = {"ANGLE_MAX": round(cfg.fc.angle_max_deg * 100.0)}
+    desired[f"RC{cfg.fc.switch_channel}_OPTION"] = 0
+    if cfg.fc.select_channel:
+        desired[f"RC{cfg.fc.select_channel}_OPTION"] = 0
+    desired.update(cfg.fc.enforce_params)
+    print("  validating FC params ...")
+    try:
+        status = ensure(desired)
+    except Exception as e:
+        print(f"  WARN: FC param validation failed: {e}")
+        return
+    for name, st in status.items():
+        print(f"    {name}: {st}")
+
+
 def _build_sink(cfg: AppConfig, no_gui: bool):
     if no_gui:
         return None
@@ -253,6 +279,7 @@ def main(argv=None) -> int:
             fc.wait_ready(timeout=10.0)
         except Exception as e:
             print(f"WARN: FC didn't return heartbeat within timeout: {e}")
+        _enforce_fc_params(cfg, fc)
 
     def on_status(target, intent, gated, switch, armed, frame, tracks=None):
         perf.tick_end(on_status._t0)
