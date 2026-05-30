@@ -99,6 +99,14 @@ config flip (`tracker.cv2_backend: csrt`) for slow targets on a faster board
 only. On the IMX500 path the sensor emits detections every frame, so a heavy
 single-object tracker is wasted work — we use IoU association instead.
 
+**Multi-target selection** (`tracker.type: multi_iou`, the IMX500 default):
+tracks *every* detection with a stable id (the HUD shows them all in STANDBY),
+and a momentary RC channel (`fc.select_channel`) cycles which one is locked. The
+selection is held across frames and across the mode switch, so the operator picks
+a target in STANDBY and it stays locked through TRACK and DIVE. Guidance can also
+**lead** a moving target (`guidance.lead_time_s`) — aim at the intercept rather
+than tail-chase.
+
 ## Two FC backends
 
 | Backend    | Protocol  | Control surface                                  | Switch read   |

@@ -110,7 +110,13 @@ should see the live feed with boxes on detected objects. Switch **down** (STANDB
 **2. Take off and fly — normally.** It's just your STABILIZE quad right now; the
 companion is asleep. Get comfortable, climb to a safe height with margin below you.
 
-**3. Line up.** Put your target somewhere in the frame and point roughly at it.
+**3. Line up — and pick your target.** Put targets in the frame. With the
+multi-target tracker (`tracker.type: multi_iou`, the IMX500 default) the HUD shows
+**every** detection (faint boxes) in STANDBY, with the locked one bold. Tap your
+**select switch** (`fc.select_channel`, e.g. a momentary on ch8) to **cycle the
+lock** to the next target. Whatever is locked here **stays locked** through TRACK
+and DIVE — so choose before you commit. (No select channel? It auto-locks the
+highest-confidence detection.)
 
 **4. Hand it the wheel — flick to TRACK (middle).** Now *let go of the sticks.*
 The companion yaws to center the target, leans in to follow, and holds your
@@ -158,6 +164,8 @@ pi-fpv-companion`). One change at a time.
 |-----------|--------|
 | It turns the wrong way | a `rc_*_sign` is flipped — **fix before flying** (Part 2) |
 | Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
+| Lead a moving target (less tail-chase) | `guidance.lead_time_s` → 0.2–0.6 s |
+| Pick among multiple targets | `tracker.type: multi_iou` + `fc.select_channel` (tap to cycle) |
 | Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
 | DIVE to actually change altitude | `guidance.dive_vrate_gain` > 0 (0 = just leans); needs VFR_HUD |
