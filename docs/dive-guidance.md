@@ -76,7 +76,11 @@ DIVE breaks the coupling:
   clamped nose-down by DIVE's own steeper `dive_max_pitch_deg` (never backs off /
   pitches up). This makes a ground attack fast (~20–30 s to impact in sim, ~3× the
   gentle lean) without losing an above target. SITL-confirmed: STABILIZE tracks the
-  steep RC-override lean within ~1° (cmd −25° → −24°, −30° → −29°).
+  steep RC-override lean within ~1° (cmd −25° → −24°, −30° → −29°). A **soft-start**
+  (`dive_lean_ramp_s`) ramps the steep lean in over ~0.5 s at commit so the target
+  doesn't slew across the frame faster than the tracker/filter can follow (without
+  it, a snap to full lean briefly out-runs the velocity estimate → a momentary
+  tracking hiccup at commit).
 - **THROTTLE** flies a commanded vertical **rate** that holds the target's
   vertical **frame position**. The servo emits `GuidanceIntent.vertical_rate_mps`
   (+up); the ArduPilot backend's climb-rate PI loop tracks it against
@@ -103,6 +107,7 @@ yaw before committing power, so it doesn't dive off to the side.
 | `dive_forward_deg` | 25.0 | STEEP lean at full descent (fast ground attack) |
 | `dive_climb_forward_deg` | 6.0 | gentle lean when level/climbing (keeps an above target framed) |
 | `dive_max_pitch_deg` | 30.0 | DIVE nose-down clamp (steeper than TRACK's `max_pitch_deg`) |
+| `dive_lean_ramp_s` | 0.5 | soft-start: ramp the steep lean in over this many s at commit |
 | `dive_vrate_gain` | 17.0 | m/s of climb command per unit normalised vertical frame error |
 | `dive_max_descent_mps` | 8.0 | clamp on commanded descent |
 | `dive_max_climb_mps` | 4.0 | clamp on commanded climb (gravity-limited, < descent) |

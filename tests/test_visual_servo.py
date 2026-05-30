@@ -154,6 +154,20 @@ def _dcfg(**kw):
     return _cfg(**base)
 
 
+def test_dive_lean_soft_starts_then_reaches_full_steep():
+    # At commit the steep lean ramps in over dive_lean_ramp_s (so the target doesn't
+    # slew faster than the filter tracks); by the ramp time it is full steep.
+    cfg = _dcfg(dive_lean_ramp_s=0.5)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    below = _target(cx, cy + 200)                       # descending → steep at full ramp
+    at_commit = compute_intent(below, cfg, GuidanceMode.DIVE, dive_elapsed_s=0.0).pitch_deg
+    mid = compute_intent(below, cfg, GuidanceMode.DIVE, dive_elapsed_s=0.25).pitch_deg
+    full = compute_intent(below, cfg, GuidanceMode.DIVE, dive_elapsed_s=1.0).pitch_deg
+    assert at_commit == pytest.approx(-cfg.dive_climb_forward_deg)   # starts gentle
+    assert at_commit < 0 and mid < at_commit and full < mid          # ramps steeper
+    assert full == pytest.approx(-cfg.dive_forward_deg)              # full steep by ramp time
+
+
 def test_dive_lean_is_steep_descending_gentle_climbing():
     # Adaptive forward lean: STEEP when descending onto a below target (target low
     # in frame → commit descent), GENTLE when level/climbing toward an above one
