@@ -251,6 +251,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_climb_forward_deg=d.get("dive_climb_forward_deg", 6.0),
         dive_max_pitch_deg=d.get("dive_max_pitch_deg", 30.0),
         dive_lean_ramp_s=d.get("dive_lean_ramp_s", 0.5),
+        dive_lean_tau_s=d.get("dive_lean_tau_s", 0.0),
         dive_center_frac=d.get("dive_center_frac", 0.30),
         dive_vrate_gain=d.get("dive_vrate_gain", 0.0),
         dive_vrate_damp=d.get("dive_vrate_damp", 0.0),
@@ -332,6 +333,11 @@ def _validate(cfg: AppConfig) -> None:
         raise ValueError(
             f"guidance.dive_vrate_damp ({s.dive_vrate_damp}) must be >= 0 "
             "(derivative damping on the DIVE vertical homing; negative would amplify oscillation)"
+        )
+    if s.dive_lean_tau_s < 0.0:
+        raise ValueError(
+            f"guidance.dive_lean_tau_s ({s.dive_lean_tau_s}) must be >= 0 "
+            "(low-pass time constant on the dive lean; negative is meaningless)"
         )
     if s.closure_i_gain < 0.0:
         raise ValueError(
