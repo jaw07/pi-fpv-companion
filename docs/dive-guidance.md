@@ -84,15 +84,19 @@ vector backward and stalls the approach. Pitch alone cannot both close and frame
 DIVE breaks the coupling:
 
 - **PITCH** is a forward (nose-down) commit lean, **adaptive** to the engagement:
-  *steep* (`dive_forward_deg` ≈ 25°) when descending onto a target **below** the
-  flight path — a fast, committed ground attack, and a steep nose-down also aims
-  the fixed camera down at the target, keeping it framed — but *gentle*
-  (`dive_climb_forward_deg` ≈ 6°) when level/climbing toward an **above** target,
-  where a steep lean would push it out the top faster than the (gravity-limited)
-  climb can re-centre it. It ramps gentle→steep with the commanded descent, is
-  clamped nose-down by DIVE's own steeper `dive_max_pitch_deg` (never backs off /
-  pitches up). This makes a ground attack fast (~20–30 s to impact in sim, ~3× the
-  gentle lean) without losing an above target. SITL-confirmed: STABILIZE tracks the
+  more forward (`dive_forward_deg` ≈ 14°) when descending onto a target **below**
+  the flight path, but *gentle* (`dive_climb_forward_deg` ≈ 6°) when level/climbing
+  toward an **above** target, where a steeper lean would push it out the top faster
+  than the (gravity-limited) climb can re-centre it. It ramps gentle→steep with the
+  commanded descent, clamped nose-down by DIVE's own `dive_max_pitch_deg` (never
+  backs off / pitches up). The forward lean on a below/ground target is deliberately
+  modest (was 25°, now 14°): a **steeper, less-forward dive reaches the target's
+  altitude sooner**, so its depression angle stays shallow and it stays inside the
+  fixed forward camera's FoV to impact — a fast-forward lean instead keeps the
+  aircraft high while closing horizontally, steepening the depression until a
+  *ground* target slides under the nose and out the bottom of the frame (the
+  terminal "overfly" seen in the Gazebo dive on a small ground target — tracking
+  now holds to a frame-filling strike). SITL-confirmed: STABILIZE tracks the
   steep RC-override lean within ~1° (cmd −25° → −24°, −30° → −29°). A **soft-start**
   (`dive_lean_ramp_s`) ramps the steep lean in over ~0.5 s at commit so the target
   doesn't slew across the frame faster than the tracker/filter can follow (without
