@@ -107,24 +107,44 @@ def test_closure_captures_engage_distance_and_winds_in_to_hold_it():
     # lean (nothing to correct), proving it holds distance rather than closing.
     cfg = _cfg(closure_p_gain=1.0, closure_i_gain=2.0)
     cs = ClosureState()
-    at_engage = compute_intent(_ft(1, h=200, ts=0.0), cfg, closure=cs)  # capture @ h=200
-    assert abs(at_engage.pitch_deg) < 1e-6      # at the engage distance -> no lean
-    p_early = compute_intent(_ft(1, h=120, ts=0.1), cfg, closure=cs).pitch_deg  # drifted far
     out = None
+    for i in range(cs.settle_n + 1):            # hold engage size through the settle window
+        out = compute_intent(_ft(1, h=200, ts=i * 0.1), cfg, closure=cs)
+    assert abs(out.pitch_deg) < 1e-6            # at the engage distance -> no lean
+    t = (cs.settle_n + 1) * 0.1
+    p_early = compute_intent(_ft(1, h=120, ts=t), cfg, closure=cs).pitch_deg  # drifted far
     for i in range(2, 30):
-        out = compute_intent(_ft(1, h=120, ts=i * 0.1), cfg, closure=cs)
+        out = compute_intent(_ft(1, h=120, ts=t + i * 0.1), cfg, closure=cs)
     assert out.pitch_deg < p_early - 1.0        # integral winds in to restore the gap
     assert out.pitch_deg >= -cfg.max_pitch_deg
+
+
+def test_closure_rejects_a_transient_first_frame_via_the_settle_median():
+    # The first detection after a fresh lock is often transient (motion blur, a
+    # GUIDED->STABILIZE attitude handoff, a partial bbox). Capturing it verbatim
+    # froze a wrong hold distance and the loop leaned hard to "close" a gap that
+    # was not there (the Gazebo -14.5deg engage slam). The settle median discards
+    # that one bad sample, so the held setpoint matches the steady size and a
+    # target sitting at the steady distance produces ~no lean.
+    cfg = _cfg(closure_p_gain=4.0, closure_i_gain=1.0)
+    cs = ClosureState()
+    compute_intent(_ft(1, h=120, ts=0.0), cfg, closure=cs)          # ONE bad frame: box looks huge
+    out = None
+    for i in range(1, cs.settle_n + 6):                             # then the true steady size
+        out = compute_intent(_ft(1, h=22, ts=i * 0.05), cfg, closure=cs)
+    assert cs.setpoint_inv == 1.0 / (22 / 576)                      # median froze on the steady size
+    assert abs(out.pitch_deg) < 1.0                                 # no dramatic engage lean
 
 
 def test_closure_state_resets_and_recaptures_on_a_new_lock():
     cfg = _cfg(closure_p_gain=1.0, closure_i_gain=2.0)
     cs = ClosureState()
-    compute_intent(_ft(1, h=200, ts=0.0), cfg, closure=cs)       # engage track 1 @ h=200
+    for i in range(cs.settle_n + 1):                             # engage track 1 @ h=200, settled
+        compute_intent(_ft(1, h=200, ts=i * 0.1), cfg, closure=cs)
     for i in range(1, 20):
-        compute_intent(_ft(1, h=120, ts=i * 0.1), cfg, closure=cs)   # drifted far -> winds
+        compute_intent(_ft(1, h=120, ts=1.0 + i * 0.1), cfg, closure=cs)   # drifted far -> winds
     assert cs.integral != 0.0 and cs.setpoint_inv is not None
-    compute_intent(_ft(2, h=80, ts=2.1), cfg, closure=cs)        # operator switched target
+    compute_intent(_ft(2, h=80, ts=4.1), cfg, closure=cs)        # operator switched target
     assert cs.integral == 0.0 and cs.track_id == 2               # windup cleared
     assert cs.setpoint_inv == 1.0 / (80 / 576)                   # new engage distance captured
 
@@ -136,9 +156,10 @@ def test_closure_anti_windup_bounds_the_integral_and_unwinds():
     # pinned nose-down.
     cfg = _cfg(closure_p_gain=1.0, closure_i_gain=5.0)
     cs = ClosureState()
-    compute_intent(_ft(1, h=300, ts=0.0), cfg, closure=cs)          # engage near (big box)
+    for i in range(cs.settle_n + 1):                                # engage near (big box), settled
+        compute_intent(_ft(1, h=300, ts=i * 0.1), cfg, closure=cs)
     for i in range(1, 200):
-        compute_intent(_ft(1, h=50, ts=i * 0.1), cfg, closure=cs)   # drifted far -> saturate
+        compute_intent(_ft(1, h=50, ts=1.0 + i * 0.1), cfg, closure=cs)   # drifted far -> saturate
     assert abs(cfg.closure_i_gain * cs.integral) <= cfg.max_pitch_deg + 1e-6
     out = None
     for i in range(80):
@@ -321,15 +342,17 @@ def test_dive_state_low_passes_the_lean():
 
 
 def test_dive_lean_smoothing_steadies_the_pitch():
-    # With the lean low-pass, a sudden change in the would-be lean (the adaptive lean
-    # flipping) only nudges the pitch — it doesn't snap. That's what kills the nod.
+    # The committed lean is steep for any below/level target and eases toward gentle
+    # only when the homing commands a CLIMB (an above target). A sudden flip from a
+    # below target (steep lean) to an above one (gentle) is smoothed by the low-pass
+    # so the pitch only nudges, not snaps. That's what kills the nod.
     from pi_fpv_companion.guidance.visual_servo import DiveState
     cfg = _dcfg(dive_lean_tau_s=1.0)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
     ds = DiveState()
-    p1 = compute_intent(_target(cx, cy + 200, ts=0.0), cfg, GuidanceMode.DIVE, dive=ds).pitch_deg
-    p2 = compute_intent(_target(cx, cy + 5, ts=0.05), cfg, GuidanceMode.DIVE, dive=ds).pitch_deg
-    p2_raw = compute_intent(_target(cx, cy + 5, ts=0.05), cfg, GuidanceMode.DIVE).pitch_deg
+    p1 = compute_intent(_target(cx, cy + 200, ts=0.0), cfg, GuidanceMode.DIVE, dive=ds).pitch_deg  # below -> steep
+    p2 = compute_intent(_target(cx, cy - 200, ts=0.05), cfg, GuidanceMode.DIVE, dive=ds).pitch_deg  # above -> gentle, smoothed
+    p2_raw = compute_intent(_target(cx, cy - 200, ts=0.05), cfg, GuidanceMode.DIVE).pitch_deg        # no smoothing
     assert abs(p2 - p1) < abs(p2_raw - p1)          # smoothed pitch changes far less
 
 

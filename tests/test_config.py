@@ -101,11 +101,12 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_forward_deg == 14.0     # steeper dive keeps a below/ground target framed to impact
     assert s.dive_climb_forward_deg == 6.0   # gentle when level/climbing
     assert s.dive_max_pitch_deg == 30.0   # DIVE's own steeper clamp
-    assert s.dive_vrate_gain == 12.0      # closed-loop vertical homing (P)
-    assert s.dive_vrate_damp == 3.0       # derivative damping (anti-wiggle)
+    assert s.dive_vrate_gain == 18.0      # closed-loop vertical homing (P); higher -> centred aim
+    assert s.dive_vrate_damp == 6.0       # derivative damping (anti-wiggle), scaled with the gain
     assert s.dive_lean_tau_s == 1.5       # lean low-pass (anti-nod, steady travel to target)
     assert s.dive_max_descent_mps == 8.0
     assert s.dive_max_climb_mps == 4.0
+    assert s.track_closure_below_falloff_frac == 0.15   # fade range-hold for a target below centre
 
 
 def test_rejects_out_of_range_angle_max(tmp_path):
