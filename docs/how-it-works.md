@@ -112,8 +112,9 @@ GuidanceIntent(roll_deg, pitch_deg, yaw_rate_dps, thrust, timestamp)
 - **TRACK:** pitch regulates **range** — bbox size vs `desired_bbox_frac`: too far
   → nose down (accelerate forward), too close → ease off / nose up (a collision
   guard, not a ram gain). `thrust = 0.5` (hold altitude).
-- **DIVE:** closed-loop constant-bearing homing. A *fixed* gentle forward lean
-  (`dive_forward_deg`) closes the gap, and a commanded vertical **rate**
+- **DIVE:** closed-loop constant-bearing homing. A forward lean closes the gap —
+  **steep** (fast) diving onto a below target, **gentle** when level/climbing
+  toward an above one (so it stays framed) — and a commanded vertical **rate**
   (`vertical_rate_mps`, tracked by the backend on `VFR_HUD.climb`) holds the
   target's vertical **frame position**. Holding a fixed frame point is a constant
   bearing → a collision course, so the flight path follows the line of sight and

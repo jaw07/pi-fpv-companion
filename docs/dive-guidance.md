@@ -141,10 +141,13 @@ falls back to an open-loop throttle map (degraded but still descends). There is
   (the aircraft holds, doesn't fly blind), and on reappearance it **re-acquires**
   and the dive resumes. A seeded Monte-Carlo over randomized noisy ground
   engagements hits ~93% (miss-distance p90 ~1.5 m).
-- **Tracker association** is IoU **or centroid-distance** gated: a distant target
-  is a tiny box (a person at >100 m is a few px wide), so under camera rotation it
-  shifts more than its own width → zero IoU. Distance gating keeps the lock that
-  pure IoU would drop every frame. Applies to both `iou` and `multi_iou` trackers.
+- **Tracker association** is IoU **or centroid-distance** gated, matched against a
+  constant-velocity **prediction**: a distant target is a tiny box (a person at
+  >100 m is a few px wide), so under camera rotation it shifts more than its own
+  width → zero IoU; distance gating keeps the lock pure IoU would drop every frame.
+  Matching the prediction (not the last position) also keeps identities through a
+  **crossing** — two targets passing in the image would otherwise swap ids (and
+  the lock would follow the wrong one). `iou` (single) and `multi_iou` (multi).
 - **Crossing speed**: a ground attack is fast (steep lean), but a target
   *translating laterally* faster than the aircraft's forward speed stays framed
   (yaw keeps up) yet isn't run down — a kinematic limit (you can't catch what's

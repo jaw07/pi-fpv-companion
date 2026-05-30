@@ -122,8 +122,9 @@ hold in ALT_HOLD); the Pi steers yaw, forward pitch, and (for DIVE) descent.
 TRACK follows and holds range; DIVE commits and moves altitude onto the target —
 **closing onto a target below, level, or above**. Because the camera is bolted to
 the airframe, pitch couples forward-closure with vertical aim, so DIVE uses a
-fixed gentle lean for closure and a commanded vertical **rate** (tracked on
-`VFR_HUD.climb`) to hold the target's frame position. Holding a fixed frame point
+forward lean for closure (steep/fast onto a below target, gentle when climbing to
+an above one) and a commanded vertical **rate** (tracked on `VFR_HUD.climb`) to
+hold the target's frame position. Holding a fixed frame point
 is a constant bearing → a collision course, so the flight path follows the line of
 sight regardless of target altitude. FOV-retention and dive geometry are verified
 by a closed-loop simulator (`tests/closed_loop_sim.py`, `scripts/sim_track_dive.py`)
