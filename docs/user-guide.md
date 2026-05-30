@@ -156,7 +156,9 @@ back.
 ### What each mode feels like
 - **STANDBY** — nothing different; you're flying.
 - **TRACK** — hands-off; it gently yaws and leans to keep the target centered and
-  the same distance away, holding height. Following, not attacking.
+  **the same distance away that you were when you flicked to TRACK**, holding
+  height. It maintains that gap as the target moves — following, not closing in,
+  not attacking.
 - **DIVE** — committed and aggressive: closes on the target and moves altitude
   onto it (descend / hold / climb depending on where it is). Short and decisive —
   you pull out by going STANDBY.
@@ -174,8 +176,9 @@ pi-fpv-companion`). One change at a time.
 | Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
 | Lead a moving target (less tail-chase) | `guidance.lead_time_s` → 0.2–0.6 s |
 | Pick among multiple targets | `tracker.type: multi_iou` + `fc.select_channel` (tap to cycle) |
-| Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down (default 0.15 ≈ 11 m) |
-| Hold the exact distance on a moving target | `guidance.closure_i_gain` (PI integral; 0 = pure-P, lags farther back) |
+| Follow distance | set by where you ARE when you flick to TRACK — it holds that gap (not a config) |
+| Hold the gap exactly on a moving target | `guidance.closure_i_gain` (PI integral; 0 = pure-P, lags farther back) |
+| STANDBY preview framing | `guidance.desired_bbox_frac` (preview only; doesn't change the flight hold) |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
 | DIVE to actually change altitude | `guidance.dive_vrate_gain` > 0 (0 = just leans); needs VFR_HUD |
 | Faster / harder dive (ground attack) | `guidance.dive_forward_deg` up (steeper lean) + `dive_max_pitch_deg` |

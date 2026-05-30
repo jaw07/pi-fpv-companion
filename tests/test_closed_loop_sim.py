@@ -76,34 +76,37 @@ def test_track_offaxis_target_is_centred_and_held_in_frame():
     assert tr.peak_excursion(W, H) < 1.0           # never pinned to an edge
 
 
-def test_track_converges_to_a_stable_hold_range():
-    w = _world(target_pos=(25.0, 0.0, 50.0))       # straight ahead
+def test_track_holds_the_engage_distance_not_a_fixed_standoff():
+    # TRACK captures the distance at engagement and holds it; it must NOT fly in to
+    # the nominal desired_bbox_frac. Locked on a stationary target 25 m ahead (well
+    # beyond the ~11.5 m nominal), it should stay ~25 m — maintain, not close.
+    w = _world(target_pos=(25.0, 0.0, 50.0))       # straight ahead, stationary
     tr = w.run(GuidanceMode.TRACK, duration_s=40.0)
-    hold = w.camera.hold_range(w.servo.desired_bbox_frac)
-    # Closes from 40 m and settles at the closure-regulated hold range.
-    assert tr.final_range < 30.0                   # it really did close
-    assert hold * 0.7 <= tr.final_range < 2.0 * hold   # ...to the hold band
-    # Range stops collapsing — it holds station, not a fly-through.
+    nominal = w.camera.hold_range(w.servo.desired_bbox_frac)   # ~11.5 m
+    assert abs(tr.final_range - 25.0) < 3.0        # held the engage distance...
+    assert tr.final_range > nominal + 5.0          # ...clearly did NOT fly in to the nominal
+    # Holds station — no drift.
     tail = [tk.range_m for tk in tr.ticks[-30:]]
     assert max(tail) - min(tail) < 2.0
 
 
-def test_track_pi_holds_standoff_on_a_receding_target():
-    # The "maintain distance" requirement: TRACK should hold the configured
-    # standoff on a target moving away, not lag farther and farther behind. The PI
-    # closure integral makes the steady-state range == the hold distance; pure-P
-    # (closure_i_gain=0) settles meaningfully farther back (a residual size error
-    # is needed to sustain the chase lean). Both run from the hold distance.
-    hold = CameraModel(W, H).hold_range(0.15)
-    pi = _world(target_pos=(hold, 0.0, 50.0), target_vel=(1.0, 0.0, 0.0)) \
+def test_track_pi_holds_the_engage_distance_on_a_receding_target():
+    # The "maintain distance" requirement: engaged at 20 m on a target that then
+    # moves away at 1 m/s, TRACK keeps the ~20 m gap (matches its motion) rather
+    # than lagging farther and farther back. The PI integral holds it exactly;
+    # pure-P (closure_i_gain=0) settles meaningfully farther back (a residual size
+    # error is needed to sustain the chase lean). 20 m is the ENGAGE distance, not
+    # the nominal desired_bbox_frac — proving it holds the gap, not a fixed standoff.
+    start = 20.0
+    pi = _world(target_pos=(start, 0.0, 50.0), target_vel=(1.0, 0.0, 0.0)) \
         .run(GuidanceMode.TRACK, duration_s=70.0)
-    pure_p = _world(target_pos=(hold, 0.0, 50.0), target_vel=(1.0, 0.0, 0.0),
+    pure_p = _world(target_pos=(start, 0.0, 50.0), target_vel=(1.0, 0.0, 0.0),
                     closure_i_gain=0.0).run(GuidanceMode.TRACK, duration_s=70.0)
-    assert abs(pi.final_range - hold) < 1.5          # PI settles AT the hold distance
-    assert pure_p.final_range > pi.final_range + 3.0  # pure-P lags well beyond it
+    assert abs(pi.final_range - start) < 2.0          # PI holds the 20 m engage gap
+    assert pure_p.final_range > pi.final_range + 2.0  # pure-P lags farther back
     assert not pi.lost_before_impact(2.0)             # stays framed throughout
     tail = [tk.range_m for tk in pi.ticks[-60:]]
-    assert max(tail) - min(tail) < 1.5                # settled, no limit cycle
+    assert max(tail) - min(tail) < 2.0                # settled, no limit cycle
 
 
 def test_track_keeps_a_crossing_target_within_yaw_authority():
