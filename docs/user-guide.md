@@ -32,16 +32,21 @@ bash scripts/install-pi.sh      # installs to /opt/pi-fpv-companion, sets up the
 Say yes to the IMX500 firmware and the boot config when asked, then **reboot**.
 
 ### c. Set up the flight controller (ArduCopter 4.6+)
-In Mission Planner → Full Parameter List, set and reboot the FC:
+On every boot the companion **validates the FC params it needs and writes any that
+are wrong** (logged at startup; disable with `fc.enforce_params_on_start: false`).
+It auto-enforces **`ANGLE_MAX`** (= `fc.angle_max_deg`, so commanded lean = actual
+lean) and **`RC7_OPTION`/`RC9_OPTION` = 0** (so the FC leaves the companion's mode
++ select channels alone). Add more with `fc.enforce_params: {SR2_EXTRA2: 5, ...}`.
+
+What it will **not** touch (set these yourself in Mission Planner, once):
 
 | Param | Value | Meaning |
 |-------|-------|---------|
-| `SERIALn_PROTOCOL` / `_BAUD` | `2` / `115` | MAVLink on the UART wired to the Pi |
-| `SRn_EXTRA2` | `≥ 5` | streams climb rate (the companion holds height with it) |
-| `ANGLE_MAX` | `4500` | 45° max lean — must match `fc.angle_max_deg` |
-| `RC7_OPTION` | `0` | leave ch7 alone — it's the companion's engage switch |
-| flight-mode switch | → **STABILIZE** | the mode the companion flies in |
+| `SERIALn_PROTOCOL` / `_BAUD` | `2` / `115` | MAVLink on the UART wired to the Pi (the link itself — can't auto-fix the port it's on) |
+| `SRn_EXTRA2` | `≥ 5` | streams climb rate / attitude (or add to `enforce_params`) |
+| flight-mode switch | → **STABILIZE** | the mode the companion flies in (your modes, not ours) |
 | ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
+| ch9 (a spare input, e.g. rocker) | cycle target (tap) | maps in FreedomTX → ch9 |
 
 Keep the FC's own **RC-loss and battery failsafes** configured — they're your
 backstop if everything else fails.
@@ -57,8 +62,15 @@ fc:
   rc_yaw_sign: 1
 guidance:
   classes_of_interest: [person, car, truck, boat]   # what to lock onto
-  dive_descent: 0.0           # 0 = DIVE just leans in. Set 0.3–0.5 to actually drop.
+  dive_vrate_gain: 17.0       # closed-loop dive vertical homing (0 = DIVE just
+                              # leans in). See dive-guidance.md.
 ```
+
+> DIVE **closes onto a target below, level, or above you** — it commits a gentle
+> forward lean and uses the throttle to hold the target's frame position, so the
+> flight path follows the line of sight (constant-bearing homing). See
+> `docs/dive-guidance.md`. The shipped `config/imx500.yaml` already enables the
+> tuned dive; it needs `VFR_HUD` streaming (`SR*_EXTRA2`) to close the loop.
 
 ---
 
@@ -103,7 +115,16 @@ should see the live feed with boxes on detected objects. Switch **down** (STANDB
 **2. Take off and fly — normally.** It's just your STABILIZE quad right now; the
 companion is asleep. Get comfortable, climb to a safe height with margin below you.
 
-**3. Line up.** Put your target somewhere in the frame and point roughly at it.
+**3. Line up — and pick your target.** Put targets in the frame. With the
+multi-target tracker (`tracker.type: multi_iou`, the IMX500 default) the HUD shows
+**every** detection (faint boxes) in STANDBY, with the locked one bold. Tap your
+**select input** (`fc.select_channel` — on the Tango 2 the top switches are full,
+so map a spare input to **ch9**) to **cycle the lock** to the next target.
+Selection works **only in STANDBY** — whatever is locked when you flick to TRACK
+is **frozen** through TRACK and DIVE, so a stray bump can't swap targets
+mid-engagement (and if your target is lost while committed it **holds**, it never
+silently re-targets). Choose before you commit; to re-choose, flick back to
+STANDBY. (No select channel wired? It auto-locks the highest-confidence detection.)
 
 **4. Hand it the wheel — flick to TRACK (middle).** Now *let go of the sticks.*
 The companion yaws to center the target, leans in to follow, and holds your
@@ -115,9 +136,16 @@ smooth, hands-off chase that keeps the target the same size in frame.
 **5. Follow as long as you like.** Re-take the sticks anytime by flicking to
 STANDBY. TRACK won't dive — it just follows and holds range.
 
-**6. Commit — flick to DIVE (up).** It noses down hard toward the target. With
-`dive_descent` set above 0 it also drops altitude onto it; at 0 it only leans in.
-There is **no automatic pull-up** — *you* end the dive.
+**6. Commit — flick to DIVE (up).** It commits to the target and closes, moving
+altitude onto it — **dives** onto a target below you, **holds** for one level
+ahead, **climbs** toward one above you. It works this out from where the target
+sits in the frame (constant-bearing homing; see `docs/dive-guidance.md`). With
+`dive_vrate_gain` at 0 it only leans in. There is **no automatic pull-up** — *you*
+end the dive.
+
+> A fixed forward camera can only *see* a ground target once it's far enough
+> ahead (shallow enough); something steeply below you is below the frame. Engage
+> from a moderate altitude for the most reliable closure.
 
 **7. Bail out / finish — flick to STANDBY (down).** Instant manual control. Pull
 up, recover, fly home.
@@ -129,8 +157,9 @@ back.
 - **STANDBY** — nothing different; you're flying.
 - **TRACK** — hands-off; it gently yaws and leans to keep the target centered and
   the same distance away, holding height. Following, not attacking.
-- **DIVE** — committed and aggressive: nose down toward the target, descending if
-  you enabled it. Short and decisive — you pull out by going STANDBY.
+- **DIVE** — committed and aggressive: closes on the target and moves altitude
+  onto it (descend / hold / climb depending on where it is). Short and decisive —
+  you pull out by going STANDBY.
 
 ---
 
@@ -143,10 +172,15 @@ pi-fpv-companion`). One change at a time.
 |-----------|--------|
 | It turns the wrong way | a `rc_*_sign` is flipped — **fix before flying** (Part 2) |
 | Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
+| Lead a moving target (less tail-chase) | `guidance.lead_time_s` → 0.2–0.6 s |
+| Pick among multiple targets | `tracker.type: multi_iou` + `fc.select_channel` (tap to cycle) |
 | Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
-| DIVE to actually lose altitude | `guidance.dive_descent` → 0.3–0.5 |
-| Steeper / shallower dive | `dive_descent` (drop) + `max_pitch_deg` (forward) |
+| DIVE to actually change altitude | `guidance.dive_vrate_gain` > 0 (0 = just leans); needs VFR_HUD |
+| Faster / harder dive (ground attack) | `guidance.dive_forward_deg` up (steeper lean) + `dive_max_pitch_deg` |
+| Faster / slower dive vertical | `dive_max_descent_mps` / `dive_max_climb_mps` |
+| DIVE loses an above target out the top | lower `dive_climb_forward_deg` (gentler climb lean) |
+| DIVE won't descend | confirm `VFR_HUD` streams (`SR*_EXTRA2`); the rate loop needs it |
 | It holds altitude poorly | confirm `SRn_EXTRA2` is streaming; nudge `stab_hover_throttle_us` |
 | Altitude bounces/hunts | lower `stab_hover_learn_kp`, then `stab_hover_learn_gain` |
 | Stop chasing wrong objects | trim `classes_of_interest`; raise `safety.min_track_quality` |

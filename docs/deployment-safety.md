@@ -43,8 +43,12 @@ A bare FPV quad has no GPS / EKF position estimate. The backend injects AETR
 sticks via `RC_CHANNELS_OVERRIDE` — needs only baro + IMU, no GPS, no EKF origin
 (SITL-proven on 4.6.3). No SET_ATTITUDE_TARGET, no GUIDED, no `GUID_OPTIONS`.
 
-- [ ] FC firmware: ArduCopter 4.6+. Set the FC's **`ANGLE_MAX`** to match
-      `fc.angle_max_deg` (default 45°) so commanded lean = actual lean.
+- [ ] FC firmware: ArduCopter 4.6+. On boot the companion **validates + writes**
+      the FC params it needs — `ANGLE_MAX` (= `fc.angle_max_deg`, so commanded lean
+      = actual lean) and the companion RC channels' `*_OPTION = 0` — verifying each
+      write. **Check the startup log** (`ok`/`set`/`write-fail` per param). It does
+      NOT touch serial/baud (the link it's on) or flight modes/failsafes — set
+      those yourself. Disable with `fc.enforce_params_on_start: false`.
 - [ ] **`control_mode: stabilize` (default) has no FC altitude hold** — throttle
       is direct. TRACK altitude is held by the companion's **adaptive hover**
       (a vertical-velocity PI loop on `VFR_HUD.climb`: it learns the hover throttle
@@ -55,6 +59,17 @@ sticks via `RC_CHANNELS_OVERRIDE` — needs only baro + IMU, no GPS, no EKF orig
       DIVE descends until released (SITL: ~16 m/s, 77° path) — intentional for a
       diving craft. Fly with altitude margin and a finger on the engage switch.
       Bench-verify the learner holds level before trusting it.
+- [ ] **Closed-loop DIVE vertical-rate sign** (`stabilize` only) — the dive's
+      throttle loop tracks a commanded climb rate on `VFR_HUD.climb`. A reversed
+      throttle channel or inverted climb sign makes the loop **diverge** (commands
+      descent → climbs → commands more descent → flyaway). This is as dangerous as
+      a yaw-sign inversion. **Validate in SITL before flight**:
+      `scripts/validate_vrate_sitl.py` must show a commanded **−3 m/s descends**
+      and **+2 m/s climbs** (not reversed). The bench check (props off) cannot test
+      this — it needs a hover; confirm in SITL or a cautious tethered/altitude-
+      margin hover with a finger on the engage switch. **Also requires `VFR_HUD`**;
+      without it the dive falls back to an open-loop throttle map (still descends,
+      but uncalibrated).
 - [ ] `control_mode: althold` alternative: throttle = climb rate (0.5 = hold via
       baro), descent capped at `PILOT_SPEED_DN`. Safer altitude, gentle dive only.
 - [ ] **Stick signs** (`rc_roll_sign` / `rc_pitch_sign` / `rc_yaw_sign`):

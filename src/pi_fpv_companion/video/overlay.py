@@ -17,6 +17,7 @@ _CROSSHAIR_COLOR = (200, 200, 200)
 _BBOX_ACTIVE = (0, 255, 0)
 _BBOX_MUTED = (0, 165, 255)
 _BBOX_LOST = (96, 96, 96)
+_BBOX_CANDIDATE = (180, 180, 60)   # other selectable detections (multi-target)
 _HUD_TEXT = (255, 255, 255)        # data text: white on a black outline (below)
 _OUTLINE = (0, 0, 0)
 # Mode status colours (BGR): standby grey, track green, dive red.
@@ -45,6 +46,7 @@ def draw_overlay(
     switch: SwitchState,
     armed: bool,
     gated: GateResult,
+    tracks=None,
 ) -> None:
     h, w = image.shape[:2]
     cx, cy = w // 2, h // 2
@@ -52,6 +54,19 @@ def draw_overlay(
 
     cv2.line(image, (cx - _CROSSHAIR_LEN, cy), (cx + _CROSSHAIR_LEN, cy), _CROSSHAIR_COLOR, 1)
     cv2.line(image, (cx, cy - _CROSSHAIR_LEN), (cx, cy + _CROSSHAIR_LEN), _CROSSHAIR_COLOR, 1)
+
+    # Candidate targets (multi-target tracker): show every detection faintly so the
+    # operator can see what's selectable; the locked one is drawn boldly below.
+    if tracks:
+        locked = target.track_id if target is not None else None
+        for tr in tracks:
+            if tr.track_id == locked:
+                continue
+            d = tr.detection
+            cv2.rectangle(image, (int(d.x - d.w / 2), int(d.y - d.h / 2)),
+                          (int(d.x + d.w / 2), int(d.y + d.h / 2)), _BBOX_CANDIDATE, 1)
+            _put_text(image, f"id{tr.track_id}",
+                      (int(d.x - d.w / 2), max(my, int(d.y - d.h / 2) - 4)), _BBOX_CANDIDATE)
 
     if target is not None:
         d = target.detection

@@ -76,6 +76,8 @@ fc:
   stab_hover_learn: true
   stab_hover_learn_kp: 50.0     # PWM per (m/s) climb — immediate damping (anti-oscillation)
   stab_hover_learn_gain: 20.0   # Ki: PWM per (m/s) climb per second — slow hover trim
+  stab_hover_learn_band: 0.05   # hold deadband for the thrust-stick vertical path
+                                # (the closed-loop dive commands a rate, not a stick)
   stab_hover_min_us: 1200
   stab_hover_max_us: 1700
   angle_max_deg: 45.0       # full roll/pitch stick = this lean (match FC ANGLE_MAX)
@@ -110,20 +112,23 @@ guidance:
   closure_p_gain: 50.0      # deg pitch per unit size-fraction error
                             # far(size~0)-> -15deg clamp (full approach); hold->0;
                             # too close -> +deg (nose up, back off — collision guard)
-  # DIVE only: keep target centred (pitch P on vertical pixel error) + forward
-  # lean to close. TRACK uses the range-hold closure above instead.
-  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
   # TRACK: re-centre the target vertically as a forward lean tilts the fixed
   # camera down (target rises in frame). Added on top of range-hold; 0 disables.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
   track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK)
-  dive_forward_deg: 10.0    # forward (nose-down) lean while diving
-  # Gravity dive (DIVE only): descend to trade altitude for speed, gated on
-  # horizontal aim. 0.0 = disabled (hold altitude). thrust drives the throttle
-  # stick (STABILIZE: direct cut; ALT_HOLD: climb-rate, capped by PILOT_SPEED_DN)
-  # via RC override — no GUID_OPTIONS. YOU manage the altitude floor; the
-  # flight-mode switch is the abort. Bench-validate before enabling.
-  dive_descent: 0.0
-  dive_center_frac: 0.30
+  # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
+  # Fixed forward lean (PITCH) + a commanded vertical RATE (THROTTLE) that holds
+  # the target's vertical frame position → the flight path follows the line of
+  # sight onto a target below, level, or above. dive_vrate_gain 0 = vertical
+  # homing off (DIVE just leans in). Bench/SITL-validate.
+  dive_forward_deg: 25.0    # steep lean at full descent (fast ground attack)
+  dive_climb_forward_deg: 6.0   # gentle lean when level/climbing (keeps an above target framed)
+  dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than TRACK max_pitch_deg)
+  dive_lean_ramp_s: 0.5      # soft-start: ramp the steep lean in over this many s at commit
+  dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
+  dive_vrate_gain: 0.0      # m/s of climb command per unit normalised vert error (0 = off)
+  dive_max_descent_mps: 8.0 # clamp on commanded descent
+  dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides (audit §6). A mirrored/flipped camera inverts these ->
   # divergent positive feedback ("spins away from target"). MUST be
   # bench-validated — see docs/deployment-safety.md §4. Flip to -1 if the

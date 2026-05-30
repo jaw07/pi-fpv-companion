@@ -99,6 +99,14 @@ config flip (`tracker.cv2_backend: csrt`) for slow targets on a faster board
 only. On the IMX500 path the sensor emits detections every frame, so a heavy
 single-object tracker is wasted work — we use IoU association instead.
 
+**Multi-target selection** (`tracker.type: multi_iou`, the IMX500 default):
+tracks *every* detection with a stable id (the HUD shows them all in STANDBY),
+and a momentary RC channel (`fc.select_channel`) cycles which one is locked. The
+selection is held across frames and across the mode switch, so the operator picks
+a target in STANDBY and it stays locked through TRACK and DIVE. Guidance can also
+**lead** a moving target (`guidance.lead_time_s`) — aim at the intercept rather
+than tail-chase.
+
 ## Two FC backends
 
 | Backend    | Protocol  | Control surface                                  | Switch read   |
@@ -110,6 +118,17 @@ The guidance layer emits one backend-agnostic intent —
 `GuidanceIntent(roll_deg, pitch_deg, yaw_rate_dps, thrust, timestamp)` — and
 each backend translates. Thrust `0.5` ≈ hold (hover throttle in STABILIZE; baro
 hold in ALT_HOLD); the Pi steers yaw, forward pitch, and (for DIVE) descent.
+
+TRACK follows and holds range; DIVE commits and moves altitude onto the target —
+**closing onto a target below, level, or above**. Because the camera is bolted to
+the airframe, pitch couples forward-closure with vertical aim, so DIVE uses a
+forward lean for closure (steep/fast onto a below target, gentle when climbing to
+an above one) and a commanded vertical **rate** (tracked on `VFR_HUD.climb`) to
+hold the target's frame position. Holding a fixed frame point
+is a constant bearing → a collision course, so the flight path follows the line of
+sight regardless of target altitude. FOV-retention and dive geometry are verified
+by a closed-loop simulator (`tests/closed_loop_sim.py`, `scripts/sim_track_dive.py`)
+and SITL. See `docs/dive-guidance.md`.
 
 **Why RC override into STABILIZE (GPS-denied):** velocity setpoints
 (`SET_POSITION_TARGET_LOCAL_NED`) need an EKF position solution a GPS-denied quad

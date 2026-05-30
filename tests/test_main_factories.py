@@ -14,6 +14,7 @@ from pi_fpv_companion.main import (
     _build_detector,
     _build_fc,
     _build_tracker,
+    _enforce_fc_params,
     _resolve_class_ids,
 )
 
@@ -92,6 +93,37 @@ def test_legacy_kcf_tracker_type_alias_still_works():
     from pi_fpv_companion.track.cv2_tracker import ClassicalCv2Tracker
     assert isinstance(tracker, ClassicalCv2Tracker)
     assert tracker.backend == "kcf"
+
+
+def test_enforce_fc_params_builds_desired_set_from_config():
+    # Startup validation must enforce ANGLE_MAX (= angle_max_deg×100) and the
+    # companion's RC channels' *_OPTION=0, plus any explicit overrides.
+    cfg = load(_CONFIG_ROOT / "imx500.yaml")        # switch ch7, select ch9, angle_max 45
+    cfg.fc.enforce_params = {"SR2_EXTRA2": 5}
+
+    class StubFC:
+        def __init__(self): self.seen = None
+        def ensure_params(self, desired): self.seen = desired; return {k: "ok" for k in desired}
+
+    fc = StubFC()
+    _enforce_fc_params(cfg, fc)
+    assert fc.seen["ANGLE_MAX"] == 4500
+    assert fc.seen["RC7_OPTION"] == 0               # companion mode switch
+    assert fc.seen["RC9_OPTION"] == 0               # target-select channel
+    assert fc.seen["SR2_EXTRA2"] == 5               # operator override
+
+
+def test_enforce_fc_params_skipped_when_disabled():
+    cfg = load(_CONFIG_ROOT / "imx500.yaml")
+    cfg.fc.enforce_params_on_start = False
+
+    class StubFC:
+        def __init__(self): self.called = False
+        def ensure_params(self, desired): self.called = True; return {}
+
+    fc = StubFC()
+    _enforce_fc_params(cfg, fc)
+    assert fc.called is False
 
 
 def test_classes_of_interest_propagates_to_nanodet_config():

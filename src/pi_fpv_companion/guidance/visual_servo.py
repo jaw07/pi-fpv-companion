@@ -4,7 +4,9 @@ backend-agnostic ATTITUDE intent (the GPS-denied control surface).
   horizontal pixel error -> yaw RATE   (turn the nose toward the target)
   "approach"             -> forward PITCH (nose-down lean = accelerate at it)
   roll                   -> 0           (pure pursuit; lateral via yaw only)
-  thrust                 -> neutral     (FC holds altitude in v1)
+  thrust                 -> neutral in TRACK (FC/adaptive-hover holds altitude);
+                            in DIVE it moves altitude onto the target — see the
+                            agnostic DIVE block below and docs/dive-guidance.md
 
 Yaw is P + velocity FEEDFORWARD (audit §4): pure-P against a moving target
 leaves a structural steady-state lag (the target sits permanently off-centre,
@@ -44,19 +46,44 @@ class ServoConfig:
     # gentler) track_vcenter_gain ON TOP of range-hold so a forward lean — which
     # tilts the fixed camera down and makes the target rise in frame — is corrected
     # back toward centre instead of letting the target drift out the top.
-    pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (DIVE aim)
+    # Lead pursuit: aim at where the target WILL be (current + lead_time · image
+    # velocity) instead of where it is. Shortens the intercept path against a
+    # crossing target (pure pursuit tail-chases). The alpha-beta filter supplies
+    # the velocity. 0 = pure pursuit. Applies to yaw and the DIVE vertical aim.
+    lead_time_s: float = 0.0
+    pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (TRACK/DIVE aim)
     track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
                                   # (keeps target centred as lean tilts the camera; 0 = off)
-    dive_forward_deg: float = 10.0  # constant forward (nose-down) lean while diving
-    # Gravity dive (DIVE only): command a descent (thrust below neutral) to trade
-    # altitude for speed, SCALED by how well-centred the target is — full commit
-    # dead-centre, zero once it drifts past dive_center_frac. 0 = disabled
-    # (altitude held). thrust maps to the throttle stick (STABILIZE: direct cut;
-    # ALT_HOLD: climb-rate-down, capped by PILOT_SPEED_DN) — RC override, NO
-    # GUID_OPTIONS. YOU own the altitude floor; the flight-mode switch is the
-    # abort. Bench-validate before flight.
-    dive_descent: float = 0.0       # thrust-down at full commit (0..0.5 below neutral)
-    dive_center_frac: float = 0.30  # normalised centring error within which to commit power
+    # DIVE forward lean is ADAPTIVE to the engagement: STEEP when descending onto a
+    # target BELOW the flight path (a fast, committed ground attack — and a steep
+    # nose-down also points the fixed camera down at the target, keeping it framed),
+    # but GENTLE when level/climbing toward an ABOVE target (a steep lean there
+    # over-depresses the camera and pushes the target out the top faster than the
+    # gravity-limited climb can re-centre it). Ramps from gentle→steep with the
+    # commanded descent rate. dive_max_pitch_deg is DIVE's own (steeper) clamp,
+    # separate from the gentler TRACK max_pitch_deg.
+    dive_forward_deg: float = 10.0       # STEEP lean at full descent (fast ground attack)
+    dive_climb_forward_deg: float = 6.0  # gentle lean when level / climbing (keeps it framed)
+    dive_max_pitch_deg: float = 30.0     # DIVE nose-down clamp (steeper than TRACK)
+    # Soft-start: ramp the steep lean in over this many seconds at DIVE commit so
+    # the target doesn't slew across the frame faster than the tracker/filter can
+    # follow (a snap to full lean briefly out-runs the velocity estimate). 0 = snap.
+    dive_lean_ramp_s: float = 0.5
+    dive_center_frac: float = 0.30  # normalised horizontal aim error within which to commit vertical
+    # --- DIVE closed-loop vertical (constant-bearing homing) ---------------------
+    # The fixed camera couples pitch (forward closure) and vertical aim. To break
+    # the coupling, DIVE uses PITCH for forward closure and the THROTTLE (a
+    # commanded vertical RATE the backend tracks against VFR_HUD.climb) to hold the
+    # target's vertical FRAME position. Holding a target at a fixed frame point is a
+    # constant bearing → a collision course, so the flight path follows the line of
+    # sight automatically — descend onto a target below, hold for one level ahead,
+    # climb toward one above. No attitude/FoV needed; the frame error IS the signal.
+    #   vertical_rate = -gain * (vertical frame error / half-frame), clamped, then
+    #   gated on horizontal aim (centre yaw before committing power).
+    # 0 gain = disabled (altitude held; DIVE just leans in). Bench/SITL-validate.
+    dive_vrate_gain: float = 0.0       # m/s of climb command per unit normalised vert error
+    dive_max_descent_mps: float = 8.0  # clamp on commanded descent (+ down)
+    dive_max_climb_mps: float = 4.0    # clamp on commanded climb (gravity-limited, < descent)
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
     # inverts the error->command sign -> divergent positive feedback ("spins
     # away from target"). MUST be bench-validated (docs/deployment-safety.md §4).
@@ -73,19 +100,32 @@ def _deadband(v: float, dz: float) -> float:
 
 
 def compute_intent(
-    target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK
+    target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK,
+    dive_elapsed_s: float = 1e9,
 ) -> GuidanceIntent:
     """Map the filtered target's pixel state to an attitude intent.
 
-    TRACK holds range (closure regulated to desired_bbox_frac); DIVE commits and
-    saturates forward lean to close + dive. Yaw centring is identical in both."""
+    `dive_elapsed_s` is the time since DIVE was engaged; it soft-starts the steep
+    lean (dive_lean_ramp_s). Defaults to fully ramped, so TRACK and any caller that
+    doesn't track it are unaffected.
+
+    TRACK holds range (closure regulated to desired_bbox_frac) at constant altitude.
+    DIVE commits: PITCH leans forward to close, and a commanded vertical RATE
+    (constant-bearing homing — the backend tracks it on VFR_HUD.climb) holds the
+    target's vertical frame position so the flight path follows the line of sight,
+    moving altitude onto the target whether it is below, level, or above. Yaw
+    centring is identical in both."""
     cx = cfg.frame_width / 2.0
     det = target.detection
+    # Lead pursuit: aim at the target's predicted position (current + lead · image
+    # velocity), so yaw/dive aim at the intercept instead of tail-chasing a crosser.
+    aim_x = det.x + cfg.lead_time_s * target.vx_px_s
+    aim_y = det.y + cfg.lead_time_s * target.vy_px_s
 
     # Horizontal: P on the centring error + feedforward on the target's image
     # velocity. P alone leaves a structural lag against a moving target; the
     # feedforward (target moving right -> pre-emptively yaw right) cancels it.
-    dx = _deadband(det.x - cx, cfg.pixel_deadzone_px)
+    dx = _deadband(aim_x - cx, cfg.pixel_deadzone_px)
     yaw_rate = _clamp(
         cfg.yaw_sign * (cfg.yaw_p_gain * dx + cfg.yaw_ff_gain * target.vx_px_s),
         -cfg.max_yaw_rate_dps, cfg.max_yaw_rate_dps,
@@ -100,32 +140,43 @@ def compute_intent(
     #     hold -> ~0
     #     too close -> positive pitch (nose up, back off) — collision guard
     thrust = HOVER_THRUST
+    vertical_rate_mps = None
     if mode is GuidanceMode.DIVE:
-        # Commit, but KEEP IT CENTRED: pitch tracks the vertical pixel error
-        # (target low in frame -> nose down, high -> nose up) exactly as yaw
-        # tracks the horizontal one, plus a constant forward lean so it closes.
-        # Bbox size / range-hold is ignored — this is the dive.
         cy = cfg.frame_height / 2.0
-        dy = _deadband(det.y - cy, cfg.pixel_deadzone_px)
-        pitch = _clamp(
-            -cfg.pitch_sign * cfg.pitch_p_gain * dy - cfg.dive_forward_deg,
-            -cfg.max_pitch_deg, cfg.max_pitch_deg,
-        )
-        # Gravity dive: trade altitude for speed. The target is normally BELOW us
-        # (we attack from above) so "low in frame" is the expected, wanted state —
-        # pitch aims down at it and we descend toward it. So gate the descent on
-        # HORIZONTAL aim (don't dive sideways past it — let yaw centre first), and
-        # only ease it off if the target is actually ABOVE centre (above us), where
-        # descending would drop away from it.
-        ex = (det.x - cx) / (cfg.frame_width / 2.0)   # +right
-        ey = (det.y - cy) / (cfg.frame_height / 2.0)  # +below us, -above us
-        if cfg.dive_center_frac > 0:
-            commit = _clamp(1.0 - abs(ex) / cfg.dive_center_frac, 0.0, 1.0)
-            if ey < 0.0:   # target above us -> taper descent to zero
-                commit *= _clamp(1.0 + ey / cfg.dive_center_frac, 0.0, 1.0)
-        else:
-            commit = 0.0
-        thrust = _clamp(HOVER_THRUST - cfg.dive_descent * commit, 0.0, 1.0)
+        # VERTICAL: constant-bearing homing. Command a climb rate that drives the
+        # target's vertical frame error to zero — holding it at a fixed frame point
+        # is a constant bearing, i.e. a collision course, so the flight path tracks
+        # the LOS for a target below / level / above. Below centre (drifted low) ->
+        # descend (raises it back); above centre -> climb. Gated on horizontal aim
+        # so we centre yaw before committing power. The backend tracks the rate on
+        # VFR_HUD.climb (its P-loop's steady-state error is integrated out here).
+        e_y = _deadband(aim_y - cy, cfg.pixel_deadzone_px) / (cfg.frame_height / 2.0)
+        ex = (aim_x - cx) / (cfg.frame_width / 2.0)
+        commit = _clamp(1.0 - abs(ex) / cfg.dive_center_frac, 0.0, 1.0) \
+            if cfg.dive_center_frac > 0 else 0.0
+        if cfg.dive_vrate_gain > 0.0:
+            vertical_rate_mps = commit * _clamp(
+                -cfg.dive_vrate_gain * e_y,
+                -cfg.dive_max_descent_mps, cfg.dive_max_climb_mps,
+            )
+
+        # PITCH: forward commit lean, ADAPTIVE to the descent. Steep (fast) when
+        # diving onto a below target — a steep nose-down also aims the fixed camera
+        # down at it, keeping it framed. Gentle when level/climbing toward an above
+        # target — there a steep lean would push it out the top. Ramps gentle→steep
+        # as the commanded descent rises (full steep by ~1/4 of max descent). The
+        # throttle (vertical rate), not pitch, does the vertical aiming.
+        descend_mps = (-vertical_rate_mps) if vertical_rate_mps is not None \
+            else (cfg.dive_max_descent_mps if e_y > 0.0 else 0.0)
+        ramp = max(1e-3, 0.25 * cfg.dive_max_descent_mps)
+        descent_frac = _clamp(descend_mps / ramp, 0.0, 1.0)
+        # Soft-start: at commit, ramp the steep contribution in over dive_lean_ramp_s
+        # so the camera doesn't slew faster than the filter can track.
+        soft = _clamp(dive_elapsed_s / cfg.dive_lean_ramp_s, 0.0, 1.0) \
+            if cfg.dive_lean_ramp_s > 0.0 else 1.0
+        lean = cfg.dive_climb_forward_deg \
+            + (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * descent_frac * soft
+        pitch = _clamp(-lean, -cfg.dive_max_pitch_deg, 0.0)
     else:
         # TRACK: range-hold (pitch ~ apparent-size error) PLUS a vertical-centring
         # term. The fixed camera tilts with the airframe, so leaning forward to
@@ -133,7 +184,7 @@ def compute_intent(
         # re-centre it (limiting the lean) so it stays in view. The two share the
         # pitch budget — closure dominates, vcentre keeps the target from drifting
         # out the top. (Accommodating a target at a different *altitude* is a
-        # throttle job, not pitch — see docs camera-pitch-coupling.)
+        # throttle job, not pitch — see docs/dive-guidance.md.)
         cy = cfg.frame_height / 2.0
         dy = _deadband(det.y - cy, cfg.pixel_deadzone_px)
         size_frac = (det.h / cfg.frame_height) if cfg.frame_height else 0.0
@@ -150,4 +201,5 @@ def compute_intent(
         yaw_rate_dps=yaw_rate,
         thrust=thrust,
         timestamp=target.timestamp,
+        vertical_rate_mps=vertical_rate_mps,
     )

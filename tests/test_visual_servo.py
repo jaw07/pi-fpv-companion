@@ -1,3 +1,5 @@
+import pytest
+
 from pi_fpv_companion.types import Detection, FilteredTarget, GuidanceMode
 from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
 
@@ -102,6 +104,20 @@ def test_velocity_feedforward_adds_yaw_for_a_moving_centred_target():
     assert compute_intent(fast, cfg).yaw_rate_dps == cfg.max_yaw_rate_dps
 
 
+def test_lead_pursuit_aims_ahead_of_a_crossing_target():
+    # With lead, a target moving right is aimed at where it WILL be → more yaw-right
+    # than pure pursuit on the same instantaneous position.
+    cx, cy = 360.0, 288.0
+    moving = _target(cx + 30, cy, vx=300.0)            # right of centre, moving right
+    pure = compute_intent(moving, _cfg(yaw_ff_gain=0.0, lead_time_s=0.0)).yaw_rate_dps
+    lead = compute_intent(moving, _cfg(yaw_ff_gain=0.0, lead_time_s=0.3)).yaw_rate_dps
+    assert lead > pure > 0
+    # A centred target moving right → pure pursuit sees zero error; lead aims right.
+    centred = _target(cx, cy, vx=300.0)
+    assert compute_intent(centred, _cfg(yaw_ff_gain=0.0, lead_time_s=0.3)).yaw_rate_dps > 0
+    assert compute_intent(centred, _cfg(yaw_ff_gain=0.0, lead_time_s=0.0)).yaw_rate_dps == 0
+
+
 def test_intent_timestamp_matches_target_timestamp():
     cfg = _cfg()
     out = compute_intent(_target(cfg.frame_width / 2, cfg.frame_height / 2, ts=42.0), cfg)
@@ -129,61 +145,90 @@ def test_pitch_sign_inversion_flips_closure_direction():
 
 # ---- DIVE vs TRACK modes ----
 
-def test_dive_leans_forward_when_centered():
-    cfg = _cfg()
+def _dcfg(**kw):
+    # Closed-loop DIVE config: adaptive lean + vertical-rate homing enabled.
+    base = dict(dive_forward_deg=25.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0,
+                dive_center_frac=0.30, dive_vrate_gain=17.0,
+                dive_max_descent_mps=8.0, dive_max_climb_mps=4.0)
+    base.update(kw)
+    return _cfg(**base)
+
+
+def test_dive_lean_soft_starts_then_reaches_full_steep():
+    # At commit the steep lean ramps in over dive_lean_ramp_s (so the target doesn't
+    # slew faster than the filter tracks); by the ramp time it is full steep.
+    cfg = _dcfg(dive_lean_ramp_s=0.5)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    # Centred (both axes) and at a close range: TRACK backs off (collision guard),
-    # DIVE commits forward by exactly the closing-lean bias (no vertical term).
-    centred_close = _target(cx, cy, h=int(0.55 * cfg.frame_height))
-    assert compute_intent(centred_close, cfg, GuidanceMode.TRACK).pitch_deg > 0.0
-    assert compute_intent(centred_close, cfg, GuidanceMode.DIVE).pitch_deg == -cfg.dive_forward_deg
+    below = _target(cx, cy + 200)                       # descending → steep at full ramp
+    at_commit = compute_intent(below, cfg, GuidanceMode.DIVE, dive_elapsed_s=0.0).pitch_deg
+    mid = compute_intent(below, cfg, GuidanceMode.DIVE, dive_elapsed_s=0.25).pitch_deg
+    full = compute_intent(below, cfg, GuidanceMode.DIVE, dive_elapsed_s=1.0).pitch_deg
+    assert at_commit == pytest.approx(-cfg.dive_climb_forward_deg)   # starts gentle
+    assert at_commit < 0 and mid < at_commit and full < mid          # ramps steeper
+    assert full == pytest.approx(-cfg.dive_forward_deg)              # full steep by ramp time
 
 
-def test_dive_pitches_toward_vertical_offset():
-    cfg = _cfg()
+def test_dive_lean_is_steep_descending_gentle_climbing():
+    # Adaptive forward lean: STEEP when descending onto a below target (target low
+    # in frame → commit descent), GENTLE when level/climbing toward an above one
+    # (target high in frame). Always nose-down (≤0), independent of bbox size.
+    cfg = _dcfg()
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    low = _target(cx, cy + 150)    # target low in frame -> more nose-down
-    high = _target(cx, cy - 150)   # target high in frame -> nose up
-    p_low = compute_intent(low, cfg, GuidanceMode.DIVE).pitch_deg
-    p_high = compute_intent(high, cfg, GuidanceMode.DIVE).pitch_deg
-    assert p_low < -cfg.dive_forward_deg   # below centre -> extra forward/down
-    assert p_high > p_low                  # above centre -> less down (toward up)
+    below = compute_intent(_target(cx, cy + 200), cfg, GuidanceMode.DIVE).pitch_deg
+    above = compute_intent(_target(cx, cy - 200), cfg, GuidanceMode.DIVE).pitch_deg
+    assert below == pytest.approx(-cfg.dive_forward_deg)       # full steep lean
+    assert above == pytest.approx(-cfg.dive_climb_forward_deg)  # gentle lean
+    assert below < above <= 0.0                                # steeper diving than climbing
+    # independent of bbox size (range): a far vs near below target → same steep lean
+    assert (compute_intent(_target(cx, cy + 200, h=40), cfg, GuidanceMode.DIVE).pitch_deg
+            == compute_intent(_target(cx, cy + 200, h=300), cfg, GuidanceMode.DIVE).pitch_deg)
 
 
-def test_dive_ignores_range_hold():
-    cfg = _cfg()
+def test_dive_never_pitches_up():
+    # DIVE is commit: pitch is clamped nose-down (<= 0), even for a target high in
+    # frame (pitching up would fly backward — the climb is the throttle's job).
+    cfg = _dcfg(dive_forward_deg=0.0)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    hold_h = int(cfg.desired_bbox_frac * cfg.frame_height)
-    at_hold = _target(cx, cy, h=hold_h)
-    far = _target(cx, cy, h=40)
-    # DIVE pitch depends on vertical position + bias, NOT on bbox size/range.
-    assert (compute_intent(at_hold, cfg, GuidanceMode.DIVE).pitch_deg
-            == compute_intent(far, cfg, GuidanceMode.DIVE).pitch_deg)
+    assert compute_intent(_target(cx, cy - 200), cfg, GuidanceMode.DIVE).pitch_deg <= 0.0
 
 
 def test_dive_still_centers_yaw():
-    cfg = _cfg()
+    cfg = _dcfg()
     t = _target(cfg.frame_width / 2 + 100, cfg.frame_height / 2)
     assert compute_intent(t, cfg, GuidanceMode.DIVE).yaw_rate_dps > 0
 
 
-def test_dive_descends_when_aimed_target_below_holds_when_off_or_above():
-    cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3)
+def test_dive_vertical_rate_descends_below_climbs_above_holds_level():
+    # Constant-bearing homing: the commanded vertical RATE drives the target's
+    # vertical frame error to zero — below centre (low) -> descend (-), above
+    # centre (high) -> climb (+), centred -> ~0. Gated on horizontal aim.
+    cfg = _dcfg()
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    # target below us + horizontally aimed -> gravity dive (descend)
-    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).thrust < 0.5
-    # horizontally off-centre -> hold altitude, re-aim first
-    assert compute_intent(_target(cx + 0.6 * cx, cy), cfg, GuidanceMode.DIVE).thrust == 0.5
-    # target above us -> do NOT descend away from it
-    assert compute_intent(_target(cx, cy - 0.6 * cy), cfg, GuidanceMode.DIVE).thrust == 0.5
-    # TRACK never descends
-    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.TRACK).thrust == 0.5
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).vertical_rate_mps < 0
+    assert compute_intent(_target(cx, cy - 150), cfg, GuidanceMode.DIVE).vertical_rate_mps > 0
+    assert compute_intent(_target(cx, cy), cfg, GuidanceMode.DIVE).vertical_rate_mps == pytest.approx(0.0)
+    # horizontally off-centre -> vertical commit gated off (re-aim yaw first)
+    assert compute_intent(_target(cx + 0.6 * cx, cy + 150), cfg, GuidanceMode.DIVE).vertical_rate_mps == pytest.approx(0.0)
+    # TRACK never commands a vertical rate
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.TRACK).vertical_rate_mps is None
 
 
-def test_dive_descent_disabled_by_default():
-    cfg = _cfg()  # dive_descent defaults to 0.0
+def test_dive_vertical_rate_grows_with_frame_error_and_clamps():
+    cfg = _dcfg(dive_max_descent_mps=6.0)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    assert compute_intent(_target(cx, cy), cfg, GuidanceMode.DIVE).thrust == 0.5
+    near = compute_intent(_target(cx, cy + 60), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    far = compute_intent(_target(cx, cy + 200), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    assert far < near < 0                          # larger error -> stronger descent
+    # saturates at the descent clamp for a target at the bottom edge
+    floor = compute_intent(_target(cx, cy + cy), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    assert floor == pytest.approx(-6.0)
+
+
+def test_dive_vertical_disabled_when_gain_zero():
+    cfg = _dcfg(dive_vrate_gain=0.0)               # vertical homing off -> DIVE just leans
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).vertical_rate_mps is None
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).thrust == 0.5
 
 
 def test_track_is_the_default_mode():

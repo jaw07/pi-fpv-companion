@@ -81,3 +81,43 @@ def test_equal_thresholds_allowed(tmp_path):
     # dive == track is fine (TRACK band is just empty); only dive < track is wrong.
     p = _write(tmp_path, "backend: ardupilot, track_threshold_us: 1500, dive_threshold_us: 1500")
     assert load(p).fc.dive_threshold_us == 1500
+
+
+def _write_guidance(tmp_path, guidance_line: str) -> Path:
+    p = tmp_path / "g.yaml"
+    p.write_text(f"""
+camera: {{type: synthetic}}
+detector: {{type: none}}
+tracker: {{type: iou}}
+fc: {{backend: ardupilot}}
+guidance: {{{guidance_line}}}
+""")
+    return p
+
+
+def test_imx500_enables_closed_loop_dive():
+    cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
+    s = cfg.servo
+    assert s.dive_forward_deg == 25.0     # steep lean at full descent (fast ground attack)
+    assert s.dive_climb_forward_deg == 6.0   # gentle when level/climbing
+    assert s.dive_max_pitch_deg == 30.0   # DIVE's own steeper clamp
+    assert s.dive_vrate_gain == 17.0      # closed-loop vertical homing enabled
+    assert s.dive_max_descent_mps == 8.0
+    assert s.dive_max_climb_mps == 4.0
+
+
+def test_rejects_negative_vrate_gain(tmp_path):
+    with pytest.raises(ValueError, match="dive_vrate_gain"):
+        load(_write_guidance(tmp_path, "dive_vrate_gain: -1"))
+
+
+def test_rejects_negative_vertical_clamps(tmp_path):
+    with pytest.raises(ValueError, match="dive_max_descent_mps"):
+        load(_write_guidance(tmp_path, "dive_max_descent_mps: -2"))
+
+
+def test_dive_defaults_to_vertical_homing_off(tmp_path):
+    # A guidance section that doesn't enable the dive leaves vertical homing off.
+    cfg = load(_write_guidance(tmp_path, "max_yaw_rate_dps: 60"))
+    assert cfg.servo.dive_vrate_gain == 0.0
+    assert cfg.servo.dive_forward_deg == 10.0    # dataclass default

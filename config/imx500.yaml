@@ -23,7 +23,8 @@ detector:
   classes_of_interest: [person, car, truck, motorcycle, bus, boat]
 
 tracker:
-  type: iou                  # associate the dense per-frame sensor detections
+  type: multi_iou            # track ALL detections + operator selection (select_channel).
+                             # 'iou' = single auto-locked target (no manual select).
   iou_threshold: 0.3
   reacquire_after_lost_frames: 30
 
@@ -32,6 +33,12 @@ fc:
   uart_device: /dev/serial0  # PL011 on header pins 8/10 (after dtoverlay=disable-bt)
   baud: 115200
   switch_channel: 7          # 3-position mode switch (STANDBY / TRACK / DIVE)
+  # Target selector: a rising edge past 1700 µs in STANDBY cycles the locked target
+  # among detections (frozen once engaged). The TBS top switches are full (ch5 arm,
+  # ch6 FC modes, ch7 companion, ch8 camera), so this uses the first free CRSF
+  # channel, ch9 — map a spare TBS input (e.g. the rocker) to ch9 in FreedomTX.
+  # 0 = disabled (auto-lock highest confidence; HUD still shows all).
+  select_channel: 9
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied path: ch7 engages. On TRACK/DIVE the Pi injects AETR sticks via
@@ -46,6 +53,8 @@ fc:
   stab_hover_learn: true
   stab_hover_learn_kp: 50.0     # PWM per (m/s) climb — immediate damping (anti-oscillation)
   stab_hover_learn_gain: 20.0   # Ki: PWM per (m/s) climb per second — slow hover trim
+  stab_hover_learn_band: 0.05   # hold deadband for the thrust-stick vertical path
+                                # (the closed-loop dive commands a rate, not a stick)
   stab_hover_min_us: 1200
   stab_hover_max_us: 1700
   angle_max_deg: 45.0        # full roll/pitch stick = this lean (match FC ANGLE_MAX)
@@ -63,18 +72,28 @@ guidance:
   yaw_ff_gain: 0.05
   desired_bbox_frac: 0.30
   closure_p_gain: 50.0
-  # Vertical centring (pitch P on vertical pixel error). DIVE aims with pitch_p_gain;
-  # TRACK adds track_vcenter_gain on top of range-hold so the target stays centred
-  # as a forward lean tilts the fixed camera down (target rises in frame). 0 = off.
-  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  # Vertical centring (TRACK pitch P on vertical pixel error). TRACK adds
+  # track_vcenter_gain on top of range-hold so the target stays centred as a
+  # forward lean tilts the fixed camera down (target rises in frame). 0 = off.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
   track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK re-centre)
-  dive_forward_deg: 10.0    # forward (nose-down) lean while diving
-  # Gravity dive: descend to gain speed (target is normally below us). Descent is
-  # gated on HORIZONTAL aim, eased off only if the target is ABOVE us. thrust
-  # drives the throttle stick (STABILIZE: direct cut) via RC override — no
-  # GUID_OPTIONS. YOU manage the altitude floor. Bench-validate. 0.0 disables.
-  dive_descent: 0.25        # thrust-down at full commit (below 0.5 neutral)
-  dive_center_frac: 0.30    # horizontal aim tolerance to commit descent (+ above-us taper)
+  # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
+  # PITCH is a fixed gentle forward lean (a steeper lean over-depresses the fixed
+  # camera and pushes an ABOVE target out the top); the THROTTLE flies a commanded
+  # vertical RATE that holds the target's vertical frame position. Holding a fixed
+  # frame point is a constant bearing -> a collision course, so the flight path
+  # follows the line of sight onto a target below, level, OR above. Sim + SITL
+  # validated (closed_loop_sim.py, validate_vrate_sitl.py).
+  # Forward lean is adaptive: STEEP (fast) diving onto a below target, GENTLE when
+  # level/climbing toward an above one (a steep lean would push it out the top).
+  dive_forward_deg: 25.0    # steep lean at full descent — fast, committed ground attack
+  dive_climb_forward_deg: 6.0   # gentle lean when level/climbing (keeps an above target framed)
+  dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
+  dive_lean_ramp_s: 0.5      # soft-start: ramp the steep lean in over this many s at commit
+  dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
+  dive_vrate_gain: 17.0     # m/s of climb command per unit normalised vertical frame error
+  dive_max_descent_mps: 8.0 # clamp on commanded descent
+  dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0
   pitch_sign: 1.0

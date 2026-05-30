@@ -21,8 +21,8 @@ see `architecture-audit.md` and `gps-denied-modes.md`; for flight gates see
   throttle (AETR) stick values, while the FC sits in a normal **STABILIZE** (or
   ALT_HOLD) pilot mode. No GPS, no GUIDED, no special firmware mode.
 - A 3-position switch picks **STANDBY** (Pi muted, pilot flies) / **TRACK**
-  (follow + hold range/altitude) / **DIVE** (commit: nose down and descend onto
-  the target).
+  (follow + hold range/altitude) / **DIVE** (commit: close and move altitude onto
+  the target — descend / hold / climb by where it is).
 - STABILIZE has no altitude hold, so the companion runs its own **adaptive hover**
   (a vertical-velocity loop that learns the hover throttle from `VFR_HUD.climb`).
 
@@ -112,10 +112,15 @@ GuidanceIntent(roll_deg, pitch_deg, yaw_rate_dps, thrust, timestamp)
 - **TRACK:** pitch regulates **range** — bbox size vs `desired_bbox_frac`: too far
   → nose down (accelerate forward), too close → ease off / nose up (a collision
   guard, not a ram gain). `thrust = 0.5` (hold altitude).
-- **DIVE:** pitch saturates **forward** (nose-down lean = `dive_forward_deg` plus a
-  term that keeps the target vertically centered) to close the gap, and
-  `thrust < 0.5` to **descend** onto the target — gated on being horizontally
-  centered so it doesn't dive off to the side.
+- **DIVE:** closed-loop constant-bearing homing. A forward lean closes the gap —
+  **steep** (fast) diving onto a below target, **gentle** when level/climbing
+  toward an above one (so it stays framed) — and a commanded vertical **rate**
+  (`vertical_rate_mps`, tracked by the backend on `VFR_HUD.climb`) holds the
+  target's vertical **frame position**. Holding a fixed frame point is a constant
+  bearing → a collision course, so the flight path follows the line of sight and
+  moves altitude **onto** the target — descend onto one below, hold for one level,
+  climb toward one above. Gated on horizontal aim; never pitches nose-up. See
+  `docs/dive-guidance.md` (incl. the fixed-camera FOV limits).
 
 Sign conventions: `pitch_deg < 0` = nose-down = forward; `yaw_rate_dps > 0` = yaw
 right; `thrust 0.5` = hold. `yaw_sign`/`pitch_sign` exist to correct a mirrored or
@@ -191,7 +196,7 @@ The Pi reads one RC channel (`switch_channel`, default ch7) back from the FC's
 |------------|----------|----------------------------------------------------------|
 | low        | STANDBY  | `release()` — pilot has full manual control              |
 | mid        | TRACK    | follow: yaw to center the target, hold range + altitude  |
-| high       | DIVE     | commit: nose down to close + descend onto the target     |
+| high       | DIVE     | commit: close + move altitude onto the target (descend/hold/climb) |
 
 (In SITL, `force_mode` substitutes for the switch since there's no TX.)
 
