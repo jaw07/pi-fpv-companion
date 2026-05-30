@@ -75,7 +75,8 @@ DIVE breaks the coupling:
   climb can re-centre it. It ramps gentle→steep with the commanded descent, is
   clamped nose-down by DIVE's own steeper `dive_max_pitch_deg` (never backs off /
   pitches up). This makes a ground attack fast (~20–30 s to impact in sim, ~3× the
-  gentle lean) without losing an above target.
+  gentle lean) without losing an above target. SITL-confirmed: STABILIZE tracks the
+  steep RC-override lean within ~1° (cmd −25° → −24°, −30° → −29°).
 - **THROTTLE** flies a commanded vertical **rate** that holds the target's
   vertical **frame position**. The servo emits `GuidanceIntent.vertical_rate_mps`
   (+up); the ArduPilot backend's climb-rate PI loop tracks it against
@@ -166,8 +167,9 @@ falls back to an open-loop throttle map (degraded but still descends). There is
 .venv/bin/python -m pytest tests/test_closed_loop_sim.py tests/test_visual_servo.py
 
 # SITL (ArduCopter 4.6.3 container)
-.venv/bin/python scripts/measure_dive_sitl.py     --connect tcp:127.0.0.1:5760  # dive physics
-.venv/bin/python scripts/validate_vrate_sitl.py   --connect tcp:127.0.0.1:5760  # rate-loop tracking
+.venv/bin/python scripts/measure_dive_sitl.py       --connect tcp:127.0.0.1:5760  # dive physics
+.venv/bin/python scripts/validate_vrate_sitl.py     --connect tcp:127.0.0.1:5760  # rate-loop tracking
+.venv/bin/python scripts/validate_steep_dive_sitl.py --connect tcp:127.0.0.1:5760  # steep-lean tracking
 ```
 
 See also: `gps-denied-modes.md` (why STABILIZE for the dive),
