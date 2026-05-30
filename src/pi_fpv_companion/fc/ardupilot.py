@@ -103,6 +103,10 @@ class ArduCopterRcMapping:
     # Climb rate (m/s) that maps to a full throttle stick when a commanded
     # vertical_rate must be flown open-loop (no fresh VFR_HUD to close the loop).
     rate_openloop_full_mps: float = 8.0
+    # Integral on the vertical-rate error (only while tracking a commanded rate):
+    # kills the pure-P steady-state droop so the loop reaches the setpoint.
+    rate_i_gain: float = 25.0            # PWM per (m/s) of rate error per second
+    rate_i_max_us: float = 250.0         # anti-windup clamp on the integral term
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -164,6 +168,7 @@ class ArduPilotBackend:
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
         self._pitch_t: float = 0.0           # when _pitch_rad was last updated
+        self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
         self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
@@ -344,22 +349,31 @@ class ArduPilotBackend:
 
         if fresh and (rate_mode or holding):
             setpoint = cmd_rate if rate_mode else 0.0
-            # Ki trims the learned hover only while ~holding (so it doesn't wind up
-            # during a commanded dive/climb).
-            if holding and 0.0 < dt < 0.3:
-                self._hover_pwm = _clamp(
-                    self._hover_pwm + m.hover_learn_gain * (-self._climb_mps) * dt,
-                    m.hover_min_us, m.hover_max_us,
-                )
-            # Kp on the rate error (setpoint - measured).
-            out = self._hover_pwm + m.hover_learn_kp * (setpoint - self._climb_mps)
+            err = setpoint - self._climb_mps
+            if holding:
+                # ~Holding: trim the learned hover (Ki) so it self-levels; no rate
+                # integral (it would wind up against the hover trim).
+                self._vrate_i = 0.0
+                if 0.0 < dt < 0.3:
+                    self._hover_pwm = _clamp(
+                        self._hover_pwm + m.hover_learn_gain * (-self._climb_mps) * dt,
+                        m.hover_min_us, m.hover_max_us,
+                    )
+            elif 0.0 < dt < 0.3:
+                # Tracking a commanded rate: integrate the rate error so the loop
+                # reaches the setpoint (kills the pure-P droop), with anti-windup.
+                self._vrate_i = _clamp(self._vrate_i + m.rate_i_gain * err * dt,
+                                       -m.rate_i_max_us, m.rate_i_max_us)
+            out = self._hover_pwm + m.hover_learn_kp * err + self._vrate_i
         elif rate_mode:
             # No fresh climb telemetry: can't close the rate loop -> open-loop map
             # the commanded rate to a throttle offset (degraded but still descends).
+            self._vrate_i = 0.0
             t = _clamp(cmd_rate / m.rate_openloop_full_mps, -1.0, 1.0)
             span = (2000 - self._hover_pwm) if t >= 0 else (self._hover_pwm - 1000)
             out = self._hover_pwm + t * span
         else:
+            self._vrate_i = 0.0
             t = _clamp((intent.thrust - 0.5) / 0.5, -1.0, 1.0)
             span = (2000 - self._hover_pwm) if t >= 0 else (self._hover_pwm - 1000)
             out = self._hover_pwm + t * span
