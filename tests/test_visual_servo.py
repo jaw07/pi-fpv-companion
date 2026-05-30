@@ -292,6 +292,23 @@ def test_dive_vertical_rate_grows_with_frame_error_and_clamps():
     assert floor == pytest.approx(-6.0)
 
 
+def test_dive_vertical_damping_eases_command_when_target_moves_toward_centre():
+    # PD: the derivative term opposes the rate of change of the vertical error so the
+    # vertical homing doesn't oscillate (the Gazebo dive wiggle). A below-centre target
+    # ALREADY rising toward centre (vy<0) should get a GENTLER descent than a still one.
+    cfg = _dcfg(dive_vrate_gain=17.0, dive_vrate_damp=4.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    still = compute_intent(_target(cx, cy + 60, vy=0.0), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    rising = compute_intent(_target(cx, cy + 60, vy=-120.0), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    assert still < 0 and rising < 0                 # below centre -> both descend
+    assert rising > still                           # damped: eased descent (smaller magnitude)
+    # with no damping the two are identical (pure-P ignores vy)
+    cfg0 = _dcfg(dive_vrate_gain=17.0, dive_vrate_damp=0.0)
+    a = compute_intent(_target(cx, cy + 60, vy=0.0), cfg0, GuidanceMode.DIVE).vertical_rate_mps
+    b = compute_intent(_target(cx, cy + 60, vy=-120.0), cfg0, GuidanceMode.DIVE).vertical_rate_mps
+    assert a == b
+
+
 def test_dive_vertical_disabled_when_gain_zero():
     cfg = _dcfg(dive_vrate_gain=0.0)               # vertical homing off -> DIVE just leans
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2

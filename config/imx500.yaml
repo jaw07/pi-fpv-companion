@@ -99,7 +99,8 @@ guidance:
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the steep lean in over this many s at commit
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
-  dive_vrate_gain: 17.0     # m/s of climb command per unit normalised vertical frame error
+  dive_vrate_gain: 12.0     # m/s of climb command per unit normalised vertical frame error
+  dive_vrate_damp: 3.0      # derivative damping (m/s per err/s) — kills the dive up/down wiggle
   dive_max_descent_mps: 8.0 # clamp on commanded descent
   dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).

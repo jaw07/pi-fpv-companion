@@ -159,6 +159,10 @@ class ServoConfig:
     #   gated on horizontal aim (centre yaw before committing power).
     # 0 gain = disabled (altitude held; DIVE just leans in). Bench/SITL-validate.
     dive_vrate_gain: float = 0.0       # m/s of climb command per unit normalised vert error
+    dive_vrate_damp: float = 0.0       # DERIVATIVE damping: m/s per (normalised vert error / s).
+                                       # Opposes the rate of change of the vertical frame error
+                                       # (filter vy) so the vertical homing doesn't oscillate
+                                       # against the backend rate-loop lag + pitch coupling. 0 = pure-P.
     dive_max_descent_mps: float = 8.0  # clamp on commanded descent (+ down)
     dive_max_climb_mps: float = 4.0    # clamp on commanded climb (gravity-limited, < descent)
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
@@ -244,8 +248,14 @@ def compute_intent(
         commit = _clamp(1.0 - abs(ex) / cfg.dive_center_frac, 0.0, 1.0) \
             if cfg.dive_center_frac > 0 else 0.0
         if cfg.dive_vrate_gain > 0.0:
+            # PD, not P: a pure-P rate command on the vertical frame error oscillates
+            # against the backend's rate-tracking lag + the pitch/camera coupling (the
+            # up/down "wiggle" seen in the Gazebo dive). The derivative term opposes the
+            # rate of change of the error (the filter's vertical image velocity) and
+            # damps it. e_y_rate = vy_px_s / (frame_height/2) is d(e_y)/dt.
+            e_y_rate = target.vy_px_s / (cfg.frame_height / 2.0)
             vertical_rate_mps = commit * _clamp(
-                -cfg.dive_vrate_gain * e_y,
+                -cfg.dive_vrate_gain * e_y - cfg.dive_vrate_damp * e_y_rate,
                 -cfg.dive_max_descent_mps, cfg.dive_max_climb_mps,
             )
 
