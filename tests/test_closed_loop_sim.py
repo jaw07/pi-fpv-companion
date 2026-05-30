@@ -138,19 +138,19 @@ def test_track_does_not_nod_on_a_below_ground_target():
 
 def test_track_holds_a_high_lookdown_ground_target_without_slam_or_nod():
     # Engaging a ground target from HIGH up (40 m, 92 m out → ~24° look-down) the
-    # range-hold closure used to slam the nose to -14.5° at engage and then nod
-    # ±15° (the target rising then the size-growth driving a nose-up back-off) until
-    # it lost the low target out the bottom. The settle-window engage capture + the
-    # below-centre closure fade keep TRACK gentle and framed: it just holds and frames.
+    # range-hold closure used to slam the nose to -14.5° at engage (a transient
+    # first-frame capture) and then nod as the vertical re-centre fought it. The
+    # settle-window engage capture + pure range-hold (vcenter off) keep TRACK gentle
+    # and steady: it HOLDS the engage distance and frames the low target, no drift.
     w = _world(target_pos=(92.0, 0.0, 0.0), alt=40.0)
-    tr = w.run(GuidanceMode.TRACK, duration_s=12.0)
+    r0 = w.run(GuidanceMode.TRACK, duration_s=0.1).ticks[0].range_m
+    tr = w.run(GuidanceMode.TRACK, duration_s=18.0)
     assert not tr.ever_left_frame                       # the low target stays framed
     pc = [tk.pitch_cmd for tk in tr.ticks if tk.in_frame]
     assert abs(pc[0]) < 10.0                             # no dramatic engage slam (was ~-14.5°)
-    assert max(pc) - min(pc) < 10.0                      # gentle, bounded pitch (no big nod)
-    d = [pc[i] - pc[i - 1] for i in range(1, len(pc))]
-    reversals = sum(1 for i in range(1, len(d)) if d[i] * d[i - 1] < 0 and abs(d[i]) > 0.05)
-    assert reversals < 8
+    assert max(pc) - min(pc) < 8.0                       # steady pitch (no nod)
+    inframe = [tk for tk in tr.ticks if tk.in_frame]
+    assert abs(r0 - inframe[-1].range_m) < 6.0           # HOLDS range — does not close in
 
 
 def test_dive_reaches_a_ground_target_from_altitude():
