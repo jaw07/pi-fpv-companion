@@ -17,20 +17,25 @@ import math
 
 import pytest
 
-from pi_fpv_companion.types import GuidanceMode
+from pi_fpv_companion.types import Detection, GuidanceMode
 from tests.closed_loop_sim import (
     Airframe, CameraModel, SimWorld, imx500_servo, imx500_safety,
 )
 
 W, H = 720, 576
 
+# SimWorld-level knobs (vs servo gains) so _world can route kwargs correctly.
+_WORLD_KW = {"target_vel", "target_accel", "detection_noise_px",
+             "detection_dropout_prob", "detect_latency_frames", "seed", "glitch"}
 
-def _world(target_pos, target_vel=(0.0, 0.0, 0.0), alt=50.0, **servo):
+
+def _world(target_pos, alt=50.0, **kw):
     cam = CameraModel(W, H)   # IMX500 defaults: HFoV 66.3°, VFoV 52.3°
+    world_kw = {k: kw.pop(k) for k in list(kw) if k in _WORLD_KW}
     return SimWorld(
-        camera=cam, servo=imx500_servo(**servo), safety=imx500_safety(),
+        camera=cam, servo=imx500_servo(**kw), safety=imx500_safety(),
         airframe=Airframe(pos=(0.0, 0.0, alt)),
-        target_pos=target_pos, target_vel=target_vel,
+        target_pos=target_pos, **world_kw,
     )
 
 
@@ -193,6 +198,72 @@ def test_track_then_dive_handoff_follows_then_commits():
     # ...then DIVE closes onto it.
     assert _converges(tr)
     assert tr.altitude_lost > 25.0                  # descended onto the ground target
+
+
+# --------------------------------------------------------------------------
+# Perception realism: the closed loop must ride out noisy / dropped / stale
+# detections (the filter smooths + coasts) and MUTE on a misdetection (the
+# filter's innovation + class gating, the project's dominant-hazard defence).
+# --------------------------------------------------------------------------
+
+def test_dive_rides_out_detection_noise():
+    w = _world(target_pos=(110.0, 0.0, 0.0), detection_noise_px=12.0)
+    tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
+    assert _converges(tr)                          # alpha-beta filter smooths the jitter
+
+
+def test_dive_rides_out_detection_dropout():
+    w = _world(target_pos=(110.0, 0.0, 0.0), detection_dropout_prob=0.3)
+    tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
+    assert _converges(tr)                          # coasts on the motion model through gaps
+
+
+def test_dive_rides_out_detector_latency():
+    w = _world(target_pos=(110.0, 0.0, 0.0), detect_latency_frames=5)
+    tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
+    assert _converges(tr)
+
+
+def test_track_holds_a_maneuvering_target():
+    # A laterally-accelerating crosser — the feed-forward + closed loop keep it
+    # framed (TRACK's job is FOV retention, which the filter velocity estimate aids).
+    w = _world(target_pos=(20.0, 0.0, 50.0), target_vel=(0.0, 6.0, 0.0),
+               target_accel=(0.0, 1.5, 0.0))
+    tr = w.run(GuidanceMode.TRACK, duration_s=12.0)
+    assert not tr.ever_left_frame
+    assert tr.muted_ticks == 0
+
+
+def test_misdetection_teleport_is_gated_and_mutes_then_recovers():
+    # A misdetection (centroid teleports to a frame corner for ~0.5 s) must NOT be
+    # acted on: the filter's innovation gate rejects it, quality collapses, and the
+    # safety gate MUTES (the aircraft holds, doesn't chase the corner). Good
+    # detections resume → quality recovers → the engagement still converges.
+    def teleport(i, det):
+        if det is None:
+            return None
+        if 120 <= i < 140:                         # ~t 4.0–4.7 s, mid-dive
+            return Detection(x=20.0, y=540.0, w=det.w, h=det.h, confidence=0.9, class_id=0)
+        return det
+    w = _world(target_pos=(110.0, 0.0, 0.0), glitch=teleport)
+    tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
+    glitch_ticks = [tk for tk in tr.ticks if 120 <= round(tk.t * 30) - 1 < 140]
+    assert any(tk.muted for tk in glitch_ticks)    # held during the misdetection
+    assert _converges(tr)                          # and recovered onto the real target
+
+
+def test_class_flip_is_gated_and_mutes():
+    # The tracker hands over a different class mid-engagement (re-locked the wrong
+    # object) → class-consistency gating collapses quality → safety mutes.
+    def flip(i, det):
+        if det is None:
+            return None
+        if 120 <= i < 160:
+            return Detection(x=det.x, y=det.y, w=det.w, h=det.h, confidence=0.9, class_id=7)
+        return det
+    w = _world(target_pos=(110.0, 0.0, 0.0), glitch=flip)
+    tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
+    assert any(tk.muted for tk in tr.ticks)
 
 
 def test_dive_blind_when_target_depression_exceeds_half_vfov():

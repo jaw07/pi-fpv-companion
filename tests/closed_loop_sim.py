@@ -48,8 +48,9 @@ spent on the attitude→pixel coupling (the FOV question) rather than aero.
 """
 from __future__ import annotations
 import math
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+import random
+from dataclasses import dataclass, field, replace
+from typing import Callable, List, Optional, Tuple
 
 from pi_fpv_companion.types import (
     Detection, Target, GuidanceMode, GuidanceIntent, SwitchState, ZERO_INTENT,
@@ -281,9 +282,19 @@ class SimWorld:
     airframe: Airframe
     target_pos: Vec                       # initial world position (m)
     target_vel: Vec = (0.0, 0.0, 0.0)     # world velocity (m/s)
+    target_accel: Vec = (0.0, 0.0, 0.0)   # world accel (m/s²) — a maneuvering target
     filter_cfg: FilterConfig = field(default_factory=FilterConfig)
     armed: bool = True
     impact_range_m: float = 1.5           # stop when the aircraft reaches the target
+    # --- Perception realism (exercises the filter quality/innovation gating +
+    # safety watchdog that perfect detections never stress). Seeded → deterministic.
+    detection_noise_px: float = 0.0       # gaussian std added to bbox centre x/y
+    detection_dropout_prob: float = 0.0   # per-frame chance the detector returns nothing
+    detect_latency_frames: int = 0        # detections are this many frames stale
+    seed: int = 12345
+    # glitch(i, clean_detection) -> a (possibly corrupted) Detection or None, for
+    # injecting a misdetection / teleport / class-flip at a chosen tick.
+    glitch: Optional[Callable[[int, Detection], Optional[Detection]]] = None
 
     def run(self, mode: GuidanceMode, dt: float = 1.0 / 30.0,
             duration_s: float = 12.0, dive_after_s: Optional[float] = None) -> Trajectory:
@@ -295,25 +306,43 @@ class SimWorld:
         af = self.airframe
         servo = self.servo
         tpos = self.target_pos
+        tvel = self.target_vel
+        rng_gen = random.Random(self.seed)
+        det_buffer: List[Optional[Detection]] = []   # for detector latency
         t = 0.0
         n = int(duration_s / dt)
-        for _ in range(n):
+        for i in range(n):
             t += dt
             mode = (GuidanceMode.TRACK if (dive_after_s is not None and t < dive_after_s)
                     else (GuidanceMode.DIVE if dive_after_s is not None else mode))
             switch = SwitchState(active=True, pwm_us=1800, timestamp=t, mode=mode)
-            tpos = (tpos[0] + self.target_vel[0] * dt,
-                    tpos[1] + self.target_vel[1] * dt,
-                    tpos[2] + self.target_vel[2] * dt)
+            tvel = (tvel[0] + self.target_accel[0] * dt,
+                    tvel[1] + self.target_accel[1] * dt,
+                    tvel[2] + self.target_accel[2] * dt)
+            tpos = (tpos[0] + tvel[0] * dt, tpos[1] + tvel[1] * dt, tpos[2] + tvel[2] * dt)
             d_world = (tpos[0] - af.pos[0], tpos[1] - af.pos[1], tpos[2] - af.pos[2])
             rng = _norm(d_world)
             det, depth, in_frame = self.camera.project(d_world, af.psi, af.phi)
 
+            # --- Perception realism: latency, dropout, noise, injected glitch ---
+            clean = det if (det is not None and in_frame) else None
+            det_buffer.append(clean)
+            obs = det_buffer[-1 - self.detect_latency_frames] \
+                if len(det_buffer) > self.detect_latency_frames else None
+            if obs is not None and self.detection_dropout_prob > 0.0 \
+                    and rng_gen.random() < self.detection_dropout_prob:
+                obs = None                                     # detector missed this frame
+            if obs is not None and self.detection_noise_px > 0.0:
+                obs = replace(obs, x=obs.x + rng_gen.gauss(0.0, self.detection_noise_px),
+                              y=obs.y + rng_gen.gauss(0.0, self.detection_noise_px))
+            if self.glitch is not None:
+                obs = self.glitch(i, obs)                      # inject misdetection / teleport
+
             # The tracker only produces a confirmed box when the target is in
             # frame. Out of frame (or behind) → no measurement → the filter
             # coasts and quality decays, exactly as on the aircraft.
-            raw = Target(detection=det, track_id=1, lost_frames=0, timestamp=t) \
-                if (det is not None and in_frame) else None
+            raw = Target(detection=obs, track_id=1, lost_frames=0, timestamp=t) \
+                if obs is not None else None
             filtered = flt.update(raw, self.camera.width, self.camera.height, t)
 
             if filtered is None:
