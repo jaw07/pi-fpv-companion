@@ -109,6 +109,18 @@ def test_track_pi_holds_the_engage_distance_on_a_receding_target():
     assert max(tail) - min(tail) < 2.0                # settled, no limit cycle
 
 
+def test_dive_hits_near_target_centre():
+    # The dive should put the target CENTROID near frame centre at impact — a clean
+    # centre hit — not settle at the pixel-deadzone edge (a 20px deadzone left the
+    # target ~20-28px off-centre at the terminal; 8px brings it to ~8-11px).
+    w = _world(target_pos=(60.0, 0.0, 0.0), alt=15.0)
+    tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
+    assert tr.min_range < 4.0                           # it hit
+    term = [((tk.px - 360) ** 2 + (tk.py - 288) ** 2) ** 0.5
+            for tk in tr.ticks if tk.in_frame and tk.range_m < 5.0]
+    assert term and (sum(term) / len(term)) < 14.0      # terminal centroid within ~14px of centre
+
+
 def test_track_does_not_nod_on_a_below_ground_target():
     # A far-below (ground) target must NOT send TRACK's pitch into a limit cycle. The
     # vertical re-centring is a gentle nudge, not an attempt to fully centre a below
