@@ -22,7 +22,7 @@ from pi_fpv_companion.camera.base import Camera, FrameBundle
 from pi_fpv_companion.detect.async_detector import AsyncDetector
 from pi_fpv_companion.detect.base import Detector
 from pi_fpv_companion.guidance.safety import GateResult, SafetyConfig, gate
-from pi_fpv_companion.guidance.visual_servo import ClosureState, ServoConfig, compute_intent
+from pi_fpv_companion.guidance.visual_servo import ClosureState, DiveState, ServoConfig, compute_intent
 from pi_fpv_companion.track.base import Tracker
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode, SwitchState, Target, ZERO_INTENT
 from typing import List
@@ -73,6 +73,7 @@ class Pipeline:
         self._tracks: Optional[list] = None
         self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
         self._closure = ClosureState()                  # TRACK PI closure integrator
+        self._dive = DiveState()                        # DIVE lean low-pass (anti-nod)
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -197,13 +198,17 @@ class Pipeline:
                 switch.mode if switch.mode is not GuidanceMode.STANDBY else GuidanceMode.TRACK
             )
             # Time since DIVE was engaged, for the lean soft-start (reset on exit).
+            # The DiveState (lean low-pass) is active only while actually in DIVE.
             if switch.mode is GuidanceMode.DIVE:
                 if self._dive_entered_t is None:
                     self._dive_entered_t = now
                 dive_elapsed_s = now - self._dive_entered_t
+                dive = self._dive
             else:
                 self._dive_entered_t = None
                 dive_elapsed_s = 1e9
+                self._dive.reset()
+                dive = None
             # PI closure integrator: active only when actually engaged in TRACK.
             # STANDBY (preview-as-TRACK) and DIVE must not wind it, so reset + skip.
             if switch.mode is GuidanceMode.TRACK:
@@ -212,7 +217,7 @@ class Pipeline:
                 self._closure.reset()
                 closure = None
             intent = compute_intent(target, self._servo_cfg, preview_mode,
-                                    dive_elapsed_s, closure)
+                                    dive_elapsed_s, closure, dive)
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)
