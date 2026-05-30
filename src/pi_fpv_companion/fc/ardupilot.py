@@ -208,17 +208,28 @@ class ArduPilotBackend:
                 return float(pv.param_value), int(pv.param_type)
         return None
 
-    def ensure_params(self, desired: Dict[str, float], tol: float = 0.5) -> Dict[str, str]:
+    def ensure_params(self, desired: Dict[str, float], tol: float = 0.5,
+                      timeout: float = 2.0) -> Dict[str, str]:
         """Confirm each desired FC parameter and WRITE any that differ, verifying the
         write. The user authorised this (startup FC validation/auto-config). Only the
         listed params are touched; every action is logged. Returns {name: status}
-        where status is 'ok' | 'set' | 'read-fail' | 'write-fail'."""
+        where status is 'ok' | 'set' | 'read-fail' | 'write-fail'.
+
+        Bounded for startup: each read uses a short timeout, and the FIRST
+        unresponsive read aborts the whole pass (a wrong-baud / dead FC must not
+        stall boot for timeout × N params)."""
         result: Dict[str, str] = {}
+        aborted = False
         for name, want in desired.items():
-            cur = self.read_param(name)
-            if cur is None:
-                _log.warning("FC param %s: could not read (skipped)", name)
+            if aborted:
                 result[name] = "read-fail"
+                continue
+            cur = self.read_param(name, timeout=timeout)
+            if cur is None:
+                _log.warning("FC param %s: no response — aborting param validation "
+                             "(is the FC link up?)", name)
+                result[name] = "read-fail"
+                aborted = True          # FC not responding; don't wait on the rest
                 continue
             value, ptype = cur
             if abs(value - want) <= tol:
@@ -438,6 +449,8 @@ class ArduPilotBackend:
         """Hand every channel back to the pilot's RC radio (override value 0 =
         'use the receiver'). Called by the pipeline in STANDBY — instant manual
         handback, the core safety property of the ALT_HOLD path."""
+        self._vrate_i = 0.0          # clear the rate-loop integral so a later
+                                     # STANDBY->DIVE doesn't start with a stale bias
         if self._mav is None:
             return
         self._send_channels({})
