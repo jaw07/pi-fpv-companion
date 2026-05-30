@@ -209,6 +209,38 @@ def test_gentle_climb_commit_raises_throttle_above_hover():
 
 # ---- airframe pitch feedback (agnostic DIVE LOS-elevation framing) ----
 
+def test_vertical_rate_integral_reduces_steady_state_droop():
+    # While tracking a commanded rate the pure-P term leaves droop; the integral
+    # accumulates the rate error and drives the throttle harder until it reaches
+    # the setpoint. With measured climb stuck above the (descending) setpoint, the
+    # throttle must drop further each tick and the integral term goes negative.
+    b = _stab_backend()
+    b._climb_mps = -2.0                              # measured descent, but we want -4
+    intent = GuidanceIntent(0.0, 0.0, 0.0, 0.5, 0.0, vertical_rate_mps=-4.0)
+    outs = []
+    for _ in range(6):
+        now = time.monotonic()
+        b._hover_t = now - 0.1                       # simulate dt = 0.1 s
+        b._climb_t = now
+        outs.append(b._adaptive_throttle(intent))
+    assert outs[-1] < outs[0]                        # throttle pushed further down
+    assert b._vrate_i < 0                            # integral driving more descent
+
+
+def test_vertical_rate_integral_resets_when_not_tracking():
+    b = _stab_backend()
+    b._climb_mps = -2.0
+    b._climb_t = time.monotonic()
+    b._hover_t = time.monotonic() - 0.1
+    b._adaptive_throttle(GuidanceIntent(0.0, 0.0, 0.0, 0.5, 0.0, vertical_rate_mps=-4.0))
+    assert b._vrate_i != 0.0
+    # a plain hold (no commanded rate) clears the integral (no windup carryover)
+    b._climb_t = time.monotonic()
+    b._hover_t = time.monotonic() - 0.1
+    b._adaptive_throttle(_hold())
+    assert b._vrate_i == 0.0
+
+
 def test_pitch_deg_reports_fresh_attitude():
     import math
     b = _stab_backend()

@@ -151,10 +151,11 @@ class Airframe:
     # Modelled here so the sim is faithful: a DIVE whose commit falls inside the
     # band would silently fail to descend, and the sim must show that.
     hover_hold_band: float = 0.05
-    # Closed-loop rate tracking efficiency: the backend's P-loop under-delivers a
-    # commanded vertical rate (SITL: cmd -3 → ~-2.2 m/s, ~0.75×). The servo's
-    # framing loop integrates this out, but the sim models it for faithfulness.
-    vrate_track_eff: float = 0.75
+    # Closed-loop rate tracking efficiency: the backend's PI loop reaches the
+    # commanded vertical rate (SITL with the rate integral: cmd -3 → settled
+    # ~-3.0 m/s); a small margin (0.9) models ramp-up lag. The servo's framing
+    # loop absorbs any residual.
+    vrate_track_eff: float = 0.9
 
     def step(self, intent: GuidanceIntent, dt: float) -> None:
         # Yaw: +dps = yaw RIGHT = clockwise from above = DECREASING ψ.
