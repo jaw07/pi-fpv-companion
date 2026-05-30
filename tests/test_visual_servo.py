@@ -146,22 +146,28 @@ def test_pitch_sign_inversion_flips_closure_direction():
 # ---- DIVE vs TRACK modes ----
 
 def _dcfg(**kw):
-    # Closed-loop DIVE config: fixed lean + vertical-rate homing enabled.
-    base = dict(dive_forward_deg=8.0, dive_center_frac=0.30, dive_vrate_gain=17.0,
+    # Closed-loop DIVE config: adaptive lean + vertical-rate homing enabled.
+    base = dict(dive_forward_deg=25.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0,
+                dive_center_frac=0.30, dive_vrate_gain=17.0,
                 dive_max_descent_mps=8.0, dive_max_climb_mps=4.0)
     base.update(kw)
     return _cfg(**base)
 
 
-def test_dive_pitch_is_a_fixed_forward_lean():
-    # Closed-loop DIVE: pitch is a fixed forward (nose-down) commit lean — the
-    # throttle handles vertical, so pitch does NOT track the vertical offset and
-    # does NOT depend on bbox size/range.
+def test_dive_lean_is_steep_descending_gentle_climbing():
+    # Adaptive forward lean: STEEP when descending onto a below target (target low
+    # in frame → commit descent), GENTLE when level/climbing toward an above one
+    # (target high in frame). Always nose-down (≤0), independent of bbox size.
     cfg = _dcfg()
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    for t in (_target(cx, cy), _target(cx, cy + 150), _target(cx, cy - 150),
-              _target(cx, cy, h=40), _target(cx, cy, h=int(0.55 * cfg.frame_height))):
-        assert compute_intent(t, cfg, GuidanceMode.DIVE).pitch_deg == -cfg.dive_forward_deg
+    below = compute_intent(_target(cx, cy + 200), cfg, GuidanceMode.DIVE).pitch_deg
+    above = compute_intent(_target(cx, cy - 200), cfg, GuidanceMode.DIVE).pitch_deg
+    assert below == pytest.approx(-cfg.dive_forward_deg)       # full steep lean
+    assert above == pytest.approx(-cfg.dive_climb_forward_deg)  # gentle lean
+    assert below < above <= 0.0                                # steeper diving than climbing
+    # independent of bbox size (range): a far vs near below target → same steep lean
+    assert (compute_intent(_target(cx, cy + 200, h=40), cfg, GuidanceMode.DIVE).pitch_deg
+            == compute_intent(_target(cx, cy + 200, h=300), cfg, GuidanceMode.DIVE).pitch_deg)
 
 
 def test_dive_never_pitches_up():

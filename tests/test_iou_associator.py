@@ -45,6 +45,18 @@ def test_no_overlap_increments_lost_count():
     assert t.lost_frames == 1
 
 
+def test_small_box_under_motion_stays_associated_by_distance():
+    # A tiny box (a distant target) that shifts more than its own width has ZERO
+    # IoU overlap frame-to-frame; the centroid-distance gate keeps the lock instead
+    # of coasting (the failure that made distant ground dives lose the target).
+    assoc = IouAssociator(iou_threshold=0.3, max_lost_frames=5)
+    t0 = assoc.consume(None, [_det(200, 300, w=3, h=3)], now=0.0)
+    t1 = assoc.consume(None, [_det(210, 300, w=3, h=3)], now=0.033)  # 10 px shift, 3 px box
+    assert t1.track_id == t0.track_id
+    assert t1.lost_frames == 0           # associated by distance, not coasting
+    assert t1.detection.x == 210         # followed the moved detection
+
+
 def test_drops_target_after_max_lost_frames():
     assoc = IouAssociator(iou_threshold=0.3, max_lost_frames=3)
     assoc.consume(None, [_det(100, 100)], now=0.0)

@@ -7,6 +7,7 @@ associate to the detection with the highest IoU above a threshold; if no match,
 count a lost frame and drop after N misses.
 """
 from __future__ import annotations
+import math
 from typing import List, Optional
 
 from pi_fpv_companion.types import Detection, Target
@@ -25,9 +26,14 @@ def _iou(a: Detection, b: Detection) -> float:
 
 
 class IouAssociator:
-    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30) -> None:
+    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30,
+                 max_match_dist_px: float = 60.0) -> None:
         self._iou_threshold = iou_threshold
         self._max_lost_frames = max_lost_frames
+        # Associate by OVERLAP (IoU) OR centroid distance: IoU alone fails for the
+        # small boxes this system sees (a person at >100 m is a few px wide, so any
+        # camera rotation shifts the box more than its own width → zero IoU).
+        self._max_match_dist_px = max_match_dist_px
         self._target: Optional[Target] = None
         self._next_track_id: int = 1
 
@@ -52,15 +58,20 @@ class IouAssociator:
         if not detections:
             return self._increment_lost(now)
 
-        best_iou = 0.0
+        # Best match: prefer highest IoU; if nothing overlaps, nearest centroid
+        # within the distance gate (robust for tiny boxes under camera motion).
+        cur = self._target.detection
         best_det: Optional[Detection] = None
+        best_key = None
         for d in detections:
-            iou = _iou(self._target.detection, d)
-            if iou > best_iou:
-                best_iou = iou
-                best_det = d
+            iou = _iou(cur, d)
+            dist = math.hypot(cur.x - d.x, cur.y - d.y)
+            if iou >= self._iou_threshold or dist <= self._max_match_dist_px:
+                key = (iou, -dist)
+                if best_key is None or key > best_key:
+                    best_det, best_key = d, key
 
-        if best_det is None or best_iou < self._iou_threshold:
+        if best_det is None:
             return self._increment_lost(now)
 
         self._target = Target(

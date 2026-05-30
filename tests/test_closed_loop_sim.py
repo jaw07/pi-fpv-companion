@@ -252,6 +252,69 @@ def test_misdetection_teleport_is_gated_and_mutes_then_recovers():
     assert _converges(tr)                          # and recovered onto the real target
 
 
+def _two_target_dive(n_cycles):
+    """Closed loop with TWO acquirable ground targets (A right / y<0, B left / y>0;
+    B higher-confidence so it auto-locks). Cycle `n_cycles` times in STANDBY, then
+    DIVE. Returns (engaged 'A'|'B', min_range_A, min_range_B)."""
+    from dataclasses import replace
+    from tests.closed_loop_sim import _norm
+    from pi_fpv_companion.track.multi_target import MultiObjectTracker
+    from pi_fpv_companion.track.target_filter import AlphaBetaTargetFilter
+    from pi_fpv_companion.guidance.visual_servo import compute_intent
+    from pi_fpv_companion.guidance.safety import gate
+    from pi_fpv_companion.types import SwitchState, ZERO_INTENT
+
+    cam = CameraModel(W, H)
+    af = Airframe(pos=(0.0, 0.0, 50.0))
+    servo, safety = imx500_servo(), imx500_safety()
+    flt = AlphaBetaTargetFilter()
+    trk = MultiObjectTracker(iou_threshold=0.2)
+    A, B = (115.0, -22.0, 0.0), (115.0, 22.0, 0.0)   # A→right in frame, B→left
+    dt = 1.0 / 30.0
+    min_a = min_b = float("inf")
+    engaged = None
+    cycled = 0
+    for i in range(int(130.0 / dt)):
+        t = i * dt
+        mode = GuidanceMode.STANDBY if t < 2.0 else GuidanceMode.DIVE
+        dets = []
+        for pos, conf in ((A, 0.6), (B, 0.9)):
+            d = (pos[0] - af.pos[0], pos[1] - af.pos[1], pos[2] - af.pos[2])
+            det, _, inf = cam.project(d, af.psi, af.phi)
+            if det is not None and inf:
+                dets.append(replace(det, confidence=conf))
+        min_a = min(min_a, _norm((A[0] - af.pos[0], A[1] - af.pos[1], A[2] - af.pos[2])))
+        min_b = min(min_b, _norm((B[0] - af.pos[0], B[1] - af.pos[1], B[2] - af.pos[2])))
+        trk.auto_acquire = mode is GuidanceMode.STANDBY
+        if mode is GuidanceMode.STANDBY and t > 1.0 and cycled < n_cycles:
+            trk.cycle(); cycled += 1
+        raw = trk.consume(None, dets, t)
+        filtered = flt.update(raw, W, H, t)
+        switch = SwitchState(active=mode is not GuidanceMode.STANDBY, pwm_us=1800,
+                             timestamp=t, mode=mode)
+        if filtered is None:
+            intent = ZERO_INTENT
+        else:
+            intent = gate(compute_intent(filtered, servo, mode), filtered,
+                          switch, True, t, safety).intent
+        if engaged is None and mode is GuidanceMode.DIVE and raw is not None:
+            engaged = "A" if raw.detection.x > W / 2 else "B"
+        af.step(intent, dt)
+        if min(min_a, min_b) <= 1.5:
+            break
+    return engaged, min_a, min_b
+
+
+def test_multi_target_selection_determines_which_target_is_hit():
+    # The whole point of selection: which target the aircraft actually dives onto
+    # follows the operator's choice. No cycle → auto-locked B (higher conf) → hits
+    # B, leaves A. One cycle in STANDBY → A → hits A, leaves B.
+    eng0, a0, b0 = _two_target_dive(0)
+    assert eng0 == "B" and b0 < 5.0 and a0 > 20.0
+    eng1, a1, b1 = _two_target_dive(1)
+    assert eng1 == "A" and a1 < 5.0 and b1 > 20.0
+
+
 def test_occluded_target_mutes_then_reacquires_and_converges():
     # Target occluded (detector returns nothing — e.g. behind cover) for ~2 s
     # mid-dive: the filter coasts, quality decays, and the safety gate MUTES (the
