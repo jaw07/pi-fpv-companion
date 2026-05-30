@@ -160,8 +160,11 @@ class ServoConfig:
     # the velocity. 0 = pure pursuit. Applies to yaw and the DIVE vertical aim.
     lead_time_s: float = 0.0
     pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (TRACK/DIVE aim)
-    track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
-                                  # (keeps target centred as lean tilts the camera; 0 = off)
+    track_vcenter_gain: float = 0.03  # TRACK: deg of pitch per px of vertical error — a GENTLE
+                                  # nudge that keeps the target from drifting out the top as the
+                                  # closure lean tilts the camera. Kept small: a large gain
+                                  # over-drives the pitch trying to centre a far-below target,
+                                  # which fights range-hold closure into a nose nod. 0 = off.
     # DIVE forward lean is ADAPTIVE to the engagement: STEEP when descending onto a
     # target BELOW the flight path (a fast, committed ground attack — and a steep
     # nose-down also points the fixed camera down at the target, keeping it framed),
@@ -353,9 +356,16 @@ def compute_intent(
         # supplies its state (i.e. actually in TRACK) and the gain is enabled.
         integ = closure.accumulate(range_err, target.timestamp) \
             if (closure is not None and cfg.closure_i_gain > 0.0) else 0.0
+        # Vertical re-centring is a GENTLE nudge (small track_vcenter_gain): it keeps
+        # the target from drifting out the top as the closure lean tilts the camera —
+        # it does NOT try to fully centre a far-below target (that needs a big pitch
+        # that fights the range-hold closure → a sustained nose nod / limit cycle; it
+        # is DIVE's job to put a below target on the boresight). Sim: gain 0.10 nods
+        # ±13° on a ground target; 0.03 holds steady and framed.
+        vcenter = cfg.track_vcenter_gain * dy
         unclamped = (
             cfg.pitch_sign * (cfg.closure_p_gain * range_err + cfg.closure_i_gain * integ)
-            - cfg.pitch_sign * cfg.track_vcenter_gain * dy
+            - cfg.pitch_sign * vcenter
         )
         pitch = _clamp(unclamped, -cfg.max_pitch_deg, cfg.max_pitch_deg)
         # Back-calculation anti-windup: when the command saturates, roll the integral
@@ -363,8 +373,7 @@ def compute_intent(
         # winding (and instantly unwinds the moment the error reverses).
         if closure is not None and cfg.closure_i_gain > 0.0 and pitch != unclamped:
             closure.integral = (
-                cfg.pitch_sign * pitch - cfg.closure_p_gain * range_err
-                + cfg.track_vcenter_gain * dy
+                cfg.pitch_sign * pitch - cfg.closure_p_gain * range_err + vcenter
             ) / cfg.closure_i_gain
 
     return GuidanceIntent(

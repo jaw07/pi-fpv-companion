@@ -41,9 +41,15 @@ no guidance change fixes that; it needs a tilted mount or a wider/downward lens.
 
 Follow and **hold the distance at engagement**. Yaw is P + velocity feed-forward
 on the horizontal pixel error; pitch is a **PI** closure loop that holds the gap
-you locked at, plus a gentle vertical re-centre so the forward lean doesn't tip
-the target out the top. Altitude is held (throttle neutral / adaptive hover) —
-TRACK maintains its distance and follows; it never closes in and never dives.
+you locked at, plus a *gentle* vertical re-centre (`track_vcenter_gain`) so the
+forward lean doesn't tip the target out the top. That re-centre is deliberately
+**small**: it shares the pitch axis with the range-hold closure, and a large gain
+over-drives the pitch trying to fully centre a far-*below* target — which fights
+the closure into a sustained nose **nod** (sim: gain 0.10 swings the pitch ±13°
+on a ground target; 0.03 holds steady and framed). Fully centring a below target
+on the boresight is DIVE's job, not TRACK's. Altitude is held (throttle neutral /
+adaptive hover) — TRACK maintains its distance and follows; it never closes in
+and never dives.
 
 It does **not** converge to a fixed standoff. On the first TRACK frame of a lock
 it captures the target's current apparent size as the setpoint, so locking a far
