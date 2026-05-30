@@ -101,7 +101,8 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_forward_deg == 25.0     # steep lean at full descent (fast ground attack)
     assert s.dive_climb_forward_deg == 6.0   # gentle when level/climbing
     assert s.dive_max_pitch_deg == 30.0   # DIVE's own steeper clamp
-    assert s.dive_vrate_gain == 17.0      # closed-loop vertical homing enabled
+    assert s.dive_vrate_gain == 12.0      # closed-loop vertical homing (P)
+    assert s.dive_vrate_damp == 3.0       # derivative damping (anti-wiggle)
     assert s.dive_max_descent_mps == 8.0
     assert s.dive_max_climb_mps == 4.0
 
@@ -145,6 +146,12 @@ def test_rejects_negative_vrate_gain(tmp_path):
 def test_rejects_negative_vertical_clamps(tmp_path):
     with pytest.raises(ValueError, match="dive_max_descent_mps"):
         load(_write_guidance(tmp_path, "dive_max_descent_mps: -2"))
+
+
+def test_rejects_negative_dive_vrate_damp(tmp_path):
+    # Negative derivative damping would AMPLIFY the dive oscillation it exists to remove.
+    with pytest.raises(ValueError, match="dive_vrate_damp"):
+        load(_write_guidance(tmp_path, "dive_vrate_damp: -2"))
 
 
 def test_rejects_negative_closure_i_gain(tmp_path):
