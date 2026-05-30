@@ -46,8 +46,8 @@ fc:
   stab_hover_learn: true
   stab_hover_learn_kp: 50.0     # PWM per (m/s) climb — immediate damping (anti-oscillation)
   stab_hover_learn_gain: 20.0   # Ki: PWM per (m/s) climb per second — slow hover trim
-  stab_hover_learn_band: 0.05   # hold altitude only while |thrust-0.5|<this; MUST be
-                                # below guidance.dive_descent or the dive is cancelled
+  stab_hover_learn_band: 0.05   # hold deadband for the thrust-stick vertical path
+                                # (the closed-loop dive commands a rate, not a stick)
   stab_hover_min_us: 1200
   stab_hover_max_us: 1700
   angle_max_deg: 45.0        # full roll/pitch stick = this lean (match FC ANGLE_MAX)

@@ -20,7 +20,9 @@ from ArduPilot master source + MAVLink message definitions (GitHub), 2026-05-23.
   is climb rate. Set 8 → raw normalized throttle (open-loop, unsafe for a dive — don't).
 - Mapping (GCS_MAVLink_Copter.cpp): clamp thrust [0,1]; `=0.5` hold; `>0.5` climb at
   `(thrust-0.5)*2*WPNAV_SPEED_UP`; `<0.5` descend at `(0.5-thrust)*2*WPNAV_SPEED_DN`.
-  So our `dive_descent=0.25` → thrust 0.25 → descend at `0.5*WPNAV_SPEED_DN`.
+  (We don't use GUIDED_NOGPS; the STABILIZE dive uses RC-override throttle, and the
+  closed-loop DIVE commands a vertical RATE the companion tracks on `VFR_HUD.climb`
+  — see `dive-guidance.md`.)
 - Introduced Copter 4.1.0; present in all 4.x.
 
 ## 2. GUIDED_NOGPS
