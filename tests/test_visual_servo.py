@@ -1,7 +1,7 @@
 import pytest
 
 from pi_fpv_companion.types import Detection, FilteredTarget, GuidanceMode
-from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
+from pi_fpv_companion.guidance.visual_servo import ClosureState, ServoConfig, compute_intent
 
 
 def _cfg(**kw):
@@ -9,7 +9,7 @@ def _cfg(**kw):
         frame_width=720, frame_height=576,
         max_yaw_rate_dps=60.0, max_pitch_deg=15.0,
         pixel_deadzone_px=20.0, yaw_p_gain=0.15, yaw_ff_gain=0.0,
-        desired_bbox_frac=0.30, closure_p_gain=50.0,
+        desired_bbox_frac=0.30, closure_p_gain=4.0,   # range-linear (inverse-size) scale
     )
     base.update(kw)
     return ServoConfig(**base)
@@ -89,6 +89,68 @@ def test_pitch_clamped_both_directions():
     close = compute_intent(_target(360, 288, h=cfg.frame_height), cfg)
     assert far.pitch_deg == -cfg.max_pitch_deg
     assert close.pitch_deg == cfg.max_pitch_deg
+
+
+# ---- PI closure (ClosureState): exact standoff on a mover ----
+
+def _ft(track_id, h, ts):
+    return FilteredTarget(
+        detection=Detection(x=360, y=288, w=40, h=h, confidence=0.9, class_id=0),
+        track_id=track_id, vx_px_s=0.0, vy_px_s=0.0, quality=0.9, timestamp=ts,
+    )
+
+
+def test_closure_integral_winds_in_more_lean_on_a_persistent_far_target():
+    # A target held below the hold size (far) should accrue MORE nose-down over
+    # time as the integral winds in — that extra lean is what cancels the pure-P
+    # steady-state range offset.
+    cfg = _cfg(closure_p_gain=1.0, closure_i_gain=2.0)
+    cs = ClosureState()
+    p0 = compute_intent(_ft(1, h=120, ts=0.0), cfg, closure=cs).pitch_deg
+    out = None
+    for i in range(1, 30):
+        out = compute_intent(_ft(1, h=120, ts=i * 0.1), cfg, closure=cs)
+    assert out.pitch_deg < p0 - 1.0          # noticeably more nose-down than t0
+    assert out.pitch_deg >= -cfg.max_pitch_deg
+
+
+def test_closure_integral_resets_on_a_new_lock():
+    cfg = _cfg(closure_p_gain=1.0, closure_i_gain=2.0)
+    cs = ClosureState()
+    for i in range(20):
+        compute_intent(_ft(1, h=80, ts=i * 0.1), cfg, closure=cs)
+    assert cs.integral != 0.0                 # wound up on track 1
+    compute_intent(_ft(2, h=80, ts=2.1), cfg, closure=cs)   # operator switched target
+    assert cs.integral == 0.0 and cs.track_id == 2          # cleared, no carryover
+
+
+def test_closure_anti_windup_bounds_the_integral_and_unwinds():
+    # Drive hard into the clamp: back-calculation keeps the integral's authority
+    # within the pitch budget (no runaway windup), and it unwinds once the target
+    # becomes too close (error reverses) so the loop backs off instead of staying
+    # pinned nose-down.
+    cfg = _cfg(closure_p_gain=1.0, closure_i_gain=5.0)
+    cs = ClosureState()
+    for i in range(200):
+        compute_intent(_ft(1, h=50, ts=i * 0.1), cfg, closure=cs)   # far -> saturate
+    assert abs(cfg.closure_i_gain * cs.integral) <= cfg.max_pitch_deg + 1e-6
+    out = None
+    for i in range(80):
+        out = compute_intent(_ft(1, h=int(0.55 * 576), ts=20.0 + i * 0.1), cfg, closure=cs)
+    assert out.pitch_deg > 0.0                # integral unwound -> backs off
+
+
+def test_closure_integral_inert_without_state_or_gain():
+    # No ClosureState, or zero gain, -> pure-P (no accumulation): the system stays
+    # backward compatible and STANDBY/DIVE (which pass closure=None) are unaffected.
+    cfg = _cfg(closure_p_gain=2.0, closure_i_gain=5.0)
+    a = compute_intent(_ft(1, h=80, ts=1.0), cfg).pitch_deg           # closure=None
+    b = compute_intent(_ft(1, h=80, ts=2.0), cfg).pitch_deg
+    assert a == b
+    cs = ClosureState()
+    cfg0 = _cfg(closure_p_gain=2.0, closure_i_gain=0.0)
+    compute_intent(_ft(1, h=80, ts=1.0), cfg0, closure=cs)
+    assert cs.integral == 0.0                  # gain 0 -> integrator never engages
 
 
 def test_velocity_feedforward_adds_yaw_for_a_moving_centred_target():

@@ -109,9 +109,13 @@ GuidanceIntent(roll_deg, pitch_deg, yaw_rate_dps, thrust, timestamp)
 - **Yaw (both modes):** horizontal pixel offset from center → yaw rate
   (P gain + velocity feedforward), with a deadzone and a clamp. Keeps the target
   centered. Roll stays ~0 (turns are flown with yaw, pure-pursuit style).
-- **TRACK:** pitch regulates **range** — bbox size vs `desired_bbox_frac`: too far
-  → nose down (accelerate forward), too close → ease off / nose up (a collision
-  guard, not a ram gain). `thrust = 0.5` (hold altitude).
+- **TRACK:** pitch regulates **range** to hold a fixed standoff. The error is
+  range-linear — `1/desired_bbox_frac − 1/size_frac` (apparent size is ∝ 1/range,
+  so its inverse tracks range): too far → nose down (accelerate forward), too close
+  → ease off / nose up (a collision guard, not a ram gain). A **PI** loop —
+  proportional plus an integral with back-calculation anti-windup — holds the
+  standoff *exactly* even on a target moving away (pure-P would settle farther
+  back). `thrust = 0.5` (hold altitude); it follows and holds distance, never dives.
 - **DIVE:** closed-loop constant-bearing homing. A forward lean closes the gap —
   **steep** (fast) diving onto a below target, **gentle** when level/climbing
   toward an above one (so it stays framed) — and a commanded vertical **rate**
@@ -217,8 +221,11 @@ and you instantly have the sticks again.
    radio within ~1–3 s.
 4. **Camera watchdog.** If the camera stalls or never delivers a frame, the
    process exits for systemd to restart it.
-5. **Closure limiting.** TRACK pitch is regulated by bbox size and reverses past
-   the target fraction — a collision guard, not a ram-the-target gain.
+5. **Closure limiting.** TRACK pitch is regulated by a range-linear error (from
+   bbox size) and reverses past the target fraction — a collision guard, not a
+   ram-the-target gain. The PI integral has back-calculation anti-windup and
+   resets on a new lock / on leaving TRACK, so it can't carry stale lean across
+   targets or modes.
 
 The most dangerous misconfiguration is a **wrong stick sign** (divergent positive
 feedback — the craft accelerates *away* from the target). It must be bench-verified

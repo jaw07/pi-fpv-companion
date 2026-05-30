@@ -40,9 +40,21 @@ no guidance change fixes that; it needs a tilted mount or a wider/downward lens.
 ## TRACK
 
 Follow and hold range. Yaw is P + velocity feed-forward on the horizontal pixel
-error; pitch is closure-regulated to `desired_bbox_frac` (bbox height is the
-range proxy) plus a gentle vertical re-centre so the forward lean doesn't tip the
-target out the top. Altitude is held (throttle neutral / adaptive hover).
+error; pitch is a **PI** closure loop that holds a fixed standoff, plus a gentle
+vertical re-centre so the forward lean doesn't tip the target out the top.
+Altitude is held (throttle neutral / adaptive hover) — TRACK follows and keeps
+its distance, it never dives.
+
+The closure error is **range-linear**, not raw apparent size. Apparent size is
+∝ 1/range, so the controller regulates `1/desired_bbox_frac − 1/size_frac`
+(≈ `hold_range − range`): this conditions the loop identically at every distance,
+where a raw-size error would make a far target sluggish and an integral on top of
+it slow-oscillate. The **integral** (with back-calculation anti-windup, reset per
+lock / on leaving TRACK) drives the steady-state range to *exactly*
+`desired_bbox_frac` on a target moving away — pure-P alone settles farther back,
+because a residual size error is needed to sustain the chase lean. Sim: a target
+receding at 1 m/s is held at +0.1 m of the hold distance with no limit cycle,
+versus several metres of lag for pure-P. `closure_i_gain = 0` selects pure-P.
 
 TRACK keeps the target framed across the whole realistic crossing-speed envelope;
 it only loses a target whose angular rate exceeds `max_yaw_rate_dps` (e.g. a fast
@@ -127,8 +139,10 @@ falls back to an open-loop throttle map (degraded but still descends). There is
 
 ## Validated envelope
 
-- **TRACK**: keeps the target framed for all reasonable crossing speeds; converges
-  to the closure hold range (~6 m for a 1.7 m subject).
+- **TRACK**: keeps the target framed for all reasonable crossing speeds; the PI
+  closure converges to the hold range (`desired_bbox_frac` 0.15 ≈ 11.5 m for a
+  1.7 m subject) and holds it on a receding target to within ~0.1 m (no limit
+  cycle), versus several metres of lag for pure-P.
 - **DIVE**: closes onto a target **below, level, or above** — sim reaches impact
   for far ground (140 m), level, and a +25 m above target at 100 m; with vertical
   homing OFF the same dives pancake or lose the target. Bounded by the fixed-camera
