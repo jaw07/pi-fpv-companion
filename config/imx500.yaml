@@ -67,7 +67,7 @@ fc:
 guidance:
   max_yaw_rate_dps: 60
   max_pitch_deg: 15.0
-  pixel_deadzone_px: 20
+  pixel_deadzone_px: 8       # small deadband -> clean centre hit (was 20 -> ~20px terminal miss)
   yaw_p_gain: 0.15
   yaw_ff_gain: 0.05
   # TRACK holds the distance AT ENGAGEMENT (whatever the gap is when you flick to
