@@ -46,6 +46,11 @@ class ServoConfig:
     # gentler) track_vcenter_gain ON TOP of range-hold so a forward lean — which
     # tilts the fixed camera down and makes the target rise in frame — is corrected
     # back toward centre instead of letting the target drift out the top.
+    # Lead pursuit: aim at where the target WILL be (current + lead_time · image
+    # velocity) instead of where it is. Shortens the intercept path against a
+    # crossing target (pure pursuit tail-chases). The alpha-beta filter supplies
+    # the velocity. 0 = pure pursuit. Applies to yaw and the DIVE vertical aim.
+    lead_time_s: float = 0.0
     pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (TRACK/DIVE aim)
     track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
                                   # (keeps target centred as lean tilts the camera; 0 = off)
@@ -93,11 +98,15 @@ def compute_intent(
     centring is identical in both."""
     cx = cfg.frame_width / 2.0
     det = target.detection
+    # Lead pursuit: aim at the target's predicted position (current + lead · image
+    # velocity), so yaw/dive aim at the intercept instead of tail-chasing a crosser.
+    aim_x = det.x + cfg.lead_time_s * target.vx_px_s
+    aim_y = det.y + cfg.lead_time_s * target.vy_px_s
 
     # Horizontal: P on the centring error + feedforward on the target's image
     # velocity. P alone leaves a structural lag against a moving target; the
     # feedforward (target moving right -> pre-emptively yaw right) cancels it.
-    dx = _deadband(det.x - cx, cfg.pixel_deadzone_px)
+    dx = _deadband(aim_x - cx, cfg.pixel_deadzone_px)
     yaw_rate = _clamp(
         cfg.yaw_sign * (cfg.yaw_p_gain * dx + cfg.yaw_ff_gain * target.vx_px_s),
         -cfg.max_yaw_rate_dps, cfg.max_yaw_rate_dps,
@@ -130,8 +139,8 @@ def compute_intent(
         # descend (raises it back); above centre -> climb. Gated on horizontal aim
         # so we centre yaw before committing power. The backend tracks the rate on
         # VFR_HUD.climb (its P-loop's steady-state error is integrated out here).
-        e_y = _deadband(det.y - cy, cfg.pixel_deadzone_px) / (cfg.frame_height / 2.0)
-        ex = (det.x - cx) / (cfg.frame_width / 2.0)
+        e_y = _deadband(aim_y - cy, cfg.pixel_deadzone_px) / (cfg.frame_height / 2.0)
+        ex = (aim_x - cx) / (cfg.frame_width / 2.0)
         commit = _clamp(1.0 - abs(ex) / cfg.dive_center_frac, 0.0, 1.0) \
             if cfg.dive_center_frac > 0 else 0.0
         if cfg.dive_vrate_gain > 0.0:

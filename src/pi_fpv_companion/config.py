@@ -228,6 +228,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         pixel_deadzone_px=d.get("pixel_deadzone_px", 20.0),
         yaw_p_gain=d.get("yaw_p_gain", 0.15),
         yaw_ff_gain=d.get("yaw_ff_gain", 0.05),
+        lead_time_s=d.get("lead_time_s", 0.0),
         desired_bbox_frac=d.get("desired_bbox_frac", 0.30),
         closure_p_gain=d.get("closure_p_gain", 50.0),
         pitch_p_gain=d.get("pitch_p_gain", 0.15),

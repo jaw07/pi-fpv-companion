@@ -104,6 +104,20 @@ def test_velocity_feedforward_adds_yaw_for_a_moving_centred_target():
     assert compute_intent(fast, cfg).yaw_rate_dps == cfg.max_yaw_rate_dps
 
 
+def test_lead_pursuit_aims_ahead_of_a_crossing_target():
+    # With lead, a target moving right is aimed at where it WILL be → more yaw-right
+    # than pure pursuit on the same instantaneous position.
+    cx, cy = 360.0, 288.0
+    moving = _target(cx + 30, cy, vx=300.0)            # right of centre, moving right
+    pure = compute_intent(moving, _cfg(yaw_ff_gain=0.0, lead_time_s=0.0)).yaw_rate_dps
+    lead = compute_intent(moving, _cfg(yaw_ff_gain=0.0, lead_time_s=0.3)).yaw_rate_dps
+    assert lead > pure > 0
+    # A centred target moving right → pure pursuit sees zero error; lead aims right.
+    centred = _target(cx, cy, vx=300.0)
+    assert compute_intent(centred, _cfg(yaw_ff_gain=0.0, lead_time_s=0.3)).yaw_rate_dps > 0
+    assert compute_intent(centred, _cfg(yaw_ff_gain=0.0, lead_time_s=0.0)).yaw_rate_dps == 0
+
+
 def test_intent_timestamp_matches_target_timestamp():
     cfg = _cfg()
     out = compute_intent(_target(cfg.frame_width / 2, cfg.frame_height / 2, ts=42.0), cfg)
