@@ -100,28 +100,33 @@ def _ft(track_id, h, ts):
     )
 
 
-def test_closure_integral_winds_in_more_lean_on_a_persistent_far_target():
-    # A target held below the hold size (far) should accrue MORE nose-down over
-    # time as the integral winds in — that extra lean is what cancels the pure-P
-    # steady-state range offset.
+def test_closure_captures_engage_distance_and_winds_in_to_hold_it():
+    # TRACK captures the apparent size at engage as the hold setpoint. When the
+    # target then drifts FARTHER (smaller box) the integral winds in more nose-down
+    # to restore the engage gap — and a target held AT the engage size produces no
+    # lean (nothing to correct), proving it holds distance rather than closing.
     cfg = _cfg(closure_p_gain=1.0, closure_i_gain=2.0)
     cs = ClosureState()
-    p0 = compute_intent(_ft(1, h=120, ts=0.0), cfg, closure=cs).pitch_deg
+    at_engage = compute_intent(_ft(1, h=200, ts=0.0), cfg, closure=cs)  # capture @ h=200
+    assert abs(at_engage.pitch_deg) < 1e-6      # at the engage distance -> no lean
+    p_early = compute_intent(_ft(1, h=120, ts=0.1), cfg, closure=cs).pitch_deg  # drifted far
     out = None
-    for i in range(1, 30):
+    for i in range(2, 30):
         out = compute_intent(_ft(1, h=120, ts=i * 0.1), cfg, closure=cs)
-    assert out.pitch_deg < p0 - 1.0          # noticeably more nose-down than t0
+    assert out.pitch_deg < p_early - 1.0        # integral winds in to restore the gap
     assert out.pitch_deg >= -cfg.max_pitch_deg
 
 
-def test_closure_integral_resets_on_a_new_lock():
+def test_closure_state_resets_and_recaptures_on_a_new_lock():
     cfg = _cfg(closure_p_gain=1.0, closure_i_gain=2.0)
     cs = ClosureState()
-    for i in range(20):
-        compute_intent(_ft(1, h=80, ts=i * 0.1), cfg, closure=cs)
-    assert cs.integral != 0.0                 # wound up on track 1
-    compute_intent(_ft(2, h=80, ts=2.1), cfg, closure=cs)   # operator switched target
-    assert cs.integral == 0.0 and cs.track_id == 2          # cleared, no carryover
+    compute_intent(_ft(1, h=200, ts=0.0), cfg, closure=cs)       # engage track 1 @ h=200
+    for i in range(1, 20):
+        compute_intent(_ft(1, h=120, ts=i * 0.1), cfg, closure=cs)   # drifted far -> winds
+    assert cs.integral != 0.0 and cs.setpoint_inv is not None
+    compute_intent(_ft(2, h=80, ts=2.1), cfg, closure=cs)        # operator switched target
+    assert cs.integral == 0.0 and cs.track_id == 2               # windup cleared
+    assert cs.setpoint_inv == 1.0 / (80 / 576)                   # new engage distance captured
 
 
 def test_closure_anti_windup_bounds_the_integral_and_unwinds():
@@ -131,13 +136,14 @@ def test_closure_anti_windup_bounds_the_integral_and_unwinds():
     # pinned nose-down.
     cfg = _cfg(closure_p_gain=1.0, closure_i_gain=5.0)
     cs = ClosureState()
-    for i in range(200):
-        compute_intent(_ft(1, h=50, ts=i * 0.1), cfg, closure=cs)   # far -> saturate
+    compute_intent(_ft(1, h=300, ts=0.0), cfg, closure=cs)          # engage near (big box)
+    for i in range(1, 200):
+        compute_intent(_ft(1, h=50, ts=i * 0.1), cfg, closure=cs)   # drifted far -> saturate
     assert abs(cfg.closure_i_gain * cs.integral) <= cfg.max_pitch_deg + 1e-6
     out = None
     for i in range(80):
-        out = compute_intent(_ft(1, h=int(0.55 * 576), ts=20.0 + i * 0.1), cfg, closure=cs)
-    assert out.pitch_deg > 0.0                # integral unwound -> backs off
+        out = compute_intent(_ft(1, h=500, ts=20.0 + i * 0.1), cfg, closure=cs)  # now too CLOSE
+    assert out.pitch_deg > 0.0                # integral unwound -> backs off (no longer pinned down)
 
 
 def test_closure_integral_inert_without_state_or_gain():
