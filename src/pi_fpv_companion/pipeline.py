@@ -71,6 +71,7 @@ class Pipeline:
         # the FC's select channel cycles the lock among current detections.
         self._last_select_pwm = 0
         self._tracks: Optional[list] = None
+        self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -194,7 +195,15 @@ class Pipeline:
             preview_mode = (
                 switch.mode if switch.mode is not GuidanceMode.STANDBY else GuidanceMode.TRACK
             )
-            intent = compute_intent(target, self._servo_cfg, preview_mode)
+            # Time since DIVE was engaged, for the lean soft-start (reset on exit).
+            if switch.mode is GuidanceMode.DIVE:
+                if self._dive_entered_t is None:
+                    self._dive_entered_t = now
+                dive_elapsed_s = now - self._dive_entered_t
+            else:
+                self._dive_entered_t = None
+                dive_elapsed_s = 1e9
+            intent = compute_intent(target, self._servo_cfg, preview_mode, dive_elapsed_s)
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)

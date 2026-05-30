@@ -314,6 +314,7 @@ class SimWorld:
         tvel = self.target_vel
         rng_gen = random.Random(self.seed)
         det_buffer: List[Optional[Detection]] = []   # for detector latency
+        dive_entered_t: Optional[float] = None        # for the DIVE lean soft-start
         t = 0.0
         n = int(duration_s / dt)
         for i in range(n):
@@ -321,6 +322,13 @@ class SimWorld:
             mode = (GuidanceMode.TRACK if (dive_after_s is not None and t < dive_after_s)
                     else (GuidanceMode.DIVE if dive_after_s is not None else mode))
             switch = SwitchState(active=True, pwm_us=1800, timestamp=t, mode=mode)
+            if mode is GuidanceMode.DIVE:
+                if dive_entered_t is None:
+                    dive_entered_t = t
+                dive_elapsed_s = t - dive_entered_t
+            else:
+                dive_entered_t = None
+                dive_elapsed_s = 1e9
             tvel = (tvel[0] + self.target_accel[0] * dt,
                     tvel[1] + self.target_accel[1] * dt,
                     tvel[2] + self.target_accel[2] * dt)
@@ -359,7 +367,7 @@ class SimWorld:
                 intent = ZERO_INTENT
                 muted, reason, q = True, "no target", 0.0
             else:
-                proposed = compute_intent(filtered, servo, mode)
+                proposed = compute_intent(filtered, servo, mode, dive_elapsed_s)
                 res = gate(proposed, filtered, switch, self.armed, t, self.safety)
                 intent = res.intent
                 muted, reason, q = res.muted, res.reason, filtered.quality

@@ -325,11 +325,11 @@ def test_ground_dive_through_real_iou_associator_holds_lock():
     w.tracker = IouAssociator(iou_threshold=0.3, max_lost_frames=15)
     tr = w.run(GuidanceMode.DIVE, duration_s=60.0)
     assert _converges(tr)
-    # The association holds the (tiny, distant) box through the whole dive. Any
-    # muting is a brief startup transient: the steep lean's fast initial pitch-down
-    # slews the low-in-frame target faster than the filter's velocity estimate
-    # first predicts, so the innovation gate rejects for ~0.3 s until it catches up.
-    assert not [tk for tk in tr.ticks if tk.muted and tk.t > 1.0]   # none after onset
+    # The association holds the (tiny, distant) box through the whole dive with NO
+    # muting — the lean soft-start ramps the steep lean in so the target never slews
+    # faster than the tracker/filter can follow at commit. (Without the soft-start
+    # this showed a ~0.3 s onset transient.)
+    assert tr.muted_ticks == 0
 
 
 def test_occluded_target_mutes_then_reacquires_and_converges():

@@ -240,6 +240,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_forward_deg=d.get("dive_forward_deg", 10.0),
         dive_climb_forward_deg=d.get("dive_climb_forward_deg", 6.0),
         dive_max_pitch_deg=d.get("dive_max_pitch_deg", 30.0),
+        dive_lean_ramp_s=d.get("dive_lean_ramp_s", 0.5),
         dive_center_frac=d.get("dive_center_frac", 0.30),
         dive_vrate_gain=d.get("dive_vrate_gain", 0.0),
         dive_max_descent_mps=d.get("dive_max_descent_mps", 8.0),

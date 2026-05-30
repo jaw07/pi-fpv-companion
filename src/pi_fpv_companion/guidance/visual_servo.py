@@ -65,6 +65,10 @@ class ServoConfig:
     dive_forward_deg: float = 10.0       # STEEP lean at full descent (fast ground attack)
     dive_climb_forward_deg: float = 6.0  # gentle lean when level / climbing (keeps it framed)
     dive_max_pitch_deg: float = 30.0     # DIVE nose-down clamp (steeper than TRACK)
+    # Soft-start: ramp the steep lean in over this many seconds at DIVE commit so
+    # the target doesn't slew across the frame faster than the tracker/filter can
+    # follow (a snap to full lean briefly out-runs the velocity estimate). 0 = snap.
+    dive_lean_ramp_s: float = 0.5
     dive_center_frac: float = 0.30  # normalised horizontal aim error within which to commit vertical
     # --- DIVE closed-loop vertical (constant-bearing homing) ---------------------
     # The fixed camera couples pitch (forward closure) and vertical aim. To break
@@ -97,8 +101,13 @@ def _deadband(v: float, dz: float) -> float:
 
 def compute_intent(
     target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK,
+    dive_elapsed_s: float = 1e9,
 ) -> GuidanceIntent:
     """Map the filtered target's pixel state to an attitude intent.
+
+    `dive_elapsed_s` is the time since DIVE was engaged; it soft-starts the steep
+    lean (dive_lean_ramp_s). Defaults to fully ramped, so TRACK and any caller that
+    doesn't track it are unaffected.
 
     TRACK holds range (closure regulated to desired_bbox_frac) at constant altitude.
     DIVE commits: PITCH leans forward to close, and a commanded vertical RATE
@@ -161,8 +170,12 @@ def compute_intent(
             else (cfg.dive_max_descent_mps if e_y > 0.0 else 0.0)
         ramp = max(1e-3, 0.25 * cfg.dive_max_descent_mps)
         descent_frac = _clamp(descend_mps / ramp, 0.0, 1.0)
+        # Soft-start: at commit, ramp the steep contribution in over dive_lean_ramp_s
+        # so the camera doesn't slew faster than the filter can track.
+        soft = _clamp(dive_elapsed_s / cfg.dive_lean_ramp_s, 0.0, 1.0) \
+            if cfg.dive_lean_ramp_s > 0.0 else 1.0
         lean = cfg.dive_climb_forward_deg \
-            + (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * descent_frac
+            + (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * descent_frac * soft
         pitch = _clamp(-lean, -cfg.dive_max_pitch_deg, 0.0)
     else:
         # TRACK: range-hold (pitch ~ apparent-size error) PLUS a vertical-centring

@@ -124,6 +124,7 @@ guidance:
   dive_forward_deg: 25.0    # steep lean at full descent (fast ground attack)
   dive_climb_forward_deg: 6.0   # gentle lean when level/climbing (keeps an above target framed)
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than TRACK max_pitch_deg)
+  dive_lean_ramp_s: 0.5      # soft-start: ramp the steep lean in over this many s at commit
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 0.0      # m/s of climb command per unit normalised vert error (0 = off)
   dive_max_descent_mps: 8.0 # clamp on commanded descent
