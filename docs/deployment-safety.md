@@ -43,8 +43,12 @@ A bare FPV quad has no GPS / EKF position estimate. The backend injects AETR
 sticks via `RC_CHANNELS_OVERRIDE` — needs only baro + IMU, no GPS, no EKF origin
 (SITL-proven on 4.6.3). No SET_ATTITUDE_TARGET, no GUIDED, no `GUID_OPTIONS`.
 
-- [ ] FC firmware: ArduCopter 4.6+. Set the FC's **`ANGLE_MAX`** to match
-      `fc.angle_max_deg` (default 45°) so commanded lean = actual lean.
+- [ ] FC firmware: ArduCopter 4.6+. On boot the companion **validates + writes**
+      the FC params it needs — `ANGLE_MAX` (= `fc.angle_max_deg`, so commanded lean
+      = actual lean) and the companion RC channels' `*_OPTION = 0` — verifying each
+      write. **Check the startup log** (`ok`/`set`/`write-fail` per param). It does
+      NOT touch serial/baud (the link it's on) or flight modes/failsafes — set
+      those yourself. Disable with `fc.enforce_params_on_start: false`.
 - [ ] **`control_mode: stabilize` (default) has no FC altitude hold** — throttle
       is direct. TRACK altitude is held by the companion's **adaptive hover**
       (a vertical-velocity PI loop on `VFR_HUD.climb`: it learns the hover throttle

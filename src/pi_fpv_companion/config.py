@@ -107,6 +107,13 @@ class FcSection:
     rc_roll_sign: int = 1
     rc_pitch_sign: int = 1
     rc_yaw_sign: int = 1
+    # Startup FC validation: on boot, confirm the FC params the companion needs and
+    # WRITE any that differ (verified). ANGLE_MAX (from angle_max_deg) and the
+    # companion's RC channels' *_OPTION=0 are always enforced; `enforce_params` adds
+    # explicit name->value overrides (e.g. {SR2_EXTRA2: 5}). Serial/baud are NOT
+    # touched (the link the companion is on must already be correct to connect).
+    enforce_params_on_start: bool = True
+    enforce_params: Dict[str, float] = field(default_factory=dict)
     betaflight: Optional[BetaflightMapping] = None
 
 
@@ -219,6 +226,8 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         rc_roll_sign=d.get("rc_roll_sign", 1),
         rc_pitch_sign=d.get("rc_pitch_sign", 1),
         rc_yaw_sign=d.get("rc_yaw_sign", 1),
+        enforce_params_on_start=d.get("enforce_params_on_start", True),
+        enforce_params=dict(d.get("enforce_params", {})),
         betaflight=bf,
     )
 

@@ -193,6 +193,51 @@ class ArduPilotBackend:
         self._mav.wait_heartbeat(timeout=timeout)
         self._request_streams()
 
+    def read_param(self, name: str, timeout: float = 5.0) -> Optional[tuple]:
+        """Read one FC parameter. Returns (value, mav_param_type) or None on timeout.
+        Call at startup (before the main loop drains messages)."""
+        if self._mav is None:
+            return None
+        self._mav.mav.param_request_read_send(
+            self._mav.target_system, self._mav.target_component, name.encode(), -1)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            pv = self._mav.recv_match(type="PARAM_VALUE", blocking=True,
+                                      timeout=max(0.1, end - time.monotonic()))
+            if pv is not None and pv.param_id.strip("\x00") == name:
+                return float(pv.param_value), int(pv.param_type)
+        return None
+
+    def ensure_params(self, desired: Dict[str, float], tol: float = 0.5) -> Dict[str, str]:
+        """Confirm each desired FC parameter and WRITE any that differ, verifying the
+        write. The user authorised this (startup FC validation/auto-config). Only the
+        listed params are touched; every action is logged. Returns {name: status}
+        where status is 'ok' | 'set' | 'read-fail' | 'write-fail'."""
+        result: Dict[str, str] = {}
+        for name, want in desired.items():
+            cur = self.read_param(name)
+            if cur is None:
+                _log.warning("FC param %s: could not read (skipped)", name)
+                result[name] = "read-fail"
+                continue
+            value, ptype = cur
+            if abs(value - want) <= tol:
+                _log.info("FC param %s = %g (ok)", name, value)
+                result[name] = "ok"
+                continue
+            _log.warning("FC param %s = %g, want %g — writing", name, value, want)
+            self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
+                                         name.encode(), float(want), ptype)
+            check = self.read_param(name)
+            if check is not None and abs(check[0] - want) <= tol:
+                _log.warning("FC param %s -> %g (written, verified)", name, want)
+                result[name] = "set"
+            else:
+                got = check[0] if check else float("nan")
+                _log.error("FC param %s write FAILED (still %g, wanted %g)", name, got, want)
+                result[name] = "write-fail"
+        return result
+
     def _request_streams(self, rate_hz: int = 10) -> None:
         """ArduPilot does not stream RC_CHANNELS / VFR_HUD / ATTITUDE on a MAVLink
         serial port until a GCS asks. Without RC_CHANNELS the engage switch is
