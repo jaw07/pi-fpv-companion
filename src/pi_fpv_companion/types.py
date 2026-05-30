@@ -62,12 +62,19 @@ class GuidanceIntent:
                   (0.5 = hover, adaptive-hover-trimmed); ALT_HOLD -> climb-rate
                   stick (0.5 = hold altitude via baro). Below 0.5 descends (the
                   DIVE gravity-dive); above climbs. The companion owns altitude.
+      vertical_rate_mps : optional CLOSED-LOOP vertical command (+ up, m/s). When
+                  set (DIVE's constant-bearing homing), the ArduPilot backend's
+                  climb-rate PI loop tracks it against VFR_HUD.climb instead of
+                  using `thrust` as an open-loop stick — so the descent/climb
+                  follows the target's framing (the flight path tracks the line of
+                  sight) regardless of target altitude. None -> use `thrust`.
     """
     roll_deg: float
     pitch_deg: float
     yaw_rate_dps: float
     thrust: float
     timestamp: float
+    vertical_rate_mps: float | None = None
 
 
 @dataclass(frozen=True)

@@ -95,47 +95,27 @@ guidance: {{{guidance_line}}}
     return p
 
 
-def test_imx500_enables_tuned_agnostic_dive():
+def test_imx500_enables_closed_loop_dive():
     cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
     s = cfg.servo
-    assert s.dive_vertical_bias_frac == 0.50
-    assert s.dive_los_band_deg == 30.0    # geometry-match descent to depression
-    assert s.dive_pitch_up_max_deg == 0.0   # commit: never pitch nose-up
-    assert s.camera_vfov_deg == 52.3      # real IMX500 vertical FoV (product brief)
+    assert s.dive_forward_deg == 8.0      # fixed gentle commit lean
+    assert s.dive_vrate_gain == 17.0      # closed-loop vertical homing enabled
+    assert s.dive_max_descent_mps == 8.0
+    assert s.dive_max_climb_mps == 4.0
 
 
-def test_rejects_out_of_range_vertical_bias(tmp_path):
-    with pytest.raises(ValueError, match="dive_vertical_bias_frac"):
-        load(_write_guidance(tmp_path, "dive_vertical_bias_frac: 1.5"))
+def test_rejects_negative_vrate_gain(tmp_path):
+    with pytest.raises(ValueError, match="dive_vrate_gain"):
+        load(_write_guidance(tmp_path, "dive_vrate_gain: -1"))
 
 
-def test_rejects_nonpositive_los_band(tmp_path):
-    with pytest.raises(ValueError, match="dive_los_band_deg"):
-        load(_write_guidance(tmp_path, "dive_los_band_deg: 0"))
+def test_rejects_negative_vertical_clamps(tmp_path):
+    with pytest.raises(ValueError, match="dive_max_descent_mps"):
+        load(_write_guidance(tmp_path, "dive_max_descent_mps: -2"))
 
 
-def test_rejects_implausible_vfov(tmp_path):
-    with pytest.raises(ValueError, match="camera_vfov_deg"):
-        load(_write_guidance(tmp_path, "camera_vfov_deg: 0"))
-
-
-def test_rejects_dive_descent_swallowed_by_hover_band(tmp_path):
-    # dive_descent must exceed the adaptive-hover hold band, or the hold loop
-    # cancels the descent and the aircraft never dives.
-    p = tmp_path / "c.yaml"
-    p.write_text("""
-camera: {type: synthetic}
-detector: {type: none}
-tracker: {type: iou}
-fc: {backend: ardupilot, control_mode: stabilize, stab_hover_learn_band: 0.20}
-guidance: {dive_descent: 0.12}
-""")
-    with pytest.raises(ValueError, match="dive_descent"):
-        load(p)
-
-
-def test_vfov_defaults_to_imx500_when_absent(tmp_path):
-    # A guidance section that doesn't mention the camera still gets the IMX500 VFoV.
+def test_dive_defaults_to_vertical_homing_off(tmp_path):
+    # A guidance section that doesn't enable the dive leaves vertical homing off.
     cfg = load(_write_guidance(tmp_path, "max_yaw_rate_dps: 60"))
-    assert cfg.servo.camera_vfov_deg == 52.3
-    assert cfg.servo.dive_pitch_up_max_deg is None   # legacy (no cap) by default
+    assert cfg.servo.dive_vrate_gain == 0.0
+    assert cfg.servo.dive_forward_deg == 10.0    # dataclass default

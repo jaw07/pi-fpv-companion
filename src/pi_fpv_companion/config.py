@@ -233,12 +233,10 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         pitch_p_gain=d.get("pitch_p_gain", 0.15),
         track_vcenter_gain=d.get("track_vcenter_gain", 0.10),
         dive_forward_deg=d.get("dive_forward_deg", 10.0),
-        dive_descent=d.get("dive_descent", 0.0),
         dive_center_frac=d.get("dive_center_frac", 0.30),
-        dive_vertical_bias_frac=d.get("dive_vertical_bias_frac", 0.0),
-        dive_los_band_deg=d.get("dive_los_band_deg", 30.0),
-        dive_pitch_up_max_deg=d.get("dive_pitch_up_max_deg", None),
-        camera_vfov_deg=d.get("camera_vfov_deg", 52.3),
+        dive_vrate_gain=d.get("dive_vrate_gain", 0.0),
+        dive_max_descent_mps=d.get("dive_max_descent_mps", 8.0),
+        dive_max_climb_mps=d.get("dive_max_climb_mps", 4.0),
         yaw_sign=d.get("yaw_sign", 1.0),
         pitch_sign=d.get("pitch_sign", 1.0),
     )
@@ -279,32 +277,16 @@ def _validate(cfg: AppConfig) -> None:
                 f"fc.track_threshold_us ({fc.track_threshold_us}); otherwise the "
                 "switch reaches DIVE before TRACK and TRACK is unreachable"
             )
-        # A geometry-matched dive only offsets throttle by dive_descent; if the
-        # adaptive-hover hold band is as wide or wider, the hold loop cancels the
-        # descent and the aircraft never dives (see docs/dive-guidance.md).
-        if (fc.control_mode == "stabilize" and fc.stab_hover_learn
-                and 0.0 < cfg.servo.dive_descent <= fc.stab_hover_learn_band):
-            raise ValueError(
-                f"guidance.dive_descent ({cfg.servo.dive_descent}) must exceed "
-                f"fc.stab_hover_learn_band ({fc.stab_hover_learn_band}) or the "
-                "adaptive-hover hold loop will cancel the dive (it never descends)"
-            )
 
     s = cfg.servo
-    if not 0.0 <= s.dive_vertical_bias_frac < 1.0:
+    if s.dive_vrate_gain < 0.0:
         raise ValueError(
-            f"guidance.dive_vertical_bias_frac ({s.dive_vertical_bias_frac}) must be "
-            "in [0, 1): it biases the dive setpoint by this fraction of the half-frame"
+            f"guidance.dive_vrate_gain ({s.dive_vrate_gain}) must be >= 0 "
+            "(m/s of climb command per unit normalised vertical frame error)"
         )
-    if s.dive_los_band_deg <= 0.0:
+    if s.dive_max_descent_mps < 0.0 or s.dive_max_climb_mps < 0.0:
         raise ValueError(
-            f"guidance.dive_los_band_deg ({s.dive_los_band_deg}) must be > 0 "
-            "(it is the LOS-elevation ramp width for the dive bias/commit)"
-        )
-    if not 0.0 < s.camera_vfov_deg < 180.0:
-        raise ValueError(
-            f"guidance.camera_vfov_deg ({s.camera_vfov_deg}) must be in (0, 180); "
-            "set it to the camera's actual vertical field of view (IMX500: 52.3)"
+            "guidance.dive_max_descent_mps / dive_max_climb_mps must be >= 0"
         )
 
 

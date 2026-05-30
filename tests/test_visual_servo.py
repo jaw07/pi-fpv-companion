@@ -131,106 +131,70 @@ def test_pitch_sign_inversion_flips_closure_direction():
 
 # ---- DIVE vs TRACK modes ----
 
-def test_dive_leans_forward_when_centered():
-    cfg = _cfg()
+def _dcfg(**kw):
+    # Closed-loop DIVE config: fixed lean + vertical-rate homing enabled.
+    base = dict(dive_forward_deg=8.0, dive_center_frac=0.30, dive_vrate_gain=17.0,
+                dive_max_descent_mps=8.0, dive_max_climb_mps=4.0)
+    base.update(kw)
+    return _cfg(**base)
+
+
+def test_dive_pitch_is_a_fixed_forward_lean():
+    # Closed-loop DIVE: pitch is a fixed forward (nose-down) commit lean — the
+    # throttle handles vertical, so pitch does NOT track the vertical offset and
+    # does NOT depend on bbox size/range.
+    cfg = _dcfg()
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    # Centred (both axes) and at a close range: TRACK backs off (collision guard),
-    # DIVE commits forward by exactly the closing-lean bias (no vertical term).
-    centred_close = _target(cx, cy, h=int(0.55 * cfg.frame_height))
-    assert compute_intent(centred_close, cfg, GuidanceMode.TRACK).pitch_deg > 0.0
-    assert compute_intent(centred_close, cfg, GuidanceMode.DIVE).pitch_deg == -cfg.dive_forward_deg
+    for t in (_target(cx, cy), _target(cx, cy + 150), _target(cx, cy - 150),
+              _target(cx, cy, h=40), _target(cx, cy, h=int(0.55 * cfg.frame_height))):
+        assert compute_intent(t, cfg, GuidanceMode.DIVE).pitch_deg == -cfg.dive_forward_deg
 
 
-def test_dive_pitches_toward_vertical_offset():
-    cfg = _cfg()
+def test_dive_never_pitches_up():
+    # DIVE is commit: pitch is clamped nose-down (<= 0), even for a target high in
+    # frame (pitching up would fly backward — the climb is the throttle's job).
+    cfg = _dcfg(dive_forward_deg=0.0)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    low = _target(cx, cy + 150)    # target low in frame -> more nose-down
-    high = _target(cx, cy - 150)   # target high in frame -> nose up
-    p_low = compute_intent(low, cfg, GuidanceMode.DIVE).pitch_deg
-    p_high = compute_intent(high, cfg, GuidanceMode.DIVE).pitch_deg
-    assert p_low < -cfg.dive_forward_deg   # below centre -> extra forward/down
-    assert p_high > p_low                  # above centre -> less down (toward up)
-
-
-def test_dive_ignores_range_hold():
-    cfg = _cfg()
-    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    hold_h = int(cfg.desired_bbox_frac * cfg.frame_height)
-    at_hold = _target(cx, cy, h=hold_h)
-    far = _target(cx, cy, h=40)
-    # DIVE pitch depends on vertical position + bias, NOT on bbox size/range.
-    assert (compute_intent(at_hold, cfg, GuidanceMode.DIVE).pitch_deg
-            == compute_intent(far, cfg, GuidanceMode.DIVE).pitch_deg)
+    assert compute_intent(_target(cx, cy - 200), cfg, GuidanceMode.DIVE).pitch_deg <= 0.0
 
 
 def test_dive_still_centers_yaw():
-    cfg = _cfg()
+    cfg = _dcfg()
     t = _target(cfg.frame_width / 2 + 100, cfg.frame_height / 2)
     assert compute_intent(t, cfg, GuidanceMode.DIVE).yaw_rate_dps > 0
 
 
-def test_dive_vertical_commit_is_agnostic_descend_below_climb_above_hold_level():
-    # Agnostic DIVE: the vertical commit is signed by the target's LINE-OF-SIGHT
-    # elevation (here aircraft_pitch_deg defaults to 0, so LOS == in-frame elev).
-    cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3)
+def test_dive_vertical_rate_descends_below_climbs_above_holds_level():
+    # Constant-bearing homing: the commanded vertical RATE drives the target's
+    # vertical frame error to zero — below centre (low) -> descend (-), above
+    # centre (high) -> climb (+), centred -> ~0. Gated on horizontal aim.
+    cfg = _dcfg()
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    # below us + horizontally aimed -> gravity dive (descend)
-    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).thrust < 0.5
-    # above us + horizontally aimed -> powered climb toward it (NOT a hold)
-    assert compute_intent(_target(cx, cy - 150), cfg, GuidanceMode.DIVE).thrust > 0.5
-    # level (centred vertically) -> hold altitude, just close horizontally
-    assert compute_intent(_target(cx, cy), cfg, GuidanceMode.DIVE).thrust == pytest.approx(0.5)
-    # horizontally off-centre -> hold altitude, re-aim (yaw-centre) first
-    assert compute_intent(_target(cx + 0.6 * cx, cy + 150), cfg, GuidanceMode.DIVE).thrust == pytest.approx(0.5)
-    # TRACK never changes altitude on its own
-    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.TRACK).thrust == 0.5
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).vertical_rate_mps < 0
+    assert compute_intent(_target(cx, cy - 150), cfg, GuidanceMode.DIVE).vertical_rate_mps > 0
+    assert compute_intent(_target(cx, cy), cfg, GuidanceMode.DIVE).vertical_rate_mps == pytest.approx(0.0)
+    # horizontally off-centre -> vertical commit gated off (re-aim yaw first)
+    assert compute_intent(_target(cx + 0.6 * cx, cy + 150), cfg, GuidanceMode.DIVE).vertical_rate_mps == pytest.approx(0.0)
+    # TRACK never commands a vertical rate
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.TRACK).vertical_rate_mps is None
 
 
-def test_dive_pitch_up_is_capped_when_configured():
-    # With a nose-up cap, an above-centre target cannot command a stalling pitch-up
-    # (the climb is the throttle's job). Without the cap it could pitch up freely.
-    cx, cy = 360.0, 288.0
-    high = _target(cx, cy - 200)
-    uncapped = compute_intent(high, _cfg(), GuidanceMode.DIVE).pitch_deg
-    capped = compute_intent(high, _cfg(dive_pitch_up_max_deg=0.0), GuidanceMode.DIVE).pitch_deg
-    assert uncapped > 0.0          # legacy: free to pitch nose-up
-    assert capped <= 0.0           # capped: stays level-or-forward
-
-
-def test_dive_descent_is_geometry_matched_to_los_depression():
-    # The vertical commit ramps with the LOS depression (dive_los_band_deg), so a
-    # steeper/deeper target gets a stronger descent than a shallow one — that's
-    # what makes a far/shallow ground dive gentle (no pancake) and a near/steep one
-    # full-commit. Use aircraft pitch to vary true LOS depression at a fixed frame
-    # position (centred).
-    cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3, dive_los_band_deg=30.0)
+def test_dive_vertical_rate_grows_with_frame_error_and_clamps():
+    cfg = _dcfg(dive_max_descent_mps=6.0)
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    centred = _target(cx, cy)
-    shallow = compute_intent(centred, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-10.0).thrust
-    deep = compute_intent(centred, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-25.0).thrust
-    assert deep < shallow < 0.5            # deeper depression → stronger descent
-    # Beyond the band it saturates (no more than full commit).
-    saturated = compute_intent(centred, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-60.0).thrust
-    assert saturated == pytest.approx(0.5 - cfg.dive_descent, abs=1e-6)
+    near = compute_intent(_target(cx, cy + 60), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    far = compute_intent(_target(cx, cy + 200), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    assert far < near < 0                          # larger error -> stronger descent
+    # saturates at the descent clamp for a target at the bottom edge
+    floor = compute_intent(_target(cx, cy + cy), cfg, GuidanceMode.DIVE).vertical_rate_mps
+    assert floor == pytest.approx(-6.0)
 
 
-def test_dive_vertical_bias_keys_on_aircraft_pitch_not_frame_position():
-    # A ground target framed HIGH (above centre) while the aircraft is pitched
-    # steeply DOWN is still below the horizon -> must keep diving (descend), not
-    # flip to climb. This is the whole point of keying on LOS elevation.
-    cfg = _cfg(dive_descent=0.3, dive_center_frac=0.3, dive_vertical_bias_frac=0.4)
+def test_dive_vertical_disabled_when_gain_zero():
+    cfg = _dcfg(dive_vrate_gain=0.0)               # vertical homing off -> DIVE just leans
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    high_in_frame = _target(cx, cy - 120)          # above centre in the image
-    # nose level: in-frame elevation says "above" -> would climb
-    assert compute_intent(high_in_frame, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=0.0).thrust > 0.5
-    # nose pitched 30° down: true LOS is below the horizon -> still descend
-    assert compute_intent(high_in_frame, cfg, GuidanceMode.DIVE, aircraft_pitch_deg=-30.0).thrust < 0.5
-
-
-def test_dive_descent_disabled_by_default():
-    cfg = _cfg()  # dive_descent defaults to 0.0
-    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
-    assert compute_intent(_target(cx, cy), cfg, GuidanceMode.DIVE).thrust == 0.5
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).vertical_rate_mps is None
+    assert compute_intent(_target(cx, cy + 150), cfg, GuidanceMode.DIVE).thrust == 0.5
 
 
 def test_track_is_the_default_mode():

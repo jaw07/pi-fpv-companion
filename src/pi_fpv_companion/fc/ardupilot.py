@@ -100,6 +100,9 @@ class ArduCopterRcMapping:
     hover_learn_band: float = 0.05
     hover_min_us: int = 1200             # safety clamp on the learned hover
     hover_max_us: int = 1700
+    # Climb rate (m/s) that maps to a full throttle stick when a commanded
+    # vertical_rate must be flown open-loop (no fresh VFR_HUD to close the loop).
+    rate_openloop_full_mps: float = 8.0
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -313,18 +316,24 @@ class ArduPilotBackend:
         self._send_channels(overrides)
 
     def _adaptive_throttle(self, intent: GuidanceIntent) -> int:
-        """Companion vertical-velocity hold for STABILIZE (PI on climb rate). While
-        ~holding (|thrust-0.5| < band) and telemetry is fresh: proportional term
-        (Kp) damps climb immediately, integral (Ki) slowly trims the learned hover
-        so it levels out by itself (descending -> more throttle). A commanded climb/
-        dive (thrust off 0.5) bypasses the hold and modulates around the learned
-        hover open-loop. Output clamped to valid PWM; learned hover clamped to
-        [hover_min_us, hover_max_us]."""
+        """Companion vertical-velocity controller for STABILIZE (PI on climb rate).
+
+        Tracks a commanded climb rate against VFR_HUD.climb:
+          - `intent.vertical_rate_mps` set (DIVE constant-bearing homing) -> track
+            that rate (+up). The outer framing loop in the servo integrates out the
+            P-controller's steady-state error.
+          - else -> hold altitude (setpoint 0): Kp damps climb immediately, Ki
+            slowly trims the learned hover so it self-levels.
+        When holding and telemetry is fresh, Ki trims the learned hover. A commanded
+        `thrust` off 0.5 (open-loop dive, no rate given) modulates around the hover.
+        Output clamped to valid PWM; learned hover clamped to [hover_min, max]."""
         m = self._mapping
         now = time.monotonic()
         dt = now - self._hover_t if self._hover_t else 0.0
         self._hover_t = now
-        holding = abs(intent.thrust - 0.5) < m.hover_learn_band
+        cmd_rate = intent.vertical_rate_mps          # +up m/s, or None
+        rate_mode = cmd_rate is not None
+        holding = (abs(cmd_rate) < 0.2) if rate_mode else (abs(intent.thrust - 0.5) < m.hover_learn_band)
         fresh = (now - self._climb_t) < 0.5 if self._climb_t else False
         if fresh:
             self._vfr_warned = False
@@ -332,14 +341,24 @@ class ArduPilotBackend:
             _log.warning("adaptive hover: no fresh VFR_HUD.climb — holding at fixed "
                          "hover %d. Is VFR_HUD streamed (SR*_EXTRA2)?", int(self._hover_pwm))
             self._vfr_warned = True
-        if holding and fresh:
-            if 0.0 < dt < 0.3:   # Ki: slow trim of the hover estimate
+
+        if fresh and (rate_mode or holding):
+            setpoint = cmd_rate if rate_mode else 0.0
+            # Ki trims the learned hover only while ~holding (so it doesn't wind up
+            # during a commanded dive/climb).
+            if holding and 0.0 < dt < 0.3:
                 self._hover_pwm = _clamp(
                     self._hover_pwm + m.hover_learn_gain * (-self._climb_mps) * dt,
                     m.hover_min_us, m.hover_max_us,
                 )
-            # Kp: immediate damping on climb rate (the anti-oscillation term).
-            out = self._hover_pwm + m.hover_learn_kp * (-self._climb_mps)
+            # Kp on the rate error (setpoint - measured).
+            out = self._hover_pwm + m.hover_learn_kp * (setpoint - self._climb_mps)
+        elif rate_mode:
+            # No fresh climb telemetry: can't close the rate loop -> open-loop map
+            # the commanded rate to a throttle offset (degraded but still descends).
+            t = _clamp(cmd_rate / m.rate_openloop_full_mps, -1.0, 1.0)
+            span = (2000 - self._hover_pwm) if t >= 0 else (self._hover_pwm - 1000)
+            out = self._hover_pwm + t * span
         else:
             t = _clamp((intent.thrust - 0.5) / 0.5, -1.0, 1.0)
             span = (2000 - self._hover_pwm) if t >= 0 else (self._hover_pwm - 1000)

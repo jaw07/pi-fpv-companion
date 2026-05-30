@@ -25,7 +25,6 @@ the alpha-beta-smoothed value, so closure isn't chattering on raw detection
 size noise. See track/target_filter.py / audit §5.
 """
 from __future__ import annotations
-import math
 from dataclasses import dataclass
 
 from pi_fpv_companion.types import HOVER_THRUST, FilteredTarget, GuidanceIntent, GuidanceMode
@@ -47,51 +46,25 @@ class ServoConfig:
     # gentler) track_vcenter_gain ON TOP of range-hold so a forward lean — which
     # tilts the fixed camera down and makes the target rise in frame — is corrected
     # back toward centre instead of letting the target drift out the top.
-    pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (DIVE aim)
+    pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (TRACK/DIVE aim)
     track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
                                   # (keeps target centred as lean tilts the camera; 0 = off)
-    dive_forward_deg: float = 10.0  # constant forward (nose-down) lean while diving
-    # DIVE vertical commit (DIVE only): move altitude ONTO the target — descend at
-    # one below us, climb toward one above us, hold for one level ahead. Magnitude
-    # is gated on horizontal aim (re-centre yaw first) and signed + ramped by the
-    # target's line-of-sight elevation (see dive_los_band_deg), so the flight path
-    # follows the LOS instead of pancaking. thrust maps to the throttle stick
-    # (STABILIZE: direct cut/boost; ALT_HOLD: climb-rate, capped by PILOT_SPEED_DN)
-    # — RC override, NO GUID_OPTIONS. YOU own the altitude floor; the flight-mode
-    # switch is the abort. 0 = disabled (altitude held). Bench/SITL-validate.
-    dive_descent: float = 0.0       # thrust delta at full commit (0.5 ± this)
-    dive_center_frac: float = 0.30  # normalised centring error within which to commit power
-    # Agnostic vertical framing (DIVE). A centred dive on a target BELOW us
-    # pancakes: the line-of-sight depression sweeps down faster than we close, so
-    # the target falls out the bottom (or we descend into the ground short of it).
-    # Biasing the vertical setpoint toward the LEADING edge of the engagement
-    # reserves frame for the LOS angle to grow into AND sustains the forward lean
-    # that actually closes the gap. The bias DIRECTION is keyed on the target's
-    # true line-of-sight elevation (aircraft pitch + in-frame elevation), NOT its
-    # raw frame position — a ground target correctly framed high still reads
-    # "below the horizon", so we keep diving instead of falsely flipping to climb.
-    # This makes DIVE altitude-agnostic: dive onto a below target, pursue a level
-    # one, climb toward an above one. 0 = legacy centred behaviour (camera_vfov
-    # then unused). Needs camera_vfov_deg to convert vertical pixels<->angle.
-    # Bench/SITL validate; steep engagements stay bounded by max_pitch_deg + VFoV.
-    dive_vertical_bias_frac: float = 0.0   # bias setpoint this fraction of half-frame
-    # LOS-elevation band over which the dive/climb commit ramps in. Acts as a
-    # GEOMETRY MATCH: the vertical commit scales with the target's depression, so
-    # a far/shallow target gets a gentle descent (flight path follows the LOS)
-    # while a steep/near one gets full commit. A narrow band makes every dive an
-    # aggressive throttle-cut, which pancakes short of a shallow ground target
-    # (descent capability >> forward closure — see scripts/measure_dive_sitl.py).
-    dive_los_band_deg: float = 30.0
-    # VERTICAL field of view spanned by the frame height — the ONLY pixel<->angle
-    # conversion the servo needs (the dive's LOS elevation). Default 52.3° is the
-    # Raspberry Pi AI Camera (Sony IMX500) spec (HFoV 66.3°, VFoV 52.3°, full-FoV
-    # sensor mode). Must match the actual capture's vertical FoV if a different
-    # lens / crop is used.
-    camera_vfov_deg: float = 52.3
-    # DIVE is commit-only: cap the nose-UP authority so the forward lean dominates
-    # and an above-target climb is driven by throttle, not a stall-inducing pitch-up.
-    # None -> no extra cap (legacy: bounded only by max_pitch_deg).
-    dive_pitch_up_max_deg: float | None = None
+    dive_forward_deg: float = 10.0  # forward (nose-down) commit lean while diving
+    dive_center_frac: float = 0.30  # normalised horizontal aim error within which to commit vertical
+    # --- DIVE closed-loop vertical (constant-bearing homing) ---------------------
+    # The fixed camera couples pitch (forward closure) and vertical aim. To break
+    # the coupling, DIVE uses PITCH for forward closure and the THROTTLE (a
+    # commanded vertical RATE the backend tracks against VFR_HUD.climb) to hold the
+    # target's vertical FRAME position. Holding a target at a fixed frame point is a
+    # constant bearing → a collision course, so the flight path follows the line of
+    # sight automatically — descend onto a target below, hold for one level ahead,
+    # climb toward one above. No attitude/FoV needed; the frame error IS the signal.
+    #   vertical_rate = -gain * (vertical frame error / half-frame), clamped, then
+    #   gated on horizontal aim (centre yaw before committing power).
+    # 0 gain = disabled (altitude held; DIVE just leans in). Bench/SITL-validate.
+    dive_vrate_gain: float = 0.0       # m/s of climb command per unit normalised vert error
+    dive_max_descent_mps: float = 8.0  # clamp on commanded descent (+ down)
+    dive_max_climb_mps: float = 4.0    # clamp on commanded climb (gravity-limited, < descent)
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
     # inverts the error->command sign -> divergent positive feedback ("spins
     # away from target"). MUST be bench-validated (docs/deployment-safety.md §4).
@@ -109,18 +82,15 @@ def _deadband(v: float, dz: float) -> float:
 
 def compute_intent(
     target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK,
-    aircraft_pitch_deg: float = 0.0,
 ) -> GuidanceIntent:
     """Map the filtered target's pixel state to an attitude intent.
 
-    TRACK holds range (closure regulated to desired_bbox_frac); DIVE commits and
-    saturates forward lean to close + dive. Yaw centring is identical in both.
-
-    `aircraft_pitch_deg` (nose-up +, from FC ATTITUDE telemetry) is only used by
-    the agnostic DIVE vertical framing (cfg.dive_vertical_bias_frac > 0): added to
-    the in-frame elevation it gives the target's TRUE line-of-sight elevation, so
-    the dive/climb decision tracks world geometry rather than frame position.
-    Defaults to 0 (level) — with the bias off, the result is independent of it."""
+    TRACK holds range (closure regulated to desired_bbox_frac) at constant altitude.
+    DIVE commits: PITCH leans forward to close, and a commanded vertical RATE
+    (constant-bearing homing — the backend tracks it on VFR_HUD.climb) holds the
+    target's vertical frame position so the flight path follows the line of sight,
+    moving altitude onto the target whether it is below, level, or above. Yaw
+    centring is identical in both."""
     cx = cfg.frame_width / 2.0
     det = target.detection
 
@@ -142,43 +112,33 @@ def compute_intent(
     #     hold -> ~0
     #     too close -> positive pitch (nose up, back off) — collision guard
     thrust = HOVER_THRUST
+    vertical_rate_mps = None
     if mode is GuidanceMode.DIVE:
         cy = cfg.frame_height / 2.0
-        # --- Engagement direction from the target's TRUE line-of-sight elevation.
-        # in-frame elevation (target above the boresight = +) + airframe pitch
-        # (nose-up +) = LOS elevation above the horizon. Keying on this rather than
-        # the raw frame position is what makes a ground target framed high still
-        # read "below us" (keep diving) instead of flipping to "climb".
-        #   s = +1 target below us (dive/descend) ... -1 above us (climb) ... 0 level
-        fpx_v = (cfg.frame_height / 2.0) / math.tan(math.radians(cfg.camera_vfov_deg) / 2.0)
-        frame_elev_deg = math.degrees(math.atan((cy - det.y) / fpx_v))
-        los_elev_deg = frame_elev_deg + aircraft_pitch_deg
-        s = _clamp(-los_elev_deg / cfg.dive_los_band_deg, -1.0, 1.0)
+        # PITCH: a fixed, gentle forward (nose-down) commit lean — NOT vertical aim
+        # (the throttle handles vertical via the rate loop below) and NOT closure-
+        # regulated (a steep lean over-depresses the fixed camera and pushes an
+        # ABOVE target out the top faster than the gravity-limited climb can
+        # re-centre it). Gentle enough to keep any target framed while the vertical
+        # rate loop flies the flight path onto it; clamped nose-down (commit).
+        pitch = _clamp(-cfg.dive_forward_deg, -cfg.max_pitch_deg, 0.0)
 
-        # Vertical aim: bias the setpoint toward the LEADING edge of the dive (up
-        # for a below target, down for an above one), so the target rides into the
-        # frame the LOS angle sweeps through as we close — instead of pancaking out
-        # the bottom. The bias also sustains the forward lean that actually closes.
-        setpoint_y = cy - cfg.dive_vertical_bias_frac * (cfg.frame_height / 2.0) * s
-        dy = _deadband(det.y - setpoint_y, cfg.pixel_deadzone_px)
-        # DIVE is commit: cap nose-UP (shipped 0 = never). Pitching up to frame an
-        # ABOVE target points the velocity vector backward and stalls the approach;
-        # an above-target climb is the throttle's job. None = no cap (legacy).
-        up = cfg.dive_pitch_up_max_deg if cfg.dive_pitch_up_max_deg is not None \
-            else cfg.max_pitch_deg
-        pitch = _clamp(
-            -cfg.pitch_sign * cfg.pitch_p_gain * dy - cfg.dive_forward_deg,
-            -cfg.max_pitch_deg, up,
-        )
-
-        # Vertical commit (gravity dive / powered climb), gated on HORIZONTAL aim
-        # (centre yaw before committing power) and signed + ramped by the LOS
-        # elevation: descend onto a below target, climb toward an above one, hold
-        # for a level one.
-        ex = (det.x - cx) / (cfg.frame_width / 2.0)   # +right
+        # VERTICAL: constant-bearing homing. Command a climb rate that drives the
+        # target's vertical frame error to zero — holding it at a fixed frame point
+        # is a constant bearing, i.e. a collision course, so the flight path tracks
+        # the LOS for a target below / level / above. Below centre (drifted low) ->
+        # descend (raises it back); above centre -> climb. Gated on horizontal aim
+        # so we centre yaw before committing power. The backend tracks the rate on
+        # VFR_HUD.climb (its P-loop's steady-state error is integrated out here).
+        e_y = _deadband(det.y - cy, cfg.pixel_deadzone_px) / (cfg.frame_height / 2.0)
+        ex = (det.x - cx) / (cfg.frame_width / 2.0)
         commit = _clamp(1.0 - abs(ex) / cfg.dive_center_frac, 0.0, 1.0) \
             if cfg.dive_center_frac > 0 else 0.0
-        thrust = _clamp(HOVER_THRUST - cfg.dive_descent * commit * s, 0.0, 1.0)
+        if cfg.dive_vrate_gain > 0.0:
+            vertical_rate_mps = commit * _clamp(
+                -cfg.dive_vrate_gain * e_y,
+                -cfg.dive_max_descent_mps, cfg.dive_max_climb_mps,
+            )
     else:
         # TRACK: range-hold (pitch ~ apparent-size error) PLUS a vertical-centring
         # term. The fixed camera tilts with the airframe, so leaning forward to
@@ -203,4 +163,5 @@ def compute_intent(
         yaw_rate_dps=yaw_rate,
         thrust=thrust,
         timestamp=target.timestamp,
+        vertical_rate_mps=vertical_rate_mps,
     )
