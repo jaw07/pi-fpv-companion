@@ -94,7 +94,11 @@ guidance:
   # validated (closed_loop_sim.py, validate_vrate_sitl.py).
   # Forward lean is adaptive: STEEP (fast) diving onto a below target, GENTLE when
   # level/climbing toward an above one (a steep lean would push it out the top).
-  dive_forward_deg: 25.0    # steep lean at full descent — fast, committed ground attack
+  dive_forward_deg: 14.0    # forward lean at full descent. LOWER = steeper dive: reaches a
+                            # below/ground target's altitude sooner so its depression stays
+                            # shallow and it stays framed to impact, instead of a fast-forward
+                            # overfly that slides a ground target under the fixed camera (Gazebo:
+                            # tracks a small ground target to frame-fill vs losing it at ~10 m).
   dive_climb_forward_deg: 6.0   # gentle lean when level/climbing (keeps an above target framed)
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the steep lean in over this many s at commit
