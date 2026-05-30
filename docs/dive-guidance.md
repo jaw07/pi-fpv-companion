@@ -149,6 +149,9 @@ falls back to an open-loop throttle map (degraded but still descends). There is
   Matching the prediction (not the last position) also keeps identities through a
   **crossing** — two targets passing in the image would otherwise swap ids (and
   the lock would follow the wrong one). `iou` (single) and `multi_iou` (multi).
+  Limit: a crossing *with heavy detection noise + dropout* is genuinely ambiguous
+  — id-preservation is ~100% clean, ~75% under heavy degradation (a fundamental
+  data-association limit). Pick your target when candidates are well separated.
 - **Crossing speed**: a ground attack is fast (steep lean), but a target
   *translating laterally* faster than the aircraft's forward speed stays framed
   (yaw keeps up) yet isn't run down — a kinematic limit (you can't catch what's

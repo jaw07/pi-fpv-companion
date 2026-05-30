@@ -1,3 +1,5 @@
+import random
+
 from pi_fpv_companion.types import Detection
 from pi_fpv_companion.track.multi_target import MultiObjectTracker
 
@@ -131,6 +133,29 @@ def test_crossing_targets_keep_their_ids_via_velocity_prediction():
         t.consume(None, [_d(ax, 300, w=8, h=8), _d(bx, 300, w=8, h=8)], i * 0.033)
     byid = {tr.track_id: tr.detection.x for tr in t.tracks}
     assert byid[left_id] > byid[right_id]        # left-origin id ended on the right → no swap
+
+
+def test_crossing_ids_mostly_survive_moderate_noise_and_dropout():
+    # A crossing with degraded detections is genuinely ambiguous, but velocity
+    # prediction should keep ids through it the large majority of the time under
+    # moderate noise (8 px) + dropout (20%). Deterministic (seeded). Guards the
+    # robustness from silently regressing.
+    def trial(seed):
+        rng = random.Random(seed)
+        t = MultiObjectTracker(iou_threshold=0.3)
+        t.consume(None, [_d(200, 300, w=8, h=8), _d(400, 300, w=8, h=8)], 0.0)
+        lid = min(t.tracks, key=lambda tr: tr.detection.x).track_id
+        rid = max(t.tracks, key=lambda tr: tr.detection.x).track_id
+        ax, bx = 200, 400
+        for i in range(1, 18):
+            ax += 14; bx -= 14
+            dets = [_d(px + rng.gauss(0, 8), 300 + rng.gauss(0, 8), w=8, h=8)
+                    for px in (ax, bx) if rng.random() >= 0.2]
+            t.consume(None, dets, i * 0.033)
+        byid = {tr.track_id: tr.detection.x for tr in t.tracks}
+        return lid in byid and rid in byid and byid[lid] > byid[rid]
+    preserved = sum(trial(s) for s in range(40))
+    assert preserved >= 28           # ≥70% id-preservation through a noisy crossing
 
 
 def test_no_detections_returns_none():
