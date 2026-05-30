@@ -295,6 +295,11 @@ class SimWorld:
     # glitch(i, clean_detection) -> a (possibly corrupted) Detection or None, for
     # injecting a misdetection / teleport / class-flip at a chosen tick.
     glitch: Optional[Callable[[int, Detection], Optional[Detection]]] = None
+    # Optional real tracker (IouAssociator / MultiObjectTracker). When set, the
+    # observed detection is routed through its consume() instead of being injected
+    # as a Target directly — so the closed loop exercises the real association
+    # (IoU/distance gate) under the moving FOV, not just the servo.
+    tracker: object = None
 
     def run(self, mode: GuidanceMode, dt: float = 1.0 / 30.0,
             duration_s: float = 12.0, dive_after_s: Optional[float] = None) -> Trajectory:
@@ -340,9 +345,14 @@ class SimWorld:
 
             # The tracker only produces a confirmed box when the target is in
             # frame. Out of frame (or behind) → no measurement → the filter
-            # coasts and quality decays, exactly as on the aircraft.
-            raw = Target(detection=obs, track_id=1, lost_frames=0, timestamp=t) \
-                if obs is not None else None
+            # coasts and quality decays, exactly as on the aircraft. If a real
+            # tracker is provided, route the detection through its association;
+            # otherwise inject the observed detection directly as a Target.
+            if self.tracker is not None:
+                raw = self.tracker.consume(None, [obs] if obs is not None else [], t)
+            else:
+                raw = Target(detection=obs, track_id=1, lost_frames=0, timestamp=t) \
+                    if obs is not None else None
             filtered = flt.update(raw, self.camera.width, self.camera.height, t)
 
             if filtered is None:

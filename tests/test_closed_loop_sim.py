@@ -315,6 +315,23 @@ def test_multi_target_selection_determines_which_target_is_hit():
     assert eng1 == "A" and a1 < 5.0 and b1 > 20.0
 
 
+def test_ground_dive_through_real_iou_associator_holds_lock():
+    # Route the closed loop through the production single-target IouAssociator (not
+    # an injected Target): a distant ground target is a tiny box, so this exercises
+    # the distance-gated association under the moving FOV through a full dive. The
+    # lock must hold (no coast-to-drop) and the dive converge.
+    from pi_fpv_companion.track.iou_associator import IouAssociator
+    w = _world(target_pos=(75.0, 0.0, 0.0), alt=35.0)
+    w.tracker = IouAssociator(iou_threshold=0.3, max_lost_frames=15)
+    tr = w.run(GuidanceMode.DIVE, duration_s=60.0)
+    assert _converges(tr)
+    # The association holds the (tiny, distant) box through the whole dive. Any
+    # muting is a brief startup transient: the steep lean's fast initial pitch-down
+    # slews the low-in-frame target faster than the filter's velocity estimate
+    # first predicts, so the innovation gate rejects for ~0.3 s until it catches up.
+    assert not [tk for tk in tr.ticks if tk.muted and tk.t > 1.0]   # none after onset
+
+
 def test_occluded_target_mutes_then_reacquires_and_converges():
     # Target occluded (detector returns nothing — e.g. behind cover) for ~2 s
     # mid-dive: the filter coasts, quality decays, and the safety gate MUTES (the
