@@ -27,6 +27,10 @@ class StubFC:
         self.released = 0                      # times release() (handback) was called
         self.mode = None                       # if set, overrides switch_active
         self.ready = True                      # control_ready interlock value
+        self.select = 1000                     # select-channel pwm (multi-target cycle)
+
+    def select_pwm(self) -> int:
+        return self.select
 
     def open(self) -> None: ...
     def close(self) -> None: ...
@@ -179,6 +183,52 @@ def test_pipeline_emits_closed_loop_vertical_rate_in_dive():
 
     assert run_with_target_y(440).vertical_rate_mps < 0      # low in frame → descend
     assert run_with_target_y(140).vertical_rate_mps > 0      # high in frame → climb
+
+
+def test_multi_target_select_cycles_and_lock_persists_through_modes():
+    """STANDBY shows all detections; a select-channel pulse cycles the lock; and
+    whatever is locked stays locked through TRACK and DIVE."""
+    from pi_fpv_companion.track.multi_target import MultiObjectTracker
+    # Two well-separated detections; B (right) higher-confidence so it auto-locks.
+    dets = [Detection(x=150, y=300, w=40, h=40, confidence=0.6, class_id=0, class_name="A"),
+            Detection(x=560, y=300, w=40, h=40, confidence=0.9, class_id=0, class_name="B")]
+    bundle = FrameBundle(image=np.full((576, 720, 3), 64, dtype=np.uint8),
+                         width=720, height=576, timestamp=0.0, detections=dets)
+
+    class StubCamera:
+        def open(self): pass
+        def close(self): pass
+        def frames(self): yield bundle
+
+    fc = StubFC()
+    fc.select = 1000
+    locked = []
+    pipe = Pipeline(StubCamera(), MultiObjectTracker(iou_threshold=0.2), _servo(), _safety(), fc,
+                    on_status=lambda tgt, *a: locked.append(tgt.track_id if tgt else None))
+
+    # STANDBY: all detections visible; auto-locked on the highest-confidence (B, x≈560).
+    fc.mode = GuidanceMode.STANDBY
+    g = pipe.tick(bundle)
+    assert pipe._tracks is not None and len(pipe._tracks) == 2     # both shown
+    id_b = pipe._tracker.selected_id
+    assert pipe._tracker._tracks[id_b].detection.x == 560
+
+    # Pulse the select channel (rising edge) → cycle to the other target (A, x≈150).
+    fc.select = 1800
+    pipe.tick(bundle)
+    id_a = pipe._tracker.selected_id
+    assert id_a != id_b and pipe._tracker._tracks[id_a].detection.x == 150
+    fc.select = 1000                                              # release (no re-trigger)
+    pipe.tick(bundle)
+    assert pipe._tracker.selected_id == id_a
+
+    # Now commit: STANDBY → TRACK → DIVE. The lock stays on A throughout.
+    for mode in (GuidanceMode.TRACK, GuidanceMode.DIVE):
+        fc.mode = mode
+        fc.armed = True
+        pipe.tick(bundle)
+        assert pipe._tracker.selected_id == id_a
+    assert locked[-1] == id_a                                     # guidance followed the selection
 
 
 def test_pipeline_kcf_path_reseeds_on_detection_burst():

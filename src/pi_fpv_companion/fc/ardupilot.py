@@ -149,10 +149,13 @@ class ArduPilotBackend:
         track_threshold_us: int,
         dive_threshold_us: int,
         mapping: Optional[ArduCopterRcMapping] = None,
+        select_channel: int = 0,
     ) -> None:
         self._device = device
         self._baud = baud
         self._switch_channel = switch_channel
+        self._select_channel = select_channel    # 0 = disabled
+        self._select_pwm_us = 0
         # 3-position mode switch: pwm >= dive -> DIVE, >= track -> TRACK, else STANDBY.
         self._track_threshold_us = track_threshold_us
         self._dive_threshold_us = dive_threshold_us
@@ -260,12 +263,19 @@ class ArduPilotBackend:
                     timestamp=time.monotonic(),
                     mode=mode,
                 )
+                if self._select_channel:
+                    self._select_pwm_us = getattr(msg, f"chan{self._select_channel}_raw")
             elif t == "VFR_HUD":
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
                 self._pitch_t = time.monotonic()
+
+    def select_pwm(self) -> int:
+        """Latest PWM on the target-select channel (0 if disabled / not yet seen).
+        The pipeline edge-detects this to cycle the locked target (multi_iou)."""
+        return self._select_pwm_us
 
     def pitch_deg(self) -> float:
         """Airframe pitch in degrees (+nose-up) from ATTITUDE, for the agnostic

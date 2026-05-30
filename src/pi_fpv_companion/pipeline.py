@@ -25,10 +25,11 @@ from pi_fpv_companion.guidance.safety import GateResult, SafetyConfig, gate
 from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
 from pi_fpv_companion.track.base import Tracker
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode, SwitchState, Target, ZERO_INTENT
-
+from typing import List
 
 StatusCallback = Callable[
-    [Optional[Target], GuidanceIntent, GateResult, SwitchState, bool, FrameBundle], None
+    [Optional[Target], GuidanceIntent, GateResult, SwitchState, bool, FrameBundle,
+     Optional[List[Target]]], None
 ]
 
 
@@ -66,6 +67,10 @@ class Pipeline:
         self._on_status = on_status
         self._stopping = False
         self._frame_idx = -1
+        # Operator target selection (multi-target tracker only): a rising edge on
+        # the FC's select channel cycles the lock among current detections.
+        self._last_select_pwm = 0
+        self._tracks: Optional[list] = None
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -149,7 +154,20 @@ class Pipeline:
                 if self._frame_idx % self._detect_period == 0:
                     detections = self._detector.detect(bundle.image)
 
+        # Operator target selection: a rising edge on the FC select channel cycles
+        # the locked target among the current detections (multi-target tracker).
+        # The selection is held across frames AND across the mode switch, so what
+        # is locked in STANDBY stays locked through TRACK and DIVE.
+        cycle_fn = getattr(self._tracker, "cycle", None)
+        sel_fn = getattr(self._fc, "select_pwm", None)
+        if callable(cycle_fn) and callable(sel_fn):
+            pwm = sel_fn()
+            if pwm >= 1700 and self._last_select_pwm < 1700:
+                cycle_fn()
+            self._last_select_pwm = pwm
+
         raw_target = self._tracker.consume(bundle.image, detections, now)
+        self._tracks = getattr(self._tracker, "tracks", None)   # all tracks for the HUD
 
         # Filter + quality-assess. Everything downstream uses the FilteredTarget,
         # never the raw tracker output (audit §4/§5).
@@ -184,6 +202,6 @@ class Pipeline:
             self._fc.send_intent(gated.intent)
 
         if self._on_status is not None:
-            self._on_status(target, intent, gated, switch, armed, bundle)
+            self._on_status(target, intent, gated, switch, armed, bundle, self._tracks)
 
         return gated

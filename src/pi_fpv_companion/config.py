@@ -67,6 +67,9 @@ class FcSection:
     uart_device: str = "/dev/ttyAMA0"
     baud: int = 115200
     switch_channel: int = 7
+    # Momentary RC channel that cycles the locked target among detections (multi_iou
+    # tracker). A rising edge past 1700 µs = "next target". 0 = disabled.
+    select_channel: int = 0
     switch_threshold_us: int = 1700      # betaflight 2-state engage threshold
     # ArduPilot 3-position mode switch on switch_channel:
     #   pwm >= dive_threshold_us  -> DIVE
@@ -195,6 +198,7 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         uart_device=d.get("uart_device", "/dev/ttyAMA0"),
         baud=d.get("baud", 115200),
         switch_channel=d.get("switch_channel", 7),
+        select_channel=d.get("select_channel", 0),
         switch_threshold_us=d.get("switch_threshold_us", 1700),
         track_threshold_us=d.get("track_threshold_us", 1300),
         dive_threshold_us=d.get("dive_threshold_us", 1700),
