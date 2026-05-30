@@ -66,10 +66,16 @@ vector backward and stalls the approach. Pitch alone cannot both close and frame
 
 DIVE breaks the coupling:
 
-- **PITCH** is a *fixed, gentle* forward (nose-down) commit lean (`dive_forward_deg`
-  ≈ 8°). Gentle on purpose: a steep lean over-depresses the camera and pushes an
-  above target out the top faster than the (gravity-limited) climb can re-centre
-  it. It is clamped nose-down — a commit never backs off, and never pitches up.
+- **PITCH** is a forward (nose-down) commit lean, **adaptive** to the engagement:
+  *steep* (`dive_forward_deg` ≈ 25°) when descending onto a target **below** the
+  flight path — a fast, committed ground attack, and a steep nose-down also aims
+  the fixed camera down at the target, keeping it framed — but *gentle*
+  (`dive_climb_forward_deg` ≈ 6°) when level/climbing toward an **above** target,
+  where a steep lean would push it out the top faster than the (gravity-limited)
+  climb can re-centre it. It ramps gentle→steep with the commanded descent, is
+  clamped nose-down by DIVE's own steeper `dive_max_pitch_deg` (never backs off /
+  pitches up). This makes a ground attack fast (~20–30 s to impact in sim, ~3× the
+  gentle lean) without losing an above target.
 - **THROTTLE** flies a commanded vertical **rate** that holds the target's
   vertical **frame position**. The servo emits `GuidanceIntent.vertical_rate_mps`
   (+up); the ArduPilot backend's climb-rate PI loop tracks it against
@@ -93,7 +99,9 @@ yaw before committing power, so it doesn't dive off to the side.
 
 | param | value | role |
 |---|---|---|
-| `dive_forward_deg` | 8.0 | fixed forward (nose-down) commit lean |
+| `dive_forward_deg` | 25.0 | STEEP lean at full descent (fast ground attack) |
+| `dive_climb_forward_deg` | 6.0 | gentle lean when level/climbing (keeps an above target framed) |
+| `dive_max_pitch_deg` | 30.0 | DIVE nose-down clamp (steeper than TRACK's `max_pitch_deg`) |
 | `dive_vrate_gain` | 17.0 | m/s of climb command per unit normalised vertical frame error |
 | `dive_max_descent_mps` | 8.0 | clamp on commanded descent |
 | `dive_max_climb_mps` | 4.0 | clamp on commanded climb (gravity-limited, < descent) |
@@ -133,10 +141,15 @@ falls back to an open-loop throttle map (degraded but still descends). There is
   (the aircraft holds, doesn't fly blind), and on reappearance it **re-acquires**
   and the dive resumes. A seeded Monte-Carlo over randomized noisy ground
   engagements hits ~93% (miss-distance p90 ~1.5 m).
-- **Speed limit**: closure is forward-speed limited (~2 m/s at the gentle 8° lean
-  on the SITL-grounded airframe), so a target **translating laterally faster than
-  that** stays framed (yaw keeps up) but isn't run down — a kinematic limit, not a
-  guidance bug. The mission target (ground, static/slow) is well within it.
+- **Tracker association** is IoU **or centroid-distance** gated: a distant target
+  is a tiny box (a person at >100 m is a few px wide), so under camera rotation it
+  shifts more than its own width → zero IoU. Distance gating keeps the lock that
+  pure IoU would drop every frame. Applies to both `iou` and `multi_iou` trackers.
+- **Crossing speed**: a ground attack is fast (steep lean), but a target
+  *translating laterally* faster than the aircraft's forward speed stays framed
+  (yaw keeps up) yet isn't run down — a kinematic limit (you can't catch what's
+  faster than you), not a guidance bug. The mission target (ground, static/slow)
+  is well within it; `lead_time_s` helps the intercept geometry.
 
 ## Reproduce
 

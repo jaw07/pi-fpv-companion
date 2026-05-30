@@ -54,7 +54,17 @@ class ServoConfig:
     pitch_p_gain: float = 0.15    # deg of pitch per px of VERTICAL error (TRACK/DIVE aim)
     track_vcenter_gain: float = 0.10  # TRACK: deg of pitch per px of vertical error
                                   # (keeps target centred as lean tilts the camera; 0 = off)
-    dive_forward_deg: float = 10.0  # forward (nose-down) commit lean while diving
+    # DIVE forward lean is ADAPTIVE to the engagement: STEEP when descending onto a
+    # target BELOW the flight path (a fast, committed ground attack — and a steep
+    # nose-down also points the fixed camera down at the target, keeping it framed),
+    # but GENTLE when level/climbing toward an ABOVE target (a steep lean there
+    # over-depresses the camera and pushes the target out the top faster than the
+    # gravity-limited climb can re-centre it). Ramps from gentle→steep with the
+    # commanded descent rate. dive_max_pitch_deg is DIVE's own (steeper) clamp,
+    # separate from the gentler TRACK max_pitch_deg.
+    dive_forward_deg: float = 10.0       # STEEP lean at full descent (fast ground attack)
+    dive_climb_forward_deg: float = 6.0  # gentle lean when level / climbing (keeps it framed)
+    dive_max_pitch_deg: float = 30.0     # DIVE nose-down clamp (steeper than TRACK)
     dive_center_frac: float = 0.30  # normalised horizontal aim error within which to commit vertical
     # --- DIVE closed-loop vertical (constant-bearing homing) ---------------------
     # The fixed camera couples pitch (forward closure) and vertical aim. To break
@@ -124,14 +134,6 @@ def compute_intent(
     vertical_rate_mps = None
     if mode is GuidanceMode.DIVE:
         cy = cfg.frame_height / 2.0
-        # PITCH: a fixed, gentle forward (nose-down) commit lean — NOT vertical aim
-        # (the throttle handles vertical via the rate loop below) and NOT closure-
-        # regulated (a steep lean over-depresses the fixed camera and pushes an
-        # ABOVE target out the top faster than the gravity-limited climb can
-        # re-centre it). Gentle enough to keep any target framed while the vertical
-        # rate loop flies the flight path onto it; clamped nose-down (commit).
-        pitch = _clamp(-cfg.dive_forward_deg, -cfg.max_pitch_deg, 0.0)
-
         # VERTICAL: constant-bearing homing. Command a climb rate that drives the
         # target's vertical frame error to zero — holding it at a fixed frame point
         # is a constant bearing, i.e. a collision course, so the flight path tracks
@@ -148,6 +150,20 @@ def compute_intent(
                 -cfg.dive_vrate_gain * e_y,
                 -cfg.dive_max_descent_mps, cfg.dive_max_climb_mps,
             )
+
+        # PITCH: forward commit lean, ADAPTIVE to the descent. Steep (fast) when
+        # diving onto a below target — a steep nose-down also aims the fixed camera
+        # down at it, keeping it framed. Gentle when level/climbing toward an above
+        # target — there a steep lean would push it out the top. Ramps gentle→steep
+        # as the commanded descent rises (full steep by ~1/4 of max descent). The
+        # throttle (vertical rate), not pitch, does the vertical aiming.
+        descend_mps = (-vertical_rate_mps) if vertical_rate_mps is not None \
+            else (cfg.dive_max_descent_mps if e_y > 0.0 else 0.0)
+        ramp = max(1e-3, 0.25 * cfg.dive_max_descent_mps)
+        descent_frac = _clamp(descend_mps / ramp, 0.0, 1.0)
+        lean = cfg.dive_climb_forward_deg \
+            + (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * descent_frac
+        pitch = _clamp(-lean, -cfg.dive_max_pitch_deg, 0.0)
     else:
         # TRACK: range-hold (pitch ~ apparent-size error) PLUS a vertical-centring
         # term. The fixed camera tilts with the airframe, so leaning forward to

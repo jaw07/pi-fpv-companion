@@ -174,8 +174,9 @@ pi-fpv-companion`). One change at a time.
 | Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
 | DIVE to actually change altitude | `guidance.dive_vrate_gain` > 0 (0 = just leans); needs VFR_HUD |
+| Faster / harder dive (ground attack) | `guidance.dive_forward_deg` up (steeper lean) + `dive_max_pitch_deg` |
 | Faster / slower dive vertical | `dive_max_descent_mps` / `dive_max_climb_mps` |
-| DIVE loses an above target out the top | lower `dive_forward_deg` (gentler lean) |
+| DIVE loses an above target out the top | lower `dive_climb_forward_deg` (gentler climb lean) |
 | DIVE won't descend | confirm `VFR_HUD` streams (`SR*_EXTRA2`); the rate loop needs it |
 | It holds altitude poorly | confirm `SRn_EXTRA2` is streaming; nudge `stab_hover_throttle_us` |
 | Altitude bounces/hunts | lower `stab_hover_learn_kp`, then `stab_hover_learn_gain` |

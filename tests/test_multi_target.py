@@ -105,6 +105,18 @@ def test_auto_acquire_off_holds_instead_of_swapping_on_drop():
     assert out is None                           # held, did NOT swap to the right target
 
 
+def test_small_boxes_under_motion_keep_their_ids():
+    # Distant targets are tiny boxes; under camera motion they shift more than their
+    # width (zero IoU). The distance gate must keep their ids instead of spawning a
+    # new track every frame (the bug the closed-loop multi-target test surfaced).
+    t = MultiObjectTracker(iou_threshold=0.3)
+    t.consume(None, [_d(200, 300, w=3, h=3), _d(500, 300, w=3, h=3)], 0.0)
+    ids0 = [tr.track_id for tr in t.tracks]
+    t.consume(None, [_d(212, 300, w=3, h=3), _d(512, 300, w=3, h=3)], 0.033)  # 12 px shift
+    assert [tr.track_id for tr in t.tracks] == ids0   # same ids, no new tracks
+    assert len(t.tracks) == 2
+
+
 def test_no_detections_returns_none():
     t = MultiObjectTracker()
     assert t.consume(None, [], 0.0) is None

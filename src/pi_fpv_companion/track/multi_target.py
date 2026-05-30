@@ -21,6 +21,7 @@ selection falls back to the highest-confidence track (re-acquire) so guidance is
 never left pointing at nothing once targets are present.
 """
 from __future__ import annotations
+import math
 from typing import Dict, List, Optional
 
 from pi_fpv_companion.types import Detection, Target
@@ -28,9 +29,16 @@ from pi_fpv_companion.track.iou_associator import _iou
 
 
 class MultiObjectTracker:
-    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30) -> None:
+    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30,
+                 max_match_dist_px: float = 60.0) -> None:
         self._iou_threshold = iou_threshold
         self._max_lost_frames = max_lost_frames
+        # Associate a detection to a track when it OVERLAPS (IoU) OR its centroid is
+        # within this many pixels. IoU alone fails for the small boxes this system
+        # sees (a person at >100 m is only a few px wide, so any camera rotation
+        # shifts the box more than its own width → zero IoU). The distance gate must
+        # stay well below the spacing between distinct targets to avoid swaps.
+        self._max_match_dist_px = max_match_dist_px
         self._tracks: Dict[int, Target] = {}
         self._selected_id: Optional[int] = None
         self._next_id: int = 1
@@ -86,11 +94,16 @@ class MultiObjectTracker:
         # arbitrary but stable). A matched track resets to lost_frames=0.
         for tid in sorted(self._tracks):
             cur = self._tracks[tid]
-            best, best_iou = None, self._iou_threshold
+            # Best match: prefer the highest IoU; if nothing overlaps, the nearest
+            # centroid within the distance gate (robust for tiny boxes under motion).
+            best, best_key = None, None
             for d in unmatched:
                 iou = _iou(cur.detection, d)
-                if iou >= best_iou:
-                    best, best_iou = d, iou
+                dist = math.hypot(cur.detection.x - d.x, cur.detection.y - d.y)
+                if iou >= self._iou_threshold or dist <= self._max_match_dist_px:
+                    key = (iou, -dist)        # higher IoU first, then nearer centroid
+                    if best_key is None or key > best_key:
+                        best, best_key = d, key
             if best is not None:
                 unmatched.remove(best)
                 self._tracks[tid] = Target(detection=best, track_id=tid,
