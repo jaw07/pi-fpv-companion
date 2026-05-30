@@ -247,6 +247,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         closure_i_gain=d.get("closure_i_gain", 0.0),
         pitch_p_gain=d.get("pitch_p_gain", 0.15),
         track_vcenter_gain=d.get("track_vcenter_gain", 0.10),
+        track_closure_below_falloff_frac=d.get("track_closure_below_falloff_frac", 0.15),
         dive_forward_deg=d.get("dive_forward_deg", 10.0),
         dive_climb_forward_deg=d.get("dive_climb_forward_deg", 6.0),
         dive_max_pitch_deg=d.get("dive_max_pitch_deg", 30.0),
@@ -344,6 +345,12 @@ def _validate(cfg: AppConfig) -> None:
             f"guidance.closure_i_gain ({s.closure_i_gain}) must be >= 0 "
             "(deg of forward lean per size-frac·s of accumulated range error; a "
             "negative gain inverts the closure integral and drives away from hold)"
+        )
+    if s.track_closure_below_falloff_frac < 0.0:
+        raise ValueError(
+            f"guidance.track_closure_below_falloff_frac ({s.track_closure_below_falloff_frac}) "
+            "must be >= 0 (fraction of frame below centre over which the range-hold "
+            "closure fades to zero; 0 disables the gate, negative is meaningless)"
         )
 
 
