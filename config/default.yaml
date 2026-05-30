@@ -107,11 +107,13 @@ guidance:
   pixel_deadzone_px: 20     # ignore horizontal offsets smaller than this
   yaw_p_gain: 0.15          # deg/s of yaw rate per pixel of horizontal error
   yaw_ff_gain: 0.05         # deg/s per (px/s) of target image velocity (feedforward)
-  # Closure regulation (audit §4): forward lean ~ (apparent_size - desired).
+  # Closure regulation (audit §4): forward lean from a RANGE-LINEAR error
+  # (1/desired - 1/size_frac, ∝ hold_range - range). Gains are inverse-size scale.
   desired_bbox_frac: 0.30   # hold when target bbox-height ≈ 30% of frame height
-  closure_p_gain: 50.0      # deg pitch per unit size-fraction error
-                            # far(size~0)-> -15deg clamp (full approach); hold->0;
+  closure_p_gain: 4.0       # deg pitch per unit range-linear error
+                            # far -> nose down (approach, -15deg clamp); hold->0;
                             # too close -> +deg (nose up, back off — collision guard)
+  # closure_i_gain: 1.0     # optional PI integral -> exact standoff on a mover (off here)
   # TRACK: re-centre the target vertically as a forward lean tilts the fixed
   # camera down (target rises in frame). Added on top of range-hold; 0 disables.
   pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)

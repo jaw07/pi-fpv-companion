@@ -174,7 +174,8 @@ pi-fpv-companion`). One change at a time.
 | Snappier / calmer yaw | `guidance.yaw_p_gain` up / down |
 | Lead a moving target (less tail-chase) | `guidance.lead_time_s` → 0.2–0.6 s |
 | Pick among multiple targets | `tracker.type: multi_iou` + `fc.select_channel` (tap to cycle) |
-| Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down |
+| Follow closer / farther | `guidance.desired_bbox_frac` up (closer) / down (default 0.15 ≈ 11 m) |
+| Hold the exact distance on a moving target | `guidance.closure_i_gain` (PI integral; 0 = pure-P, lags farther back) |
 | Gentler / harder approach | `guidance.max_pitch_deg` |
 | DIVE to actually change altitude | `guidance.dive_vrate_gain` > 0 (0 = just leans); needs VFR_HUD |
 | Faster / harder dive (ground attack) | `guidance.dive_forward_deg` up (steeper lean) + `dive_max_pitch_deg` |
