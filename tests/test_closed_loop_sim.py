@@ -180,6 +180,21 @@ def test_dive_ground_target_with_lateral_offset_recenters_then_converges():
     assert _converges(tr)
 
 
+def test_track_then_dive_handoff_follows_then_commits():
+    # The real operational flow: FOLLOW the target in TRACK (held framed, no loss),
+    # then the operator commits to DIVE and it closes. Exercises filter/tracker
+    # continuity across the mode switch.
+    w = _world(target_pos=(90.0, -10.0, 0.0), alt=35.0)   # ground target, off to the side
+    tr = w.run(GuidanceMode.DIVE, duration_s=100.0, dive_after_s=4.0)
+    # During the TRACK phase the target is followed and framed (no early loss)...
+    track_phase = [tk for tk in tr.ticks if tk.t < 4.0]
+    assert all(tk.in_frame for tk in track_phase)
+    assert not any(tk.muted for tk in track_phase)
+    # ...then DIVE closes onto it.
+    assert _converges(tr)
+    assert tr.altitude_lost > 25.0                  # descended onto the ground target
+
+
 def test_dive_blind_when_target_depression_exceeds_half_vfov():
     # Acquisition limit (NOT a guidance bug): a ground target whose start
     # depression exceeds half the vertical FOV is below the frame and is never

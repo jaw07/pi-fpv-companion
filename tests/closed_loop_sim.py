@@ -286,10 +286,12 @@ class SimWorld:
     impact_range_m: float = 1.5           # stop when the aircraft reaches the target
 
     def run(self, mode: GuidanceMode, dt: float = 1.0 / 30.0,
-            duration_s: float = 12.0) -> Trajectory:
+            duration_s: float = 12.0, dive_after_s: Optional[float] = None) -> Trajectory:
+        """Fly `mode` for the whole run, OR — when `dive_after_s` is set — fly
+        TRACK first and switch to DIVE at that time (the operator committing after
+        following), so the TRACK→DIVE handoff and filter continuity are exercised."""
         flt = AlphaBetaTargetFilter(self.filter_cfg)
         traj = Trajectory()
-        switch = SwitchState(active=True, pwm_us=1800, timestamp=0.0, mode=mode)
         af = self.airframe
         servo = self.servo
         tpos = self.target_pos
@@ -297,6 +299,9 @@ class SimWorld:
         n = int(duration_s / dt)
         for _ in range(n):
             t += dt
+            mode = (GuidanceMode.TRACK if (dive_after_s is not None and t < dive_after_s)
+                    else (GuidanceMode.DIVE if dive_after_s is not None else mode))
+            switch = SwitchState(active=True, pwm_us=1800, timestamp=t, mode=mode)
             tpos = (tpos[0] + self.target_vel[0] * dt,
                     tpos[1] + self.target_vel[1] * dt,
                     tpos[2] + self.target_vel[2] * dt)
