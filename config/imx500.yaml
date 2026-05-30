@@ -33,9 +33,12 @@ fc:
   uart_device: /dev/serial0  # PL011 on header pins 8/10 (after dtoverlay=disable-bt)
   baud: 115200
   switch_channel: 7          # 3-position mode switch (STANDBY / TRACK / DIVE)
-  select_channel: 8          # momentary switch: a pulse (>1700 µs) cycles the locked
-                             # target among detections. 0 = disabled (auto-lock highest
-                             # confidence). Lock persists into TRACK/DIVE.
+  # Target selector: a rising edge past 1700 µs in STANDBY cycles the locked target
+  # among detections (frozen once engaged). The TBS top switches are full (ch5 arm,
+  # ch6 FC modes, ch7 companion, ch8 camera), so this uses the first free CRSF
+  # channel, ch9 — map a spare TBS input (e.g. the rocker) to ch9 in FreedomTX.
+  # 0 = disabled (auto-lock highest confidence; HUD still shows all).
+  select_channel: 9
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied path: ch7 engages. On TRACK/DIVE the Pi injects AETR sticks via
