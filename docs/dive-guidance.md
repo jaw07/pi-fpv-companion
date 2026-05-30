@@ -101,7 +101,12 @@ DIVE breaks the coupling:
   (`dive_lean_ramp_s`) ramps the steep lean in over ~0.5 s at commit so the target
   doesn't slew across the frame faster than the tracker/filter can follow (without
   it, a snap to full lean briefly out-runs the velocity estimate → a momentary
-  tracking hiccup at commit).
+  tracking hiccup at commit). And the lean is **low-passed** (`dive_lean_tau_s`,
+  via `DiveState`): the adaptive lean is a function of the commanded descent, which
+  fluctuates frame-to-frame, so without smoothing the nose NODS up/down as the lean
+  flips steep↔gentle (each nod also tilts the camera, feeding the vertical loop). A
+  committed dive should fly a STEADY collision course to the target centroid, so the
+  lean is filtered (~1.5 s) — sim: pitch-command reversals drop ~5× (401→79).
 - **THROTTLE** flies a commanded vertical **rate** that holds the target's
   vertical **frame position**. The servo emits `GuidanceIntent.vertical_rate_mps`
   (+up); the ArduPilot backend's climb-rate PI loop tracks it against

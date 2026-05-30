@@ -34,6 +34,7 @@ the alpha-beta-smoothed value, so closure isn't chattering on raw detection
 size noise. See track/target_filter.py / audit §5.
 """
 from __future__ import annotations
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -91,6 +92,36 @@ class ClosureState:
         return self.integral
 
 
+@dataclass
+class DiveState:
+    """Per-dive state that low-passes the forward (nose-down) lean.
+
+    The dive lean is ADAPTIVE to the commanded descent (steep when descending onto
+    a below target, gentle when level/climbing). But the commanded descent varies
+    frame-to-frame — when the vertical homing momentarily centres the target the
+    descent eases and the lean would collapse toward gentle, then steepen again as
+    the target sinks: the nose NODS up and down (and that pitch nod feeds back into
+    the vertical framing). A committed dive should fly a STEADY collision course to
+    the target centroid, so the lean is smoothed here over dive_lean_tau_s. Owned by
+    the caller (one per pipeline), reset on leaving DIVE so a new dive starts fresh."""
+    lean: float = 0.0
+    last_t: Optional[float] = None
+
+    def reset(self) -> None:
+        self.lean = 0.0
+        self.last_t = None
+
+    def smooth(self, target_lean: float, now: float, tau: float) -> float:
+        if tau <= 0.0 or self.last_t is None:   # first frame of the dive: snap, no lag
+            self.last_t = now
+            self.lean = target_lean
+            return target_lean
+        dt = max(0.0, now - self.last_t)
+        self.last_t = now
+        self.lean += (target_lean - self.lean) * (1.0 - math.exp(-dt / tau))
+        return self.lean
+
+
 @dataclass(frozen=True)
 class ServoConfig:
     frame_width: int
@@ -146,6 +177,11 @@ class ServoConfig:
     # the target doesn't slew across the frame faster than the tracker/filter can
     # follow (a snap to full lean briefly out-runs the velocity estimate). 0 = snap.
     dive_lean_ramp_s: float = 0.5
+    # Low-pass time constant (s) on the dive forward lean (via DiveState), so the
+    # nose travels STEADILY to the target instead of nodding steep<->gentle as the
+    # commanded descent fluctuates. ~1 s holds a steady collision course while still
+    # adapting slowly to a genuine below→above change. 0 = no smoothing.
+    dive_lean_tau_s: float = 0.0
     dive_center_frac: float = 0.30  # normalised horizontal aim error within which to commit vertical
     # --- DIVE closed-loop vertical (constant-bearing homing) ---------------------
     # The fixed camera couples pitch (forward closure) and vertical aim. To break
@@ -190,6 +226,7 @@ def _deadband(v: float, dz: float) -> float:
 def compute_intent(
     target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK,
     dive_elapsed_s: float = 1e9, closure: Optional[ClosureState] = None,
+    dive: Optional[DiveState] = None,
 ) -> GuidanceIntent:
     """Map the filtered target's pixel state to an attitude intent.
 
@@ -275,6 +312,13 @@ def compute_intent(
             if cfg.dive_lean_ramp_s > 0.0 else 1.0
         lean = cfg.dive_climb_forward_deg \
             + (cfg.dive_forward_deg - cfg.dive_climb_forward_deg) * descent_frac * soft
+        # Low-pass the lean so the nose travels STEADILY to the target centroid: the
+        # adaptive lean would otherwise flip steep<->gentle as the commanded descent
+        # crosses its threshold (the vertical homing momentarily centring the target
+        # eases the descent), nodding the pitch up and down. A committed dive holds a
+        # steady collision course. (dive_lean_tau_s = 0 → no smoothing.)
+        if dive is not None and cfg.dive_lean_tau_s > 0.0:
+            lean = dive.smooth(lean, target.timestamp, cfg.dive_lean_tau_s)
         pitch = _clamp(-lean, -cfg.dive_max_pitch_deg, 0.0)
     else:
         # TRACK: range-hold (PI on the range-linear closure error) PLUS a vertical-
