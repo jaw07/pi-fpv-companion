@@ -65,35 +65,23 @@ guidance:
   yaw_ff_gain: 0.05
   desired_bbox_frac: 0.30
   closure_p_gain: 50.0
-  # Vertical centring (pitch P on vertical pixel error). DIVE aims with pitch_p_gain;
-  # TRACK adds track_vcenter_gain on top of range-hold so the target stays centred
-  # as a forward lean tilts the fixed camera down (target rises in frame). 0 = off.
-  pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
+  # Vertical centring (TRACK pitch P on vertical pixel error). TRACK adds
+  # track_vcenter_gain on top of range-hold so the target stays centred as a
+  # forward lean tilts the fixed camera down (target rises in frame). 0 = off.
+  pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
   track_vcenter_gain: 0.10  # deg pitch per px of vertical error (TRACK re-centre)
-  dive_forward_deg: 12.0    # forward (nose-down) lean while diving
-  # Gravity dive / powered climb: trade altitude for speed onto a BELOW target,
-  # climb toward an ABOVE one, hold level for one straight ahead. Gated on
-  # HORIZONTAL aim, signed AND ramped by the target's true line-of-sight
-  # elevation (a geometry match — gentle descent on a far/shallow target, full
-  # commit on a steep/near one). thrust drives the throttle stick (STABILIZE:
-  # direct cut/boost) via RC override — no GUID_OPTIONS. YOU manage the altitude
-  # floor. See docs/dive-guidance.md. Bench/SITL-validate.
-  dive_descent: 0.12        # thrust delta at full commit (0.5±this)
-  dive_center_frac: 0.30    # horizontal aim tolerance to commit vertical power
-  # Agnostic vertical framing (sim-tuned on a SITL-grounded airframe; see
-  # tests/closed_loop_sim.py, scripts/sim_track_dive.py, docs/dive-guidance.md).
-  # A centred dive on a ground target pancakes: the LOS depression sweeps down
-  # faster than the aircraft closes and the target falls out the bottom. Biasing
-  # the setpoint toward the dive's leading edge keeps it framed AND sustains the
-  # forward lean that closes. Direction is keyed on TRUE LOS elevation (FC
-  # ATTITUDE pitch + in-frame elevation), so it stays altitude-agnostic and never
-  # false-flips a high-framed ground target into a climb.
-  dive_vertical_bias_frac: 0.50   # bias setpoint by this fraction of the half-frame
-  dive_los_band_deg: 30.0         # LOS-elev band: geometry-match the descent to depression
-  dive_pitch_up_max_deg: 0.0      # DIVE is commit: never pitch nose-up (would fly
-                                  # backward / stall closure — an above target is a
-                                  # throttle climb, not a pitch-up). See dive-guidance.md.
-  camera_vfov_deg: 52.3           # IMX500 vertical FoV (product brief); MUST match lens
+  # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
+  # PITCH is a fixed gentle forward lean (a steeper lean over-depresses the fixed
+  # camera and pushes an ABOVE target out the top); the THROTTLE flies a commanded
+  # vertical RATE that holds the target's vertical frame position. Holding a fixed
+  # frame point is a constant bearing -> a collision course, so the flight path
+  # follows the line of sight onto a target below, level, OR above. Sim + SITL
+  # validated (closed_loop_sim.py, validate_vrate_sitl.py).
+  dive_forward_deg: 8.0     # fixed forward (nose-down) commit lean
+  dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
+  dive_vrate_gain: 17.0     # m/s of climb command per unit normalised vertical frame error
+  dive_max_descent_mps: 8.0 # clamp on commanded descent
+  dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0
   pitch_sign: 1.0

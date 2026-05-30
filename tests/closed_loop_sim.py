@@ -48,7 +48,7 @@ spent on the attitude→pixel coupling (the FOV question) rather than aero.
 """
 from __future__ import annotations
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from pi_fpv_companion.types import (
@@ -151,6 +151,10 @@ class Airframe:
     # Modelled here so the sim is faithful: a DIVE whose commit falls inside the
     # band would silently fail to descend, and the sim must show that.
     hover_hold_band: float = 0.05
+    # Closed-loop rate tracking efficiency: the backend's P-loop under-delivers a
+    # commanded vertical rate (SITL: cmd -3 → ~-2.2 m/s, ~0.75×). The servo's
+    # framing loop integrates this out, but the sim models it for faithfulness.
+    vrate_track_eff: float = 0.75
 
     def step(self, intent: GuidanceIntent, dt: float) -> None:
         # Yaw: +dps = yaw RIGHT = clockwise from above = DECREASING ψ.
@@ -162,16 +166,22 @@ class Airframe:
         # Forward accel from the lean: nose-down (φ<0) → accelerate forward.
         a_fwd = G * math.tan(-self.phi)
         self.v_fwd += (a_fwd - self.drag * self.v_fwd) * dt
-        # Translate along heading (horizontal); vertical is the throttle's job.
-        # A near-neutral thrust is held by the adaptive-hover loop → no vertical
-        # motion (mirrors the backend's hover_learn_band, see above).
-        dev = intent.thrust - 0.5
-        if abs(dev) < self.hover_hold_band:
-            v_vert = 0.0                                   # held by adaptive hover
+        # Vertical: a closed-loop rate command (DIVE) is tracked by the backend's
+        # climb-rate loop (under-delivered by vrate_track_eff, clamped to physical
+        # capability — descent up to v_climb_max, climb gravity-limited). Otherwise a
+        # thrust stick, with a near-neutral value held by adaptive hover.
+        if intent.vertical_rate_mps is not None:
+            v_vert = intent.vertical_rate_mps * self.vrate_track_eff
+            cap_up = self.v_climb_max * self.climb_factor
+            v_vert = max(-self.v_climb_max, min(cap_up, v_vert))
         else:
-            v_vert = dev * 2.0 * self.v_climb_max
-            if dev > 0.0:
-                v_vert *= self.climb_factor               # climbing is slower (gravity)
+            dev = intent.thrust - 0.5
+            if abs(dev) < self.hover_hold_band:
+                v_vert = 0.0                               # held by adaptive hover
+            else:
+                v_vert = dev * 2.0 * self.v_climb_max
+                if dev > 0.0:
+                    v_vert *= self.climb_factor            # climbing is slower (gravity)
         self.pos = (
             self.pos[0] + self.v_fwd * math.cos(self.psi) * dt,
             self.pos[1] + self.v_fwd * math.sin(self.psi) * dt,
@@ -194,6 +204,7 @@ class TickLog:
     pitch_cmd: float
     yaw_cmd: float
     thrust: float
+    vrate_cmd: float    # commanded vertical rate (m/s, +up); 0 when none
 
 
 @dataclass
@@ -221,6 +232,18 @@ class Trajectory:
             elif seen:
                 return tk.t
         return None
+
+    def lost_before_impact(self, radius_m: float) -> bool:
+        """Left the frame while the target was still FAR (range > radius). A
+        terminal frame-exit inside the radius is the target filling/passing the
+        frame at impact — expected homing endgame, not a tracking loss."""
+        seen = False
+        for tk in self.ticks:
+            if tk.in_frame:
+                seen = True
+            elif seen and tk.range_m > radius_m:
+                return True
+        return False
 
     def _norm_excursion(self, tk: TickLog, W: int, H: int) -> float:
         """Peak normalised distance from centre on either axis (0=centre, 1=edge)."""
@@ -267,9 +290,7 @@ class SimWorld:
         traj = Trajectory()
         switch = SwitchState(active=True, pwm_us=1800, timestamp=0.0, mode=mode)
         af = self.airframe
-        # The servo's assumed vertical FoV must match the camera it is flying (in
-        # production this is the config-vs-hardware contract); keep them locked.
-        servo = replace(self.servo, camera_vfov_deg=self.camera.vfov_deg)
+        servo = self.servo
         tpos = self.target_pos
         t = 0.0
         n = int(duration_s / dt)
@@ -293,9 +314,7 @@ class SimWorld:
                 intent = ZERO_INTENT
                 muted, reason, q = True, "no target", 0.0
             else:
-                proposed = compute_intent(
-                    filtered, servo, mode, aircraft_pitch_deg=math.degrees(af.phi)
-                )
+                proposed = compute_intent(filtered, servo, mode)
                 res = gate(proposed, filtered, switch, self.armed, t, self.safety)
                 intent = res.intent
                 muted, reason, q = res.muted, res.reason, filtered.quality
@@ -308,7 +327,7 @@ class SimWorld:
                 depth=depth, range_m=rng, alt=af.pos[2], quality=q,
                 muted=muted, reason=reason,
                 pitch_cmd=intent.pitch_deg, yaw_cmd=intent.yaw_rate_dps,
-                thrust=intent.thrust,
+                thrust=intent.thrust, vrate_cmd=(intent.vertical_rate_mps or 0.0),
             ))
             if rng <= self.impact_range_m:
                 break
@@ -325,9 +344,8 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         max_yaw_rate_dps=60.0, max_pitch_deg=15.0, pixel_deadzone_px=20.0,
         yaw_p_gain=0.15, yaw_ff_gain=0.05, desired_bbox_frac=0.30,
         closure_p_gain=50.0, pitch_p_gain=0.15, track_vcenter_gain=0.10,
-        dive_forward_deg=12.0, dive_descent=0.12, dive_center_frac=0.30,
-        dive_vertical_bias_frac=0.50, dive_los_band_deg=30.0,
-        dive_pitch_up_max_deg=0.0, camera_vfov_deg=52.3,
+        dive_forward_deg=8.0, dive_center_frac=0.30,
+        dive_vrate_gain=17.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)

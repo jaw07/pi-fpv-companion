@@ -116,13 +116,13 @@ def test_dive_descends_and_keeps_yaw_centred_on_an_in_fov_target():
     assert all(abs(tk.px - W / 2) < 40 for tk in tr.ticks if tk.in_frame)  # yaw stays centred
 
 
-def test_dive_does_not_descend_when_target_is_off_axis():
-    # Horizontal aim outside dive_center_frac → descent muted (re-aim first). The
-    # target sits off to the side but still in frame.
-    w = _world(target_pos=(40.0, -14.0, 50.0))
+def test_dive_does_not_command_vertical_when_target_is_off_axis():
+    # Horizontal aim outside dive_center_frac → vertical commit gated off (re-aim
+    # yaw first). The target sits off to the side but still in frame.
+    w = _world(target_pos=(40.0, -16.0, 0.0), alt=35.0)
     tr = w.run(GuidanceMode.DIVE, duration_s=2.0)
-    # First tick, before yaw re-centres: off-axis → no descent commanded.
-    assert tr.ticks[0].thrust == pytest.approx(0.5)
+    # First tick, before yaw re-centres: off-axis → no vertical rate commanded.
+    assert tr.ticks[0].vrate_cmd == pytest.approx(0.0, abs=1e-6)
 
 
 def test_dive_holds_when_target_starts_outside_the_fov():
@@ -136,19 +136,20 @@ def test_dive_holds_when_target_starts_outside_the_fov():
 
 
 # --------------------------------------------------------------------------
-# Agnostic DIVE convergence: the bias keeps the target framed AND closes, for a
-# target below, level, or above — the whole point of the LOS-elevation framing.
+# Closed-loop DIVE convergence (constant-bearing homing): the commanded vertical
+# RATE holds the target's framing, so the flight path follows the LOS — closing
+# onto a target below, level, OR above. A terminal frame-exit inside the impact
+# radius is the target passing the camera, not a tracking loss.
 # --------------------------------------------------------------------------
 
 def _converges(tr, max_range=5.0):
-    return tr.min_range < max_range and not tr.ever_left_frame
+    return tr.min_range < max_range and not tr.lost_before_impact(max_range)
 
 
 def test_dive_converges_on_a_ground_target_in_frame():
-    # The case the legacy centred dive could NOT do: a ground target acquirable
-    # only at a shallow depression (far ahead). The agnostic bias + geometry-
-    # matched descent keep it framed and close onto it instead of pancaking short.
-    # Engagement altitude 35 m, target ~25° depression at acquisition.
+    # The case the open-loop centred dive could NOT do: a ground target acquirable
+    # only at a shallow depression (far ahead). The closed-loop descent follows the
+    # LOS and closes onto it instead of pancaking short. Engagement alt 35 m.
     w = _world(target_pos=(75.0, 0.0, 0.0), alt=35.0)
     tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
     assert _converges(tr)
@@ -156,26 +157,21 @@ def test_dive_converges_on_a_ground_target_in_frame():
 
 
 def test_dive_converges_on_a_level_target_without_diving_below_it():
-    # A level/front target must be PURSUED, not dived under (the failure mode of a
-    # constant top-bias). Altitude is held; it closes horizontally.
+    # A level/front target must be PURSUED, not dived under. Altitude is held; it
+    # closes horizontally.
     w = _world(target_pos=(35.0, 0.0, 35.0), alt=35.0)
     tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
     assert _converges(tr)
     assert abs(tr.altitude_lost) < 5.0             # essentially level
 
 
-def test_dive_climbs_toward_an_above_target_without_diving_away_or_reversing():
-    # A fixed forward camera cannot aggressively close a target ABOVE its flight
-    # path: framing it needs nose-up, which is backward, so committed strikes need
-    # getting above the target first (see docs/dive-guidance.md). DIVE must still
-    # do the SAFE thing — climb toward it, keep it framed, and never dive away or
-    # fly backward.
-    w = _world(target_pos=(50.0, 0.0, 50.0), alt=35.0)   # 15 m above, 50 m ahead
-    tr = w.run(GuidanceMode.DIVE, duration_s=90.0)
-    assert not tr.ever_left_frame
-    assert tr.muted_ticks == 0
-    assert tr.altitude_lost < 0.0                  # climbs toward it (never descends away)
-    assert tr.min_range <= tr.ticks[0].range_m + 0.5   # never flies backward
+def test_dive_converges_on_an_above_target_by_climbing():
+    # Closed-loop homing closes on an ABOVE target too: the framing loop commands a
+    # climb so the flight path follows the LOS up to it. Altitude is GAINED.
+    w = _world(target_pos=(55.0, 0.0, 50.0), alt=35.0)   # 15 m above, 55 m ahead
+    tr = w.run(GuidanceMode.DIVE, duration_s=110.0)
+    assert _converges(tr)
+    assert tr.altitude_lost < -8.0                 # climbed to it (lost < 0 == gained)
 
 
 def test_dive_ground_target_with_lateral_offset_recenters_then_converges():
