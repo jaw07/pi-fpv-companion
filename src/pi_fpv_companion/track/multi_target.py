@@ -22,7 +22,8 @@ never left pointing at nothing once targets are present.
 """
 from __future__ import annotations
 import math
-from typing import Dict, List, Optional
+from dataclasses import replace
+from typing import Dict, List, Optional, Tuple
 
 from pi_fpv_companion.types import Detection, Target
 from pi_fpv_companion.track.iou_associator import _iou
@@ -30,15 +31,20 @@ from pi_fpv_companion.track.iou_associator import _iou
 
 class MultiObjectTracker:
     def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30,
-                 max_match_dist_px: float = 60.0) -> None:
+                 max_match_dist_px: float = 60.0, vel_alpha: float = 0.5) -> None:
         self._iou_threshold = iou_threshold
         self._max_lost_frames = max_lost_frames
         # Associate a detection to a track when it OVERLAPS (IoU) OR its centroid is
-        # within this many pixels. IoU alone fails for the small boxes this system
-        # sees (a person at >100 m is only a few px wide, so any camera rotation
-        # shifts the box more than its own width → zero IoU). The distance gate must
-        # stay well below the spacing between distinct targets to avoid swaps.
+        # within this many pixels OF THE TRACK'S PREDICTED position. IoU alone fails
+        # for the small boxes this system sees (a person at >100 m is a few px wide,
+        # so any camera rotation shifts the box more than its own width → zero IoU).
+        # Matching against a constant-velocity PREDICTION (not the last position)
+        # also keeps identities through a crossing: two targets that pass each other
+        # in the image would otherwise swap ids under nearest-neighbour matching.
         self._max_match_dist_px = max_match_dist_px
+        self._vel_alpha = vel_alpha
+        self._vel: Dict[int, Tuple[float, float]] = {}   # track_id -> (vx, vy) px/s
+        self._last_t: Optional[float] = None
         self._tracks: Dict[int, Target] = {}
         self._selected_id: Optional[int] = None
         self._next_id: int = 1
@@ -89,35 +95,48 @@ class MultiObjectTracker:
         return self._tracks.get(self._selected_id) if self._selected_id is not None else None
 
     def _associate(self, detections: List[Detection], now: float) -> None:
+        dt = (now - self._last_t) if self._last_t is not None else 0.0
+        self._last_t = now
         unmatched = list(detections)
-        # Existing tracks claim their best unmatched detection (highest id first is
-        # arbitrary but stable). A matched track resets to lost_frames=0.
+        # Existing tracks claim their best unmatched detection, matched against the
+        # track's constant-velocity PREDICTION (carries identity through a crossing).
         for tid in sorted(self._tracks):
             cur = self._tracks[tid]
-            # Best match: prefer the highest IoU; if nothing overlaps, the nearest
-            # centroid within the distance gate (robust for tiny boxes under motion).
+            vx, vy = self._vel.get(tid, (0.0, 0.0))
+            px, py = cur.detection.x + vx * dt, cur.detection.y + vy * dt
+            pred = replace(cur.detection, x=px, y=py)
+            # Best match: prefer highest IoU (of the predicted box); else nearest
+            # centroid to the prediction within the gate (robust for tiny boxes).
             best, best_key = None, None
             for d in unmatched:
-                iou = _iou(cur.detection, d)
-                dist = math.hypot(cur.detection.x - d.x, cur.detection.y - d.y)
+                iou = _iou(pred, d)
+                dist = math.hypot(px - d.x, py - d.y)
                 if iou >= self._iou_threshold or dist <= self._max_match_dist_px:
-                    key = (iou, -dist)        # higher IoU first, then nearer centroid
+                    key = (iou, -dist)
                     if best_key is None or key > best_key:
                         best, best_key = d, key
             if best is not None:
                 unmatched.remove(best)
+                if dt > 1e-3:
+                    a = self._vel_alpha
+                    self._vel[tid] = (
+                        a * (best.x - cur.detection.x) / dt + (1 - a) * vx,
+                        a * (best.y - cur.detection.y) / dt + (1 - a) * vy,
+                    )
                 self._tracks[tid] = Target(detection=best, track_id=tid,
                                            lost_frames=0, timestamp=now)
             else:
                 lost = cur.lost_frames + 1
                 if lost > self._max_lost_frames:
                     del self._tracks[tid]
+                    self._vel.pop(tid, None)
                 else:
-                    # Coast: keep the last box, advance the lost counter.
-                    self._tracks[tid] = Target(detection=cur.detection, track_id=tid,
+                    # Coast on the prediction (so a brief miss keeps moving with it).
+                    self._tracks[tid] = Target(detection=pred, track_id=tid,
                                                lost_frames=lost, timestamp=cur.timestamp)
-        # Unmatched detections become new tracks.
+        # Unmatched detections become new tracks (velocity seeds at zero).
         for d in unmatched:
             self._tracks[self._next_id] = Target(detection=d, track_id=self._next_id,
                                                  lost_frames=0, timestamp=now)
+            self._vel[self._next_id] = (0.0, 0.0)
             self._next_id += 1

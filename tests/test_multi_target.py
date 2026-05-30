@@ -117,6 +117,22 @@ def test_small_boxes_under_motion_keep_their_ids():
     assert len(t.tracks) == 2
 
 
+def test_crossing_targets_keep_their_ids_via_velocity_prediction():
+    # Two targets passing each other in the image: nearest-neighbour matching would
+    # swap their ids at the crossing (and the lock would follow the wrong target).
+    # Constant-velocity prediction carries each identity straight through.
+    t = MultiObjectTracker(iou_threshold=0.3)
+    t.consume(None, [_d(200, 300, w=8, h=8), _d(400, 300, w=8, h=8)], 0.0)
+    left_id = min(t.tracks, key=lambda tr: tr.detection.x).track_id   # the left one (→right)
+    right_id = max(t.tracks, key=lambda tr: tr.detection.x).track_id  # the right one (→left)
+    ax, bx = 200, 400
+    for i in range(1, 16):
+        ax += 14; bx -= 14                       # A→right, B→left, cross near x=300
+        t.consume(None, [_d(ax, 300, w=8, h=8), _d(bx, 300, w=8, h=8)], i * 0.033)
+    byid = {tr.track_id: tr.detection.x for tr in t.tracks}
+    assert byid[left_id] > byid[right_id]        # left-origin id ended on the right → no swap
+
+
 def test_no_detections_returns_none():
     t = MultiObjectTracker()
     assert t.consume(None, [], 0.0) is None
