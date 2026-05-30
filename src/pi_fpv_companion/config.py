@@ -67,6 +67,9 @@ class FcSection:
     uart_device: str = "/dev/ttyAMA0"
     baud: int = 115200
     switch_channel: int = 7
+    # Momentary RC channel that cycles the locked target among detections (multi_iou
+    # tracker). A rising edge past 1700 µs = "next target". 0 = disabled.
+    select_channel: int = 0
     switch_threshold_us: int = 1700      # betaflight 2-state engage threshold
     # ArduPilot 3-position mode switch on switch_channel:
     #   pwm >= dive_threshold_us  -> DIVE
@@ -89,6 +92,10 @@ class FcSection:
     stab_hover_learn: bool = True
     stab_hover_learn_kp: float = 50.0    # PWM per (m/s) climb (immediate damping)
     stab_hover_learn_gain: float = 20.0  # Ki: PWM per (m/s) climb per second (slow trim)
+    # Adaptive hover HOLDS altitude only while |thrust-0.5| < this on the open-loop
+    # THRUST-STICK vertical path (the fallback); the closed-loop DIVE commands a
+    # vertical RATE instead, which the loop tracks directly (band not used).
+    stab_hover_learn_band: float = 0.05
     stab_hover_min_us: int = 1200        # safety clamp on the learned hover
     stab_hover_max_us: int = 1700
     angle_max_deg: float = 45.0
@@ -100,6 +107,13 @@ class FcSection:
     rc_roll_sign: int = 1
     rc_pitch_sign: int = 1
     rc_yaw_sign: int = 1
+    # Startup FC validation: on boot, confirm the FC params the companion needs and
+    # WRITE any that differ (verified). ANGLE_MAX (from angle_max_deg) and the
+    # companion's RC channels' *_OPTION=0 are always enforced; `enforce_params` adds
+    # explicit name->value overrides (e.g. {SR2_EXTRA2: 5}). Serial/baud are NOT
+    # touched (the link the companion is on must already be correct to connect).
+    enforce_params_on_start: bool = True
+    enforce_params: Dict[str, float] = field(default_factory=dict)
     betaflight: Optional[BetaflightMapping] = None
 
 
@@ -191,6 +205,7 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         uart_device=d.get("uart_device", "/dev/ttyAMA0"),
         baud=d.get("baud", 115200),
         switch_channel=d.get("switch_channel", 7),
+        select_channel=d.get("select_channel", 0),
         switch_threshold_us=d.get("switch_threshold_us", 1700),
         track_threshold_us=d.get("track_threshold_us", 1300),
         dive_threshold_us=d.get("dive_threshold_us", 1700),
@@ -199,6 +214,7 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         stab_hover_learn=d.get("stab_hover_learn", True),
         stab_hover_learn_kp=d.get("stab_hover_learn_kp", 50.0),
         stab_hover_learn_gain=d.get("stab_hover_learn_gain", 20.0),
+        stab_hover_learn_band=d.get("stab_hover_learn_band", 0.05),
         stab_hover_min_us=d.get("stab_hover_min_us", 1200),
         stab_hover_max_us=d.get("stab_hover_max_us", 1700),
         angle_max_deg=d.get("angle_max_deg", 45.0),
@@ -210,6 +226,8 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         rc_roll_sign=d.get("rc_roll_sign", 1),
         rc_pitch_sign=d.get("rc_pitch_sign", 1),
         rc_yaw_sign=d.get("rc_yaw_sign", 1),
+        enforce_params_on_start=d.get("enforce_params_on_start", True),
+        enforce_params=dict(d.get("enforce_params", {})),
         betaflight=bf,
     )
 
@@ -223,13 +241,19 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         pixel_deadzone_px=d.get("pixel_deadzone_px", 20.0),
         yaw_p_gain=d.get("yaw_p_gain", 0.15),
         yaw_ff_gain=d.get("yaw_ff_gain", 0.05),
+        lead_time_s=d.get("lead_time_s", 0.0),
         desired_bbox_frac=d.get("desired_bbox_frac", 0.30),
         closure_p_gain=d.get("closure_p_gain", 50.0),
         pitch_p_gain=d.get("pitch_p_gain", 0.15),
         track_vcenter_gain=d.get("track_vcenter_gain", 0.10),
         dive_forward_deg=d.get("dive_forward_deg", 10.0),
-        dive_descent=d.get("dive_descent", 0.0),
+        dive_climb_forward_deg=d.get("dive_climb_forward_deg", 6.0),
+        dive_max_pitch_deg=d.get("dive_max_pitch_deg", 30.0),
+        dive_lean_ramp_s=d.get("dive_lean_ramp_s", 0.5),
         dive_center_frac=d.get("dive_center_frac", 0.30),
+        dive_vrate_gain=d.get("dive_vrate_gain", 0.0),
+        dive_max_descent_mps=d.get("dive_max_descent_mps", 8.0),
+        dive_max_climb_mps=d.get("dive_max_climb_mps", 4.0),
         yaw_sign=d.get("yaw_sign", 1.0),
         pitch_sign=d.get("pitch_sign", 1.0),
     )
@@ -270,6 +294,17 @@ def _validate(cfg: AppConfig) -> None:
                 f"fc.track_threshold_us ({fc.track_threshold_us}); otherwise the "
                 "switch reaches DIVE before TRACK and TRACK is unreachable"
             )
+
+    s = cfg.servo
+    if s.dive_vrate_gain < 0.0:
+        raise ValueError(
+            f"guidance.dive_vrate_gain ({s.dive_vrate_gain}) must be >= 0 "
+            "(m/s of climb command per unit normalised vertical frame error)"
+        )
+    if s.dive_max_descent_mps < 0.0 or s.dive_max_climb_mps < 0.0:
+        raise ValueError(
+            "guidance.dive_max_descent_mps / dive_max_climb_mps must be >= 0"
+        )
 
 
 def load(path: str | Path) -> AppConfig:

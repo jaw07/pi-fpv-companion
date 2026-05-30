@@ -35,6 +35,7 @@ Stick signs are TX/RCMAP/airframe dependent — bench/SITL-validate them
 """
 from __future__ import annotations
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -91,9 +92,21 @@ class ArduCopterRcMapping:
     # slowly trims the learned hover throttle to remove the steady-state bias.
     hover_learn_kp: float = 50.0         # PWM per (m/s) of climb (immediate damping)
     hover_learn_gain: float = 20.0       # Ki: PWM per (m/s) of climb per second (slow trim)
-    hover_learn_band: float = 0.15       # only hold while |thrust-0.5| < this (i.e. ~holding)
+    # Hold deadband for the open-loop THRUST-STICK vertical path: the PI loop holds
+    # altitude while |thrust-0.5| < this, outside it the stick passes through.
+    # (The closed-loop DIVE commands a vertical RATE instead — see _adaptive_throttle
+    # — which is tracked directly and does not use this band.) TRACK emits EXACTLY
+    # 0.5, so this only needs to catch neutral.
+    hover_learn_band: float = 0.05
     hover_min_us: int = 1200             # safety clamp on the learned hover
     hover_max_us: int = 1700
+    # Climb rate (m/s) that maps to a full throttle stick when a commanded
+    # vertical_rate must be flown open-loop (no fresh VFR_HUD to close the loop).
+    rate_openloop_full_mps: float = 8.0
+    # Integral on the vertical-rate error (only while tracking a commanded rate):
+    # kills the pure-P steady-state droop so the loop reaches the setpoint.
+    rate_i_gain: float = 25.0            # PWM per (m/s) of rate error per second
+    rate_i_max_us: float = 250.0         # anti-windup clamp on the integral term
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -136,10 +149,13 @@ class ArduPilotBackend:
         track_threshold_us: int,
         dive_threshold_us: int,
         mapping: Optional[ArduCopterRcMapping] = None,
+        select_channel: int = 0,
     ) -> None:
         self._device = device
         self._baud = baud
         self._switch_channel = switch_channel
+        self._select_channel = select_channel    # 0 = disabled
+        self._select_pwm_us = 0
         # 3-position mode switch: pwm >= dive -> DIVE, >= track -> TRACK, else STANDBY.
         self._track_threshold_us = track_threshold_us
         self._dive_threshold_us = dive_threshold_us
@@ -153,6 +169,9 @@ class ArduPilotBackend:
         self._hover_t: float = 0.0           # last adapt time (for dt)
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
+        self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
+        self._pitch_t: float = 0.0           # when _pitch_rad was last updated
+        self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
         self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
@@ -174,16 +193,63 @@ class ArduPilotBackend:
         self._mav.wait_heartbeat(timeout=timeout)
         self._request_streams()
 
+    def read_param(self, name: str, timeout: float = 5.0) -> Optional[tuple]:
+        """Read one FC parameter. Returns (value, mav_param_type) or None on timeout.
+        Call at startup (before the main loop drains messages)."""
+        if self._mav is None:
+            return None
+        self._mav.mav.param_request_read_send(
+            self._mav.target_system, self._mav.target_component, name.encode(), -1)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            pv = self._mav.recv_match(type="PARAM_VALUE", blocking=True,
+                                      timeout=max(0.1, end - time.monotonic()))
+            if pv is not None and pv.param_id.strip("\x00") == name:
+                return float(pv.param_value), int(pv.param_type)
+        return None
+
+    def ensure_params(self, desired: Dict[str, float], tol: float = 0.5) -> Dict[str, str]:
+        """Confirm each desired FC parameter and WRITE any that differ, verifying the
+        write. The user authorised this (startup FC validation/auto-config). Only the
+        listed params are touched; every action is logged. Returns {name: status}
+        where status is 'ok' | 'set' | 'read-fail' | 'write-fail'."""
+        result: Dict[str, str] = {}
+        for name, want in desired.items():
+            cur = self.read_param(name)
+            if cur is None:
+                _log.warning("FC param %s: could not read (skipped)", name)
+                result[name] = "read-fail"
+                continue
+            value, ptype = cur
+            if abs(value - want) <= tol:
+                _log.info("FC param %s = %g (ok)", name, value)
+                result[name] = "ok"
+                continue
+            _log.warning("FC param %s = %g, want %g — writing", name, value, want)
+            self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
+                                         name.encode(), float(want), ptype)
+            check = self.read_param(name)
+            if check is not None and abs(check[0] - want) <= tol:
+                _log.warning("FC param %s -> %g (written, verified)", name, want)
+                result[name] = "set"
+            else:
+                got = check[0] if check else float("nan")
+                _log.error("FC param %s write FAILED (still %g, wanted %g)", name, got, want)
+                result[name] = "write-fail"
+        return result
+
     def _request_streams(self, rate_hz: int = 10) -> None:
-        """ArduPilot does not stream RC_CHANNELS / VFR_HUD on a MAVLink serial port
-        until a GCS asks. Without RC_CHANNELS the engage switch is stuck; without
-        VFR_HUD adaptive hover has no climb-rate feedback (and falls back to the
-        fixed hover guess). Try the modern per-message interval, fall back to the
-        legacy data streams."""
+        """ArduPilot does not stream RC_CHANNELS / VFR_HUD / ATTITUDE on a MAVLink
+        serial port until a GCS asks. Without RC_CHANNELS the engage switch is
+        stuck; without VFR_HUD adaptive hover has no climb-rate feedback; without
+        ATTITUDE the agnostic dive has no airframe pitch and falls back to 0
+        (treating in-frame elevation as true LOS elevation). Try the modern
+        per-message interval, fall back to the legacy data streams."""
         if self._mav is None:
             return
         mav = self._mavutil.mavlink
-        for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD):
+        for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD,
+                       mav.MAVLINK_MSG_ID_ATTITUDE):
             try:
                 self._mav.mav.command_long_send(
                     self._mav.target_system, self._mav.target_component,
@@ -192,7 +258,8 @@ class ArduPilotBackend:
                 )
             except Exception:
                 pass
-        for stream in (mav.MAV_DATA_STREAM_RC_CHANNELS, mav.MAV_DATA_STREAM_EXTRA2):
+        for stream in (mav.MAV_DATA_STREAM_RC_CHANNELS, mav.MAV_DATA_STREAM_EXTRA2,
+                       mav.MAV_DATA_STREAM_EXTRA1):
             try:
                 self._mav.mav.request_data_stream_send(
                     self._mav.target_system, self._mav.target_component,
@@ -241,9 +308,29 @@ class ArduPilotBackend:
                     timestamp=time.monotonic(),
                     mode=mode,
                 )
+                if self._select_channel:
+                    self._select_pwm_us = getattr(msg, f"chan{self._select_channel}_raw")
             elif t == "VFR_HUD":
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._climb_t = time.monotonic()
+            elif t == "ATTITUDE":
+                self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
+                self._pitch_t = time.monotonic()
+
+    def select_pwm(self) -> int:
+        """Latest PWM on the target-select channel (0 if disabled / not yet seen).
+        The pipeline edge-detects this to cycle the locked target (multi_iou)."""
+        return self._select_pwm_us
+
+    def pitch_deg(self) -> float:
+        """Airframe pitch in degrees (+nose-up) from ATTITUDE, for the agnostic
+        dive's LOS-elevation framing. Returns 0.0 (level) when no fresh ATTITUDE
+        has arrived — the dive then keys on in-frame elevation alone, which is a
+        safe degradation (it just can't tell a high-framed ground target from a
+        truly-above one until telemetry resumes)."""
+        if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
+            return 0.0
+        return math.degrees(self._pitch_rad)
 
     def read_switch(self) -> SwitchState:
         self._drain()
@@ -289,18 +376,24 @@ class ArduPilotBackend:
         self._send_channels(overrides)
 
     def _adaptive_throttle(self, intent: GuidanceIntent) -> int:
-        """Companion vertical-velocity hold for STABILIZE (PI on climb rate). While
-        ~holding (|thrust-0.5| < band) and telemetry is fresh: proportional term
-        (Kp) damps climb immediately, integral (Ki) slowly trims the learned hover
-        so it levels out by itself (descending -> more throttle). A commanded climb/
-        dive (thrust off 0.5) bypasses the hold and modulates around the learned
-        hover open-loop. Output clamped to valid PWM; learned hover clamped to
-        [hover_min_us, hover_max_us]."""
+        """Companion vertical-velocity controller for STABILIZE (PI on climb rate).
+
+        Tracks a commanded climb rate against VFR_HUD.climb:
+          - `intent.vertical_rate_mps` set (DIVE constant-bearing homing) -> track
+            that rate (+up). The outer framing loop in the servo integrates out the
+            P-controller's steady-state error.
+          - else -> hold altitude (setpoint 0): Kp damps climb immediately, Ki
+            slowly trims the learned hover so it self-levels.
+        When holding and telemetry is fresh, Ki trims the learned hover. A commanded
+        `thrust` off 0.5 (open-loop dive, no rate given) modulates around the hover.
+        Output clamped to valid PWM; learned hover clamped to [hover_min, max]."""
         m = self._mapping
         now = time.monotonic()
         dt = now - self._hover_t if self._hover_t else 0.0
         self._hover_t = now
-        holding = abs(intent.thrust - 0.5) < m.hover_learn_band
+        cmd_rate = intent.vertical_rate_mps          # +up m/s, or None
+        rate_mode = cmd_rate is not None
+        holding = (abs(cmd_rate) < 0.2) if rate_mode else (abs(intent.thrust - 0.5) < m.hover_learn_band)
         fresh = (now - self._climb_t) < 0.5 if self._climb_t else False
         if fresh:
             self._vfr_warned = False
@@ -308,15 +401,34 @@ class ArduPilotBackend:
             _log.warning("adaptive hover: no fresh VFR_HUD.climb — holding at fixed "
                          "hover %d. Is VFR_HUD streamed (SR*_EXTRA2)?", int(self._hover_pwm))
             self._vfr_warned = True
-        if holding and fresh:
-            if 0.0 < dt < 0.3:   # Ki: slow trim of the hover estimate
-                self._hover_pwm = _clamp(
-                    self._hover_pwm + m.hover_learn_gain * (-self._climb_mps) * dt,
-                    m.hover_min_us, m.hover_max_us,
-                )
-            # Kp: immediate damping on climb rate (the anti-oscillation term).
-            out = self._hover_pwm + m.hover_learn_kp * (-self._climb_mps)
+
+        if fresh and (rate_mode or holding):
+            setpoint = cmd_rate if rate_mode else 0.0
+            err = setpoint - self._climb_mps
+            if holding:
+                # ~Holding: trim the learned hover (Ki) so it self-levels; no rate
+                # integral (it would wind up against the hover trim).
+                self._vrate_i = 0.0
+                if 0.0 < dt < 0.3:
+                    self._hover_pwm = _clamp(
+                        self._hover_pwm + m.hover_learn_gain * (-self._climb_mps) * dt,
+                        m.hover_min_us, m.hover_max_us,
+                    )
+            elif 0.0 < dt < 0.3:
+                # Tracking a commanded rate: integrate the rate error so the loop
+                # reaches the setpoint (kills the pure-P droop), with anti-windup.
+                self._vrate_i = _clamp(self._vrate_i + m.rate_i_gain * err * dt,
+                                       -m.rate_i_max_us, m.rate_i_max_us)
+            out = self._hover_pwm + m.hover_learn_kp * err + self._vrate_i
+        elif rate_mode:
+            # No fresh climb telemetry: can't close the rate loop -> open-loop map
+            # the commanded rate to a throttle offset (degraded but still descends).
+            self._vrate_i = 0.0
+            t = _clamp(cmd_rate / m.rate_openloop_full_mps, -1.0, 1.0)
+            span = (2000 - self._hover_pwm) if t >= 0 else (self._hover_pwm - 1000)
+            out = self._hover_pwm + t * span
         else:
+            self._vrate_i = 0.0
             t = _clamp((intent.thrust - 0.5) / 0.5, -1.0, 1.0)
             span = (2000 - self._hover_pwm) if t >= 0 else (self._hover_pwm - 1000)
             out = self._hover_pwm + t * span

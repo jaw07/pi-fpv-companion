@@ -25,10 +25,11 @@ from pi_fpv_companion.guidance.safety import GateResult, SafetyConfig, gate
 from pi_fpv_companion.guidance.visual_servo import ServoConfig, compute_intent
 from pi_fpv_companion.track.base import Tracker
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode, SwitchState, Target, ZERO_INTENT
-
+from typing import List
 
 StatusCallback = Callable[
-    [Optional[Target], GuidanceIntent, GateResult, SwitchState, bool, FrameBundle], None
+    [Optional[Target], GuidanceIntent, GateResult, SwitchState, bool, FrameBundle,
+     Optional[List[Target]]], None
 ]
 
 
@@ -66,6 +67,11 @@ class Pipeline:
         self._on_status = on_status
         self._stopping = False
         self._frame_idx = -1
+        # Operator target selection (multi-target tracker only): a rising edge on
+        # the FC's select channel cycles the lock among current detections.
+        self._last_select_pwm = 0
+        self._tracks: Optional[list] = None
+        self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -149,19 +155,39 @@ class Pipeline:
                 if self._frame_idx % self._detect_period == 0:
                     detections = self._detector.detect(bundle.image)
 
+        switch = self._fc.read_switch()
+        if self._force_mode is not None:
+            switch = replace(switch, mode=self._force_mode,
+                             active=self._force_mode is not GuidanceMode.STANDBY)
+        armed = self._fc.is_armed()
+
+        # Operator target selection (multi-target tracker): a rising edge on the FC
+        # select channel (ch8) cycles the locked target among the current
+        # detections. Allowed ONLY in STANDBY — you choose your target before
+        # committing; once engaged (TRACK/DIVE) the lock is FROZEN so a stray
+        # ch8 bump can't swap targets mid-engagement. The lock persists across the
+        # mode switch, so what you pick in STANDBY stays locked through TRACK/DIVE.
+        cycle_fn = getattr(self._tracker, "cycle", None)
+        sel_fn = getattr(self._fc, "select_pwm", None)
+        if callable(cycle_fn) and callable(sel_fn):
+            pwm = sel_fn()
+            if (switch.mode is GuidanceMode.STANDBY
+                    and pwm >= 1700 and self._last_select_pwm < 1700):
+                cycle_fn()
+            self._last_select_pwm = pwm
+            # Acquire/re-acquire only in STANDBY; once committed, a dropped target
+            # holds (no silent swap to a different target — see MultiObjectTracker).
+            if hasattr(self._tracker, "auto_acquire"):
+                self._tracker.auto_acquire = switch.mode is GuidanceMode.STANDBY
+
         raw_target = self._tracker.consume(bundle.image, detections, now)
+        self._tracks = getattr(self._tracker, "tracks", None)   # all tracks for the HUD
 
         # Filter + quality-assess. Everything downstream uses the FilteredTarget,
         # never the raw tracker output (audit §4/§5).
         target = self._target_filter.update(
             raw_target, bundle.width, bundle.height, now
         )
-
-        switch = self._fc.read_switch()
-        if self._force_mode is not None:
-            switch = replace(switch, mode=self._force_mode,
-                             active=self._force_mode is not GuidanceMode.STANDBY)
-        armed = self._fc.is_armed()
         if target is not None:
             # Preview the intent even in STANDBY (using TRACK behaviour) so the
             # HUD shows what guidance would do; the gate decides what's actually
@@ -169,7 +195,15 @@ class Pipeline:
             preview_mode = (
                 switch.mode if switch.mode is not GuidanceMode.STANDBY else GuidanceMode.TRACK
             )
-            intent = compute_intent(target, self._servo_cfg, preview_mode)
+            # Time since DIVE was engaged, for the lean soft-start (reset on exit).
+            if switch.mode is GuidanceMode.DIVE:
+                if self._dive_entered_t is None:
+                    self._dive_entered_t = now
+                dive_elapsed_s = now - self._dive_entered_t
+            else:
+                self._dive_entered_t = None
+                dive_elapsed_s = 1e9
+            intent = compute_intent(target, self._servo_cfg, preview_mode, dive_elapsed_s)
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)
@@ -184,6 +218,6 @@ class Pipeline:
             self._fc.send_intent(gated.intent)
 
         if self._on_status is not None:
-            self._on_status(target, intent, gated, switch, armed, bundle)
+            self._on_status(target, intent, gated, switch, armed, bundle, self._tracks)
 
         return gated

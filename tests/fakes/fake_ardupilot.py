@@ -23,6 +23,8 @@ class FakeArduCopter:
         self._stop = threading.Event()
         self.armed: bool = False
         self.rc_channels: List[int] = [1500] * 18
+        self.pitch_rad: float = 0.0          # ATTITUDE.pitch to emit (+nose-up)
+        self.params: dict = {}               # FC parameter store (PARAM_REQUEST_READ/SET)
         self.captured_overrides: List = []   # inbound RC_CHANNELS_OVERRIDE messages
 
     def start(self) -> None:
@@ -50,11 +52,27 @@ class FakeArduCopter:
             if now - last_emit >= 0.05:
                 self._emit_heartbeat()
                 self._emit_rc_channels()
+                self._emit_attitude()
                 last_emit = now
             msg = self._mav.recv_match(blocking=False)
-            if msg is not None and msg.get_type() == "RC_CHANNELS_OVERRIDE":
-                self.captured_overrides.append(msg)
+            if msg is not None:
+                mt = msg.get_type()
+                if mt == "RC_CHANNELS_OVERRIDE":
+                    self.captured_overrides.append(msg)
+                elif mt == "PARAM_REQUEST_READ":
+                    self._emit_param(msg.param_id.strip("\x00"))
+                elif mt == "PARAM_SET":
+                    name = msg.param_id.strip("\x00")
+                    self.params[name] = float(msg.param_value)   # store the write
+                    self._emit_param(name)                       # echo back (ack)
             time.sleep(0.005)
+
+    def _emit_param(self, name: str) -> None:
+        # Unknown params default to 0.0 (as a real FC would return them if they
+        # exist; tests pre-seed self.params with the "wrong" current values).
+        val = self.params.get(name, 0.0)
+        self._mav.mav.param_value_send(name.encode(), float(val),
+                                       self._mavutil.mavlink.MAV_PARAM_TYPE_REAL32, 1, 0)
 
     def _emit_heartbeat(self) -> None:
         base_mode = self._mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
@@ -77,3 +95,7 @@ class FakeArduCopter:
             ch[16], ch[17],
             255,
         )
+
+    def _emit_attitude(self) -> None:
+        # roll, pitch, yaw (rad) + body rates; only pitch is consumed.
+        self._mav.mav.attitude_send(0, 0.0, self.pitch_rad, 0.0, 0.0, 0.0, 0.0)
