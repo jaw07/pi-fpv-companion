@@ -92,6 +92,19 @@ def test_dropped_selection_reacquires_highest_confidence():
     assert sel is not None and sel.detection.x == 400
 
 
+def test_auto_acquire_off_holds_instead_of_swapping_on_drop():
+    # With auto_acquire OFF (engaged), a dropped selection does NOT jump to another
+    # target — consume returns None (hold), so a committed dive never swaps targets.
+    t = MultiObjectTracker(max_lost_frames=2)
+    t.consume(None, [_d(100, 100), _d(400, 300)], 0.0)
+    t.select(t.tracks[0].track_id)               # lock the left target
+    t.auto_acquire = False                       # committed
+    out = None
+    for i in range(4):                           # left target vanishes for good
+        out = t.consume(None, [_d(400, 300)], (i + 1) * 0.033)
+    assert out is None                           # held, did NOT swap to the right target
+
+
 def test_no_detections_returns_none():
     t = MultiObjectTracker()
     assert t.consume(None, [], 0.0) is None

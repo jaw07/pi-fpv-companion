@@ -222,13 +222,56 @@ def test_multi_target_select_cycles_and_lock_persists_through_modes():
     pipe.tick(bundle)
     assert pipe._tracker.selected_id == id_a
 
-    # Now commit: STANDBY → TRACK → DIVE. The lock stays on A throughout.
+    # Now commit: STANDBY → TRACK → DIVE. The lock stays on A throughout, and a
+    # ch8 pulse while ENGAGED is ignored (the lock is frozen once committed).
     for mode in (GuidanceMode.TRACK, GuidanceMode.DIVE):
         fc.mode = mode
         fc.armed = True
+        fc.select = 1000
         pipe.tick(bundle)
-        assert pipe._tracker.selected_id == id_a
+        fc.select = 1800                                          # try to cycle mid-engagement
+        pipe.tick(bundle)
+        assert pipe._tracker.selected_id == id_a                  # ignored — still locked on A
     assert locked[-1] == id_a                                     # guidance followed the selection
+
+
+def test_engaged_dive_holds_when_committed_target_drops_not_swaps():
+    """Committed on target A in DIVE; A disappears (only B remains). The lock must
+    NOT swap to B — the tracker holds (no auto-reacquire while engaged), so the
+    aircraft never attacks a different target than the one committed to."""
+    from pi_fpv_companion.track.multi_target import MultiObjectTracker
+
+    def bundle_with(dets):
+        return FrameBundle(image=np.full((576, 720, 3), 64, dtype=np.uint8),
+                           width=720, height=576, timestamp=0.0, detections=dets)
+
+    A = Detection(x=150, y=300, w=40, h=40, confidence=0.6, class_id=0)
+    B = Detection(x=560, y=300, w=40, h=40, confidence=0.9, class_id=0)
+    fc = StubFC()
+    tracker = MultiObjectTracker(iou_threshold=0.2, max_lost_frames=2)
+    pipe = Pipeline(StubCameraNoop(), tracker, _servo(), _safety(), fc)
+
+    # STANDBY: cycle to A (the low-confidence left target).
+    fc.mode = GuidanceMode.STANDBY
+    pipe.tick(bundle_with([A, B]))
+    while tracker._tracks[tracker.selected_id].detection.x != 150:
+        fc.select = 1800; pipe.tick(bundle_with([A, B])); fc.select = 1000
+    id_a = tracker.selected_id
+
+    # Commit to DIVE, then A vanishes (only B detected) for longer than max_lost.
+    fc.mode = GuidanceMode.DIVE
+    fc.armed = True
+    gated = None
+    for _ in range(5):
+        gated = pipe.tick(bundle_with([B]))
+    assert tracker.selected_id == id_a            # never swapped to B
+    assert gated.muted                            # held (no target) instead of attacking B
+
+
+class StubCameraNoop:
+    def open(self): pass
+    def close(self): pass
+    def frames(self): return iter(())
 
 
 def test_pipeline_kcf_path_reseeds_on_detection_burst():

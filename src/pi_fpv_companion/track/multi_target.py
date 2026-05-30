@@ -34,6 +34,12 @@ class MultiObjectTracker:
         self._tracks: Dict[int, Target] = {}
         self._selected_id: Optional[int] = None
         self._next_id: int = 1
+        # When True, consume() locks the highest-confidence track if nothing valid
+        # is selected (acquisition / re-acquisition). The pipeline turns this OFF
+        # once engaged (TRACK/DIVE) so that if the COMMITTED target is dropped the
+        # aircraft holds (returns None) instead of silently swapping to a different
+        # target mid-engagement.
+        self.auto_acquire: bool = True
 
     # ---- state the pipeline / HUD read ----
     @property
@@ -65,9 +71,10 @@ class MultiObjectTracker:
         self, image: object, detections: List[Detection], now: float
     ) -> Optional[Target]:
         self._associate(detections, now)
-        # Default / re-acquire: if nothing is selected (first lock, or the selected
-        # track was dropped), lock the highest-confidence current track.
-        if self._selected_id not in self._tracks and self._tracks:
+        # Acquire / re-acquire the highest-confidence track when nothing valid is
+        # selected — but only while auto_acquire is on (STANDBY). When engaged it
+        # stays off, so a dropped commit yields None (hold) rather than a target swap.
+        if self.auto_acquire and self._selected_id not in self._tracks and self._tracks:
             self._selected_id = max(
                 self._tracks, key=lambda i: self._tracks[i].detection.confidence
             )

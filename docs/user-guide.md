@@ -113,9 +113,12 @@ companion is asleep. Get comfortable, climb to a safe height with margin below y
 **3. Line up — and pick your target.** Put targets in the frame. With the
 multi-target tracker (`tracker.type: multi_iou`, the IMX500 default) the HUD shows
 **every** detection (faint boxes) in STANDBY, with the locked one bold. Tap your
-**select switch** (`fc.select_channel`, e.g. a momentary on ch8) to **cycle the
-lock** to the next target. Whatever is locked here **stays locked** through TRACK
-and DIVE — so choose before you commit. (No select channel? It auto-locks the
+**select switch** (`fc.select_channel`, e.g. a momentary on **ch8**) to **cycle the
+lock** to the next target. Selection works **only in STANDBY** — whatever is
+locked when you flick to TRACK is **frozen** through TRACK and DIVE, so a stray
+ch8 bump can't swap targets mid-engagement (and if your target is lost while
+committed it **holds**, it never silently re-targets). Choose before you commit;
+to re-choose, flick back to STANDBY. (No select channel wired? It auto-locks the
 highest-confidence detection.)
 
 **4. Hand it the wheel — flick to TRACK (middle).** Now *let go of the sticks.*
