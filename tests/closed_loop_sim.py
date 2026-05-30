@@ -157,6 +157,14 @@ class Airframe:
     # ~-3.0 m/s); a small margin (0.9) models ramp-up lag. The servo's framing
     # loop absorbs any residual.
     vrate_track_eff: float = 0.9
+    # The backend climb-rate PI loop (+ ArduCopter throttle/altitude response) does
+    # NOT reach a commanded vertical rate instantly — it ramps over a fraction of a
+    # second. Modelled as a first-order lag on the ACHIEVED vertical velocity. This
+    # lag is what turns a high-gain P vertical-homing (DIVE) into an up/down
+    # oscillation, exactly as seen in Gazebo — so the sim must include it to tune
+    # the damping that removes it. Grounded in the SITL vrate step response (~0.4 s).
+    tau_vrate: float = 0.45
+    _v_vert: float = 0.0             # achieved vertical velocity state (for the lag)
 
     def step(self, intent: GuidanceIntent, dt: float) -> None:
         # Yaw: +dps = yaw RIGHT = clockwise from above = DECREASING ψ.
@@ -173,21 +181,25 @@ class Airframe:
         # capability — descent up to v_climb_max, climb gravity-limited). Otherwise a
         # thrust stick, with a near-neutral value held by adaptive hover.
         if intent.vertical_rate_mps is not None:
-            v_vert = intent.vertical_rate_mps * self.vrate_track_eff
+            v_cmd = intent.vertical_rate_mps * self.vrate_track_eff
             cap_up = self.v_climb_max * self.climb_factor
-            v_vert = max(-self.v_climb_max, min(cap_up, v_vert))
+            v_cmd = max(-self.v_climb_max, min(cap_up, v_cmd))
         else:
             dev = intent.thrust - 0.5
             if abs(dev) < self.hover_hold_band:
-                v_vert = 0.0                               # held by adaptive hover
+                v_cmd = 0.0                                # held by adaptive hover
             else:
-                v_vert = dev * 2.0 * self.v_climb_max
+                v_cmd = dev * 2.0 * self.v_climb_max
                 if dev > 0.0:
-                    v_vert *= self.climb_factor            # climbing is slower (gravity)
+                    v_cmd *= self.climb_factor             # climbing is slower (gravity)
+        # First-order lag: the achieved vertical velocity ramps toward the command
+        # (backend rate loop). This phase lag is what makes a high-gain P homing wiggle.
+        kv = 1.0 - math.exp(-dt / self.tau_vrate) if self.tau_vrate > 0 else 1.0
+        self._v_vert += (v_cmd - self._v_vert) * kv
         self.pos = (
             self.pos[0] + self.v_fwd * math.cos(self.psi) * dt,
             self.pos[1] + self.v_fwd * math.sin(self.psi) * dt,
-            self.pos[2] + v_vert * dt,
+            self.pos[2] + self._v_vert * dt,
         )
 
 
@@ -408,7 +420,7 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         track_vcenter_gain=0.10,
         dive_forward_deg=25.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0,
         dive_center_frac=0.30,
-        dive_vrate_gain=17.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
+        dive_vrate_gain=12.0, dive_vrate_damp=3.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)
