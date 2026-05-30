@@ -136,6 +136,38 @@ def test_track_does_not_nod_on_a_below_ground_target():
     assert max(pc) - min(pc) < 18.0                     # bounded pitch travel
 
 
+def test_track_holds_a_high_lookdown_ground_target_without_slam_or_nod():
+    # Engaging a ground target from HIGH up (40 m, 92 m out → ~24° look-down) the
+    # range-hold closure used to slam the nose to -14.5° at engage and then nod
+    # ±15° (the target rising then the size-growth driving a nose-up back-off) until
+    # it lost the low target out the bottom. The settle-window engage capture + the
+    # below-centre closure fade keep TRACK gentle and framed: it just holds and frames.
+    w = _world(target_pos=(92.0, 0.0, 0.0), alt=40.0)
+    tr = w.run(GuidanceMode.TRACK, duration_s=12.0)
+    assert not tr.ever_left_frame                       # the low target stays framed
+    pc = [tk.pitch_cmd for tk in tr.ticks if tk.in_frame]
+    assert abs(pc[0]) < 10.0                             # no dramatic engage slam (was ~-14.5°)
+    assert max(pc) - min(pc) < 10.0                      # gentle, bounded pitch (no big nod)
+    d = [pc[i] - pc[i - 1] for i in range(1, len(pc))]
+    reversals = sum(1 for i in range(1, len(d)) if d[i] * d[i - 1] < 0 and abs(d[i]) > 0.05)
+    assert reversals < 8
+
+
+def test_dive_reaches_a_ground_target_from_altitude():
+    # The committed forward lean must carry the dive all the way to a ground target
+    # engaged from altitude. Tying the lean to the instantaneous descent collapsed it
+    # to gentle once the homing centred the target, so the dive descended onto the
+    # line of sight then CRAWLED forward at ~1 m/s and never arrived (min_range stuck
+    # at ~15 m from 40 m up). The committed lean closes it.
+    for alt, horiz in ((25.0, 57.0), (40.0, 92.0), (55.0, 126.0)):
+        w = _world(target_pos=(horiz, 0.0, 0.0), alt=alt)
+        tr = w.run(GuidanceMode.DIVE, duration_s=90.0, dive_after_s=4.0)
+        assert tr.min_range < 4.0, f"alt={alt}: min_range={tr.min_range:.1f} (dive did not arrive)"
+        term = [((tk.px - 360) ** 2 + (tk.py - 288) ** 2) ** 0.5
+                for tk in tr.ticks if tk.in_frame and tk.range_m < 5.0]
+        assert term and (sum(term) / len(term)) < 16.0  # centre hit even from altitude
+
+
 def test_track_keeps_a_crossing_target_within_yaw_authority():
     # Target crossing laterally slowly enough that the required LOS rate stays
     # under max_yaw_rate at the hold range → yaw keeps up, target stays framed.
