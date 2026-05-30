@@ -101,7 +101,8 @@ guidance:
                             # tracks a small ground target to frame-fill vs losing it at ~10 m).
   dive_climb_forward_deg: 6.0   # gentle lean when level/climbing (keeps an above target framed)
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
-  dive_lean_ramp_s: 0.5      # soft-start: ramp the steep lean in over this many s at commit
+  dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
+  dive_lean_tau_s: 1.5       # low-pass on the dive lean: nose travels steadily, no up/down nod
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 12.0     # m/s of climb command per unit normalised vertical frame error
   dive_vrate_damp: 3.0      # derivative damping (m/s per err/s) — kills the dive up/down wiggle

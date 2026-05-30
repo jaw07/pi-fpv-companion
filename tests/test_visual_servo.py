@@ -309,6 +309,30 @@ def test_dive_vertical_damping_eases_command_when_target_moves_toward_centre():
     assert a == b
 
 
+def test_dive_state_low_passes_the_lean():
+    from pi_fpv_companion.guidance.visual_servo import DiveState
+    d = DiveState()
+    assert d.smooth(12.0, 0.0, 1.0) == 12.0        # first dive frame snaps (no history)
+    a = d.smooth(0.0, 0.1, 1.0)                     # lean target drops -> eased toward it
+    assert 0.0 < a < 12.0                            # partial move, not a jump (anti-nod)
+    assert d.smooth(0.0, 0.2, 1.0) < a               # keeps converging toward the new target
+    d0 = DiveState(); d0.smooth(12.0, 0.0, 0.0)
+    assert d0.smooth(0.0, 0.1, 0.0) == 0.0          # tau=0 disables smoothing (snap)
+
+
+def test_dive_lean_smoothing_steadies_the_pitch():
+    # With the lean low-pass, a sudden change in the would-be lean (the adaptive lean
+    # flipping) only nudges the pitch — it doesn't snap. That's what kills the nod.
+    from pi_fpv_companion.guidance.visual_servo import DiveState
+    cfg = _dcfg(dive_lean_tau_s=1.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    ds = DiveState()
+    p1 = compute_intent(_target(cx, cy + 200, ts=0.0), cfg, GuidanceMode.DIVE, dive=ds).pitch_deg
+    p2 = compute_intent(_target(cx, cy + 5, ts=0.05), cfg, GuidanceMode.DIVE, dive=ds).pitch_deg
+    p2_raw = compute_intent(_target(cx, cy + 5, ts=0.05), cfg, GuidanceMode.DIVE).pitch_deg
+    assert abs(p2 - p1) < abs(p2_raw - p1)          # smoothed pitch changes far less
+
+
 def test_dive_vertical_disabled_when_gain_zero():
     cfg = _dcfg(dive_vrate_gain=0.0)               # vertical homing off -> DIVE just leans
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
