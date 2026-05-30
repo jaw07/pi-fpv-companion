@@ -223,7 +223,7 @@ def test_multi_target_select_cycles_and_lock_persists_through_modes():
     assert pipe._tracker.selected_id == id_a
 
     # Now commit: STANDBY → TRACK → DIVE. The lock stays on A throughout, and a
-    # ch8 pulse while ENGAGED is ignored (the lock is frozen once committed).
+    # a select pulse while ENGAGED is ignored (the lock is frozen once committed).
     for mode in (GuidanceMode.TRACK, GuidanceMode.DIVE):
         fc.mode = mode
         fc.armed = True

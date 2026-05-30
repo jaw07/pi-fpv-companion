@@ -40,8 +40,10 @@ In Mission Planner → Full Parameter List, set and reboot the FC:
 | `SRn_EXTRA2` | `≥ 5` | streams climb rate (the companion holds height with it) |
 | `ANGLE_MAX` | `4500` | 45° max lean — must match `fc.angle_max_deg` |
 | `RC7_OPTION` | `0` | leave ch7 alone — it's the companion's engage switch |
+| `RC9_OPTION` | `0` | leave ch9 alone — it's the companion's target-select input |
 | flight-mode switch | → **STABILIZE** | the mode the companion flies in |
 | ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
+| ch9 (a spare input, e.g. rocker) | cycle target (tap) | maps in FreedomTX → ch9 |
 
 Keep the FC's own **RC-loss and battery failsafes** configured — they're your
 backstop if everything else fails.
@@ -113,13 +115,13 @@ companion is asleep. Get comfortable, climb to a safe height with margin below y
 **3. Line up — and pick your target.** Put targets in the frame. With the
 multi-target tracker (`tracker.type: multi_iou`, the IMX500 default) the HUD shows
 **every** detection (faint boxes) in STANDBY, with the locked one bold. Tap your
-**select switch** (`fc.select_channel`, e.g. a momentary on **ch8**) to **cycle the
-lock** to the next target. Selection works **only in STANDBY** — whatever is
-locked when you flick to TRACK is **frozen** through TRACK and DIVE, so a stray
-ch8 bump can't swap targets mid-engagement (and if your target is lost while
-committed it **holds**, it never silently re-targets). Choose before you commit;
-to re-choose, flick back to STANDBY. (No select channel wired? It auto-locks the
-highest-confidence detection.)
+**select input** (`fc.select_channel` — on the Tango 2 the top switches are full,
+so map a spare input to **ch9**) to **cycle the lock** to the next target.
+Selection works **only in STANDBY** — whatever is locked when you flick to TRACK
+is **frozen** through TRACK and DIVE, so a stray bump can't swap targets
+mid-engagement (and if your target is lost while committed it **holds**, it never
+silently re-targets). Choose before you commit; to re-choose, flick back to
+STANDBY. (No select channel wired? It auto-locks the highest-confidence detection.)
 
 **4. Hand it the wheel — flick to TRACK (middle).** Now *let go of the sticks.*
 The companion yaws to center the target, leans in to follow, and holds your

@@ -82,17 +82,17 @@ def test_backend_reads_switch_channel_pwm(ap_pair):
 
 
 def test_backend_reads_select_channel_over_the_wire():
-    # ch8 (the target-select channel) must reach select_pwm() so the pipeline can
-    # edge-detect a cycle. Build a select-enabled backend against a fake FC.
+    # The target-select channel (ch9 — the first free CRSF channel on the Tango 2)
+    # must reach select_pwm() so the pipeline can edge-detect a cycle.
     port = _free_udp_port()
     backend = ArduPilotBackend(device=f"udpin:127.0.0.1:{port}", baud=0, switch_channel=7,
-                               select_channel=8, track_threshold_us=1300, dive_threshold_us=1700)
+                               select_channel=9, track_threshold_us=1300, dive_threshold_us=1700)
     backend.open()
     fake = FakeArduCopter(target_port=port)
     fake.start()
     try:
         backend.wait_ready(timeout=3.0)
-        fake.rc_channels[7] = 1900            # ch8 (0-indexed 7) high
+        fake.rc_channels[8] = 1900            # ch9 (0-indexed 8) high
         time.sleep(0.25)
         backend.read_switch()                 # drains RC_CHANNELS
         assert backend.select_pwm() == 1900
