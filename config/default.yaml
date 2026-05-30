@@ -108,12 +108,13 @@ guidance:
   yaw_p_gain: 0.15          # deg/s of yaw rate per pixel of horizontal error
   yaw_ff_gain: 0.05         # deg/s per (px/s) of target image velocity (feedforward)
   # Closure regulation (audit §4): forward lean from a RANGE-LINEAR error
-  # (1/desired - 1/size_frac, ∝ hold_range - range). Gains are inverse-size scale.
-  desired_bbox_frac: 0.30   # hold when target bbox-height ≈ 30% of frame height
+  # (engage_setpoint - 1/size_frac, ∝ engage_distance - range). TRACK holds the
+  # distance at engagement; desired_bbox_frac is only the STANDBY-preview nominal.
+  desired_bbox_frac: 0.30   # preview nominal (target bbox-height ≈ 30% of frame)
   closure_p_gain: 4.0       # deg pitch per unit range-linear error
-                            # far -> nose down (approach, -15deg clamp); hold->0;
+                            # drifted far -> nose down (chase, -15deg clamp); held->0;
                             # too close -> +deg (nose up, back off — collision guard)
-  # closure_i_gain: 1.0     # optional PI integral -> exact standoff on a mover (off here)
+  # closure_i_gain: 1.0     # optional PI integral -> holds engage distance on a mover (off here)
   # TRACK: re-centre the target vertically as a forward lean tilts the fixed
   # camera down (target rises in frame). Added on top of range-hold; 0 disables.
   pitch_p_gain: 0.15        # deg pitch per px of vertical error (TRACK)
