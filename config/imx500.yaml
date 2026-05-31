@@ -119,17 +119,20 @@ guidance:
   dive_terminal_lock_frac: 0.5  # once the bbox fills >half the frame, impact is ~a metre or two away
                             # and the blob centroid clips/jumps — commit BALLISTIC (freeze yaw, ride
                             # the gyro for descent) so the aim doesn't chase the jitter into a corner.
-  # YAW/ROLL BLEND: pure yaw only rotates the heading (then you fly forward to close a
-  # lateral offset — slow, and tail-chases a crosser). Banking translates the quad
-  # sideways directly. Yaw dominates when the target is far off-axis; roll fades in near
-  # centre to slide onto it. The roll command is PD (gain on the px error + damp on the
-  # image velocity) — bank sets lateral ACCEL, so a P-only law oscillates. roll_compensate
-  # de-rotates the frame error by the measured bank so the loop regulates a stable signal.
-  dive_roll_gain: 0.2       # deg bank per px of horizontal error (0 = yaw-only)
-  dive_roll_damp: 0.15      # deg bank per (px/s) of horizontal image velocity (derivative, anti-oscillation)
-  dive_max_roll_deg: 20.0   # bank-angle clamp
+  # YAW/ROLL BLEND — banking to translate sideways onto the target. OFF on this airframe.
+  # The blend (bank-to-slide-near-centre, yaw-to-turn-when-far) is implemented and stable
+  # in the kinematic sim, but on the FIXED (airframe-bolted) camera banking ROLLS the image
+  # about centre — combined with the steep dive pitch it rotated a crossing target out of
+  # the frame and dropped the lock in Gazebo, at every gain and both signs tested. And it
+  # buys nothing here anyway: yaw alone already tracks a mover continuously, and the dive's
+  # closure on a crosser is forward-speed-limited, not lateral-authority-limited (more yaw
+  # rate changes nothing). So dive_roll_gain=0 (yaw-only). The mechanism is left wired for a
+  # future GIMBALLED camera (no image-roll) or a bench-validated roll_sign + gentle tuning.
+  dive_roll_gain: 0.0       # deg bank per px of horizontal error — 0 = yaw-only (see above)
+  dive_roll_damp: 0.15      # PD derivative (deg bank per px/s) — anti-oscillation when roll is on
+  dive_max_roll_deg: 14.0   # bank-angle clamp
   yaw_roll_blend_px: 160.0  # |dx| at/above which it's pure yaw; below, roll fades in
-  roll_compensate: true     # de-rotate the frame error by the measured bank (stable roll control)
+  roll_compensate: true     # de-rotate the frame error by the measured bank (for when roll is on)
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 18.0     # m/s of climb command per unit normalised vertical frame error.
                             # Higher gain -> smaller pure-P steady-state offset: the terminal aim
