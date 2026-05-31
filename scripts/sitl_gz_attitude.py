@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GUIDED_NOGPS comparison node: flies the FRAMING controller (attitude + thrust) via
-GUIDED + SET_ATTITUDE_TARGET — the Peregrine-style quad law on the attitude-control
+GUIDED + SET_ATTITUDE_TARGET — the framing quad law on the attitude-control
 surface, to A/B against the STABILIZE + RC-override path (sitl_gz_track.py). Gets to
 altitude first, noses down to ACQUIRE a below target, then frames + descends onto it.
 The SITL has GPS so plain GUIDED accepts SET_ATTITUDE_TARGET; the real GPS-denied
