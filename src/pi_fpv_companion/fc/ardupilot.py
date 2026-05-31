@@ -171,6 +171,7 @@ class ArduPilotBackend:
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
         self._roll_rad: float = 0.0          # latest ATTITUDE.roll (+bank-right)
+        self._yaw_rad: float = 0.0           # latest ATTITUDE.yaw (heading)
         self._pitch_t: float = 0.0           # when _pitch_rad / _roll_rad was last updated
         self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
@@ -328,6 +329,7 @@ class ArduPilotBackend:
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
                 self._roll_rad = float(msg.roll)     # +bank-right
+                self._yaw_rad = float(msg.yaw)       # heading (rad)
                 self._pitch_t = time.monotonic()
 
     def select_pwm(self) -> int:
@@ -352,6 +354,13 @@ class ArduPilotBackend:
         if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
             return 0.0
         return math.degrees(self._roll_rad)
+
+    def yaw_deg(self) -> float:
+        """Airframe heading in degrees from ATTITUDE (0 on stale telemetry). Used by the
+        attitude-control path to seed/track the yaw setpoint."""
+        if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
+            return 0.0
+        return math.degrees(self._yaw_rad)
 
     def read_switch(self) -> SwitchState:
         self._drain()
