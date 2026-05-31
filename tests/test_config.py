@@ -110,8 +110,8 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_pitch_fold == 1.0      # fold measured airframe pitch into the dive vert error
     assert s.vfov_deg == 52.3            # IMX500 vertical FoV (pitch -> frame units)
     assert s.dive_terminal_lock_frac == 0.5   # commit ballistic at frame-fill
-    assert s.dive_roll_gain == 0.2 and s.dive_roll_damp == 0.15   # yaw/roll blend (bank to translate)
-    assert s.roll_compensate is True
+    assert s.dive_roll_gain == 0.0       # roll banking OFF (yaw-only) on the fixed camera — see imx500.yaml
+    assert s.roll_compensate is True     # de-roll stays on (no-op at 0 bank), for when roll is enabled
 
 
 def test_rejects_out_of_range_angle_max(tmp_path):
