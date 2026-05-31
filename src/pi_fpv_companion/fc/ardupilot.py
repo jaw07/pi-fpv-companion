@@ -168,12 +168,16 @@ class ArduPilotBackend:
         self._hover_pwm: float = float(self._mapping.hover_throttle_us)
         self._hover_t: float = 0.0           # last adapt time (for dt)
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
+        self._gs_mps: float = 0.0            # latest VFR_HUD.groundspeed (forward speed)
         self._alt_m: float = 0.0             # latest VFR_HUD.alt
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
         self._roll_rad: float = 0.0          # latest ATTITUDE.roll (+bank-right)
         self._yaw_rad: float = 0.0           # latest ATTITUDE.yaw (heading)
         self._pitch_t: float = 0.0           # when _pitch_rad / _roll_rad was last updated
+        self._x_m: float = 0.0               # latest LOCAL_POSITION_NED north (m)
+        self._y_m: float = 0.0               # latest LOCAL_POSITION_NED east (m)
+        self._pos_t: float = 0.0             # when _x_m / _y_m was last updated
         self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
@@ -327,12 +331,17 @@ class ArduPilotBackend:
             elif t == "VFR_HUD":
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._alt_m = float(msg.alt)         # altitude (AMSL-ish from baro)
+                self._gs_mps = float(msg.groundspeed)  # forward speed (m/s) for flight-path angle
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
                 self._roll_rad = float(msg.roll)     # +bank-right
                 self._yaw_rad = float(msg.yaw)       # heading (rad)
                 self._pitch_t = time.monotonic()
+            elif t == "LOCAL_POSITION_NED":
+                self._x_m = float(msg.x)             # NED north (m from origin)
+                self._y_m = float(msg.y)             # NED east  (m from origin)
+                self._pos_t = time.monotonic()
 
     def select_pwm(self) -> int:
         """Latest PWM on the target-select channel (0 if disabled / not yet seen).
@@ -363,6 +372,23 @@ class ArduPilotBackend:
         if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
             return 0.0
         return math.degrees(self._yaw_rad)
+
+    def pos_xy(self) -> tuple:
+        """Latest LOCAL_POSITION_NED (north, east) in m from the EKF origin. For
+        diagnostics/measurement only (the GPS-denied flight path never uses position).
+        Returns (0.0, 0.0) on stale telemetry."""
+        if not self._pos_t or (time.monotonic() - self._pos_t) > 1.0:
+            return (self._x_m, self._y_m)
+        return (self._x_m, self._y_m)
+
+    def flight_path_angle_rad(self) -> float:
+        """Flight-path angle (rad, +climb / -descent) from VFR_HUD climb-rate and
+        groundspeed. For pursuit guidance: drive this onto the line-of-sight to the
+        target so the velocity vector points straight at it. Returns 0.0 on stale
+        telemetry (degrades to level)."""
+        if not self._climb_t or (time.monotonic() - self._climb_t) > 0.5:
+            return 0.0
+        return math.atan2(self._climb_mps, max(self._gs_mps, 5.0))
 
     def alt_m(self) -> float:
         """Latest VFR_HUD altitude (m). For telemetry/diagnostics."""
