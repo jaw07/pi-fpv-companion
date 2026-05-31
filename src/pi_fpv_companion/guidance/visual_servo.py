@@ -225,6 +225,18 @@ class ServoConfig:
                                        # against the backend rate-loop lag + pitch coupling. 0 = pure-P.
     dive_max_descent_mps: float = 8.0  # clamp on commanded descent (+ down)
     dive_max_climb_mps: float = 4.0    # clamp on commanded climb (gravity-limited, < descent)
+    # PITCH-FOLDING (Peregrine): the camera is bolted to the airframe, so the nose-down
+    # dive lean DEPRESSES the boresight — a ground target far below can then appear
+    # near frame CENTRE even though the aircraft is high above it. A vertical homing on
+    # frame position alone reads that as "on bearing", commands ~no descent, and
+    # OVERFLIES the target at altitude. Folding the MEASURED airframe pitch into the
+    # vertical error recovers the target's TRUE angle below the horizon (frame offset +
+    # boresight depression), so the dive descends whenever the target is truly below —
+    # it converges to the target on the horizon, i.e. the aircraft down at the target's
+    # level (impact). vfov_deg converts the measured pitch into normalised frame units.
+    # 0 = off (frame-only homing); 1 = full fold. Needs the backend to supply pitch.
+    dive_pitch_fold: float = 0.0       # fraction of measured airframe pitch folded into the vert error
+    vfov_deg: float = 52.3             # camera vertical FoV (IMX500) — converts pitch deg <-> frame units
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
     # inverts the error->command sign -> divergent positive feedback ("spins
     # away from target"). MUST be bench-validated (docs/deployment-safety.md §4).
@@ -250,7 +262,7 @@ def _deadband(v: float, dz: float) -> float:
 def compute_intent(
     target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK,
     dive_elapsed_s: float = 1e9, closure: Optional[ClosureState] = None,
-    dive: Optional[DiveState] = None,
+    dive: Optional[DiveState] = None, pitch_deg_measured: float = 0.0,
 ) -> GuidanceIntent:
     """Map the filtered target's pixel state to an attitude intent.
 
@@ -305,6 +317,14 @@ def compute_intent(
         # so we centre yaw before committing power. The backend tracks the rate on
         # VFR_HUD.climb (its P-loop's steady-state error is integrated out here).
         e_y = _deadband(aim_y - cy, cfg.pixel_deadzone_px) / (cfg.frame_height / 2.0)
+        # Pitch-fold: add the boresight depression (nose-down -> camera looks down) so
+        # the error reflects the target's TRUE angle below the horizon, not just where
+        # the nose-down lean parks it in frame. Without this a high dive reads a far
+        # ground target as centred and overflies it; with it the error stays positive
+        # (below horizon) until the aircraft is down at the target's level -> it
+        # descends onto the target instead of flying over. (boresight depression =
+        # -pitch; nose-down pitch is negative, so this adds positive = descend.)
+        e_y += cfg.dive_pitch_fold * (-pitch_deg_measured) / (cfg.vfov_deg / 2.0)
         ex = (aim_x - cx) / (cfg.frame_width / 2.0)
         commit = _clamp(1.0 - abs(ex) / cfg.dive_center_frac, 0.0, 1.0) \
             if cfg.dive_center_frac > 0 else 0.0

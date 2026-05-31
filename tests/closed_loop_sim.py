@@ -393,7 +393,8 @@ class SimWorld:
                     closure.reset(); dive_state.reset()
                     track_closure = dive_arg = None
                 proposed = compute_intent(filtered, servo, mode, dive_elapsed_s,
-                                          track_closure, dive_arg)
+                                          track_closure, dive_arg,
+                                          pitch_deg_measured=math.degrees(af.phi))
                 res = gate(proposed, filtered, switch, self.armed, t, self.safety)
                 intent = res.intent
                 muted, reason, q = res.muted, res.reason, filtered.quality
@@ -427,6 +428,7 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         dive_forward_deg=14.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0, dive_lean_tau_s=1.5,
         dive_center_frac=0.30,
         dive_vrate_gain=18.0, dive_vrate_damp=6.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
+        dive_pitch_fold=1.0, vfov_deg=52.3,
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)
