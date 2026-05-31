@@ -104,10 +104,10 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_vrate_gain == 18.0      # closed-loop vertical homing (P); higher -> centred aim
     assert s.dive_vrate_damp == 6.0       # derivative damping (anti-wiggle), scaled with the gain
     assert s.dive_lean_tau_s == 1.5       # lean low-pass (anti-nod, steady travel to target)
-    assert s.dive_max_descent_mps == 10.0
+    assert s.dive_max_descent_mps == 8.0
     assert s.dive_max_climb_mps == 4.0
     assert s.track_vcenter_gain == 0.0   # TRACK is pure range-hold (vertical re-centre off)
-    assert s.dive_pitch_fold == 1.0      # fold measured airframe pitch into the dive vert error
+    assert s.dive_pitch_fold == 0.6      # partial fold: descends onto a high target without over-descending
     assert s.vfov_deg == 52.3            # IMX500 vertical FoV (pitch -> frame units)
     assert s.dive_terminal_lock_frac == 0.5   # commit ballistic at frame-fill
     assert s.dive_roll_gain == 0.0       # roll banking OFF (yaw-only) on the fixed camera — see imx500.yaml
