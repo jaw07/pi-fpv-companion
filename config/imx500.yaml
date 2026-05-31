@@ -103,13 +103,13 @@ guidance:
   # arrived — the committed lean fixes that (sim: hits from 15-55 m altitude).
   dive_forward_deg: 20.0    # committed forward lean (held steep through the dive). Steeper than
                             # the original 14 for a FASTER dive — the pitch-fold holds the target
-                            # high in frame (Peregrine quad: aim near the top to maximise forward
+                            # high in frame (aim near the top to maximise forward
                             # thrust), so the steeper nose-down keeps it framed instead of losing it.
   dive_climb_forward_deg: 6.0   # gentle lean reached only when climbing hard to an above target
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
   dive_lean_tau_s: 1.5       # low-pass on the dive lean: nose travels steadily, no up/down nod
-  dive_pitch_fold: 1.0       # fold MEASURED airframe pitch into the dive vertical error (Peregrine):
+  dive_pitch_fold: 1.0       # fold MEASURED airframe pitch into the dive vertical error:
                             # the nose-down lean depresses the fixed camera, so a far ground target
                             # appears frame-centred while the aircraft is still high above it — frame-
                             # only homing then reads "on bearing", stops descending, and OVERFLIES /
@@ -119,6 +119,17 @@ guidance:
   dive_terminal_lock_frac: 0.5  # once the bbox fills >half the frame, impact is ~a metre or two away
                             # and the blob centroid clips/jumps — commit BALLISTIC (freeze yaw, ride
                             # the gyro for descent) so the aim doesn't chase the jitter into a corner.
+  # YAW/ROLL BLEND: pure yaw only rotates the heading (then you fly forward to close a
+  # lateral offset — slow, and tail-chases a crosser). Banking translates the quad
+  # sideways directly. Yaw dominates when the target is far off-axis; roll fades in near
+  # centre to slide onto it. The roll command is PD (gain on the px error + damp on the
+  # image velocity) — bank sets lateral ACCEL, so a P-only law oscillates. roll_compensate
+  # de-rotates the frame error by the measured bank so the loop regulates a stable signal.
+  dive_roll_gain: 0.2       # deg bank per px of horizontal error (0 = yaw-only)
+  dive_roll_damp: 0.15      # deg bank per (px/s) of horizontal image velocity (derivative, anti-oscillation)
+  dive_max_roll_deg: 20.0   # bank-angle clamp
+  yaw_roll_blend_px: 160.0  # |dx| at/above which it's pure yaw; below, roll fades in
+  roll_compensate: true     # de-rotate the frame error by the measured bank (stable roll control)
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 18.0     # m/s of climb command per unit normalised vertical frame error.
                             # Higher gain -> smaller pure-P steady-state offset: the terminal aim

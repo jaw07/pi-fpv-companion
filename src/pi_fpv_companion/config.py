@@ -260,6 +260,12 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_pitch_fold=d.get("dive_pitch_fold", 0.0),
         vfov_deg=d.get("vfov_deg", 52.3),
         dive_terminal_lock_frac=d.get("dive_terminal_lock_frac", 0.0),
+        dive_roll_gain=d.get("dive_roll_gain", 0.0),
+        dive_roll_damp=d.get("dive_roll_damp", 0.0),
+        dive_max_roll_deg=d.get("dive_max_roll_deg", 20.0),
+        yaw_roll_blend_px=d.get("yaw_roll_blend_px", 160.0),
+        roll_sign=d.get("roll_sign", 1.0),
+        roll_compensate=d.get("roll_compensate", True),
         yaw_sign=d.get("yaw_sign", 1.0),
         pitch_sign=d.get("pitch_sign", 1.0),
     )
@@ -346,6 +352,20 @@ def _validate(cfg: AppConfig) -> None:
         raise ValueError(
             f"guidance.dive_terminal_lock_frac ({s.dive_terminal_lock_frac}) must be in "
             "[0,1] (bbox-height/frame fraction past which the dive commits ballistic; 0 = off)"
+        )
+    if s.dive_roll_gain < 0.0 or s.dive_roll_damp < 0.0:
+        raise ValueError(
+            "guidance.dive_roll_gain / dive_roll_damp must be >= 0 (deg of bank per px of "
+            "horizontal error / per px/s of image velocity; a negative gain banks away from target)"
+        )
+    if s.dive_max_roll_deg < 0.0:
+        raise ValueError(
+            f"guidance.dive_max_roll_deg ({s.dive_max_roll_deg}) must be >= 0 (bank-angle clamp)"
+        )
+    if s.yaw_roll_blend_px <= 0.0:
+        raise ValueError(
+            f"guidance.yaw_roll_blend_px ({s.yaw_roll_blend_px}) must be > 0 "
+            "(|dx| scale over which yaw blends to roll)"
         )
     if s.dive_vrate_damp < 0.0:
         raise ValueError(
