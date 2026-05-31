@@ -77,9 +77,11 @@ class Rate(Node):
         HALFPI = math.pi / 2
         # Faithful reference gains: pitch/yaw/roll are RATE PIDs (rad/s); thrust is hover-relative [0,1].
         self.pitch_pid = PID(1.0, 0.0, 0.2, out=HALFPI)   # Kd trimmed from ref 0.3: our ColorBlob box is noisier
-        self.thrust_pid = PID(0.85, 0.01, 0.1, out=0.3, ilim=5.0)  # eased + low Kd: smoother throttle (less dive oscillation)
+        self.thrust_pid = PID(0.85, 0.30, 0.1, out=0.3, ilim=0.3)  # strong integral: drives the velocity onto the
+                                                                    # line-of-sight regardless of hover-feedforward error (robust to hover-learn scatter)
         self.hover = 0.30                # learned in main() (this fast quad hovers well below 0.5)
-        self.aim_bias = 0.015            # rad (~1deg): small aim-beyond so it lands dead-centre, not a few m short (+0.05 overshot ~6m long)
+        self.aim_bias = -0.06            # rad (~3.4deg steeper): put the VELOCITY VECTOR on the target (it rides
+                                         # ~one mush-angle above the bore, so aiming on the LOS passes a few m high)
         self.yaw_pid = PID(4.0, 0.0, 0.1, out=HALFPI, ilim=0.5)
         self.roll_pid = PID(3.0, 0.01, 0.1, out=HALFPI, ilim=0.5)
         self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
@@ -145,6 +147,11 @@ class Rate(Node):
             self.roll_pid.kp = (1.0 - alpha) * self.base_roll_p
             yr = self.yaw_pid.update(horiz_err, dt)
             rr = self.roll_pid.update(horiz_err, dt) - self.roll_return * roll_m
+            # Scale horizontal authority by target SIZE: a small far target gives a noisy box, and the
+            # high-gain yaw/roll turn that into gyration early in the run. Reduce it when far; full
+            # authority once the target is large (deep in the dive), where the box is stable.
+            sg = clamp((th - 8.0) / 18.0, 0.3, 1.0)
+            yr *= sg; rr *= sg
             phase = "RATE"; tpx, tpy = det.x, det.y
         else:
             # SEARCH: nose down to ~-25deg to bring a below ground target into the FOV. Our targets sit
@@ -194,14 +201,16 @@ def main():
     print("arming+takeoff to %.1fm..." % a.alt, flush=True)
     if not arm_takeoff(mav, M, a.alt, home): print("FAIL takeoff"); return 1
     print("airborne; learning hover thrust (null climb)...", flush=True)
-    hover = 0.30
-    t_settle = time.monotonic() + 10.0
-    while time.monotonic() < t_settle:
+    hover = 0.30; t0 = time.monotonic(); samples = []
+    while time.monotonic() - t0 < 16.0:
         v = mav.recv_match(type="VFR_HUD", blocking=False)
         if v is not None:
-            hover = min(0.55, max(0.08, hover - 0.015 * float(v.climb)))  # climbing -> lower hover; sinking -> raise
+            hover = min(0.55, max(0.05, hover - 0.010 * float(v.climb)))  # climbing -> lower hover; sinking -> raise
+            if time.monotonic() - t0 > 10.0:                 # collect once converged; average for a stable value
+                samples.append(hover)
         mav.mav.set_attitude_target_send(0, mav.target_system, AP, 0b10000000, [1,0,0,0], 0,0,0, hover); time.sleep(0.05)
-    print("learned hover thrust = %.3f; RATE control (search -> dive)." % hover, flush=True)
+    if samples: hover = sum(samples) / len(samples)
+    print("learned hover thrust = %.3f (avg of %d); RATE control (search -> dive)." % (hover, len(samples)), flush=True)
     rclpy.init(); node = Rate(backend, a); node.hover = hover
     end = time.monotonic() + a.duration
     while rclpy.ok() and time.monotonic() < end: rclpy.spin_once(node, timeout_sec=0.5)
