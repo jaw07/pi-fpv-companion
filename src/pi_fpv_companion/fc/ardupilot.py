@@ -170,6 +170,7 @@ class ArduPilotBackend:
         self._mav = None
         self._last_switch: Optional[SwitchState] = None
         self._armed = False
+        self._armed_known = False            # have we drained a HEARTBEAT? (gates ground-home capture)
         # Adaptive-hover state (stabilize): learned hover PWM trimmed from climb rate.
         self._hover_pwm: float = float(self._mapping.hover_throttle_us)
         self._hover_t: float = 0.0           # last adapt time (for dt)
@@ -349,6 +350,7 @@ class ArduPilotBackend:
             if t == "HEARTBEAT":
                 armed_bit = self._mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
                 self._armed = bool(msg.base_mode & armed_bit)
+                self._armed_known = True
                 self._current_mode = int(msg.custom_mode)
             elif t == "RC_CHANNELS":
                 pwm = getattr(msg, f"chan{self._switch_channel}_raw")
@@ -365,8 +367,12 @@ class ArduPilotBackend:
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._alt_m = float(msg.alt)         # altitude (AMSL-ish from baro)
                 self._gs_mps = float(msg.groundspeed)  # forward speed (m/s) for flight-path angle
-                if self._home_alt is None:
-                    self._home_alt = self._alt_m     # first reading = ground reference for AGL
+                # Capture/refresh the ground reference for AGL ONLY while confirmed disarmed, so
+                # home tracks the ground and freezes at the arming altitude. A mid-flight process
+                # restart (e.g. the camera watchdog) starts armed -> home is never taken at altitude
+                # -> agl_m() stays large -> the impact latch can't false-fire and cut throttle.
+                if self._armed_known and not self._armed:
+                    self._home_alt = self._alt_m
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
@@ -430,9 +436,10 @@ class ArduPilotBackend:
         return self._alt_m
 
     def agl_m(self) -> float:
-        """Height above ground (m) = alt - home, where home is the first VFR_HUD.alt (ground
-        at boot). Used by the rate-control DIVE impact latch. Large fallback before the first
-        VFR_HUD so a missing baro never reads as 'on the ground'."""
+        """Height above ground (m) = alt - home, where home is the alt captured while DISARMED
+        (the ground/arming point). Used by the rate-control DIVE impact latch. Returns a large
+        value until home is known (never seen disarmed -> e.g. a mid-flight restart) so a missing
+        ground reference never reads as 'on the ground' and false-latches the impact STOP."""
         if self._home_alt is None:
             return 1e9
         return self._alt_m - self._home_alt

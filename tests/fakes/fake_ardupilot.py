@@ -24,6 +24,8 @@ class FakeArduCopter:
         self.armed: bool = False
         self.rc_channels: List[int] = [1500] * 18
         self.pitch_rad: float = 0.0          # ATTITUDE.pitch to emit (+nose-up)
+        self.alt: float = 0.0                # VFR_HUD.alt to emit (m)
+        self.climb: float = 0.0              # VFR_HUD.climb to emit (m/s, +up)
         self.params: dict = {}               # FC parameter store (PARAM_REQUEST_READ/SET)
         self.captured_overrides: List = []   # inbound RC_CHANNELS_OVERRIDE messages
 
@@ -53,6 +55,7 @@ class FakeArduCopter:
                 self._emit_heartbeat()
                 self._emit_rc_channels()
                 self._emit_attitude()
+                self._emit_vfr_hud()
                 last_emit = now
             msg = self._mav.recv_match(blocking=False)
             if msg is not None:
@@ -99,3 +102,8 @@ class FakeArduCopter:
     def _emit_attitude(self) -> None:
         # roll, pitch, yaw (rad) + body rates; only pitch is consumed.
         self._mav.mav.attitude_send(0, 0.0, self.pitch_rad, 0.0, 0.0, 0.0, 0.0)
+
+    def _emit_vfr_hud(self) -> None:
+        # airspeed, groundspeed, heading, throttle%, alt, climb. Backend uses alt (AGL home),
+        # climb (hover trim / flight-path angle) and groundspeed.
+        self._mav.mav.vfr_hud_send(0.0, 0.0, 0, 0, float(self.alt), float(self.climb))
