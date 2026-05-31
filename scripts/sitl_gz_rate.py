@@ -25,7 +25,8 @@ from pi_fpv_companion.fc.ardupilot import ArduPilotBackend, ArduCopterRcMapping
 STABILIZE, GUIDED, GUIDED_NOGPS, AP = 0, 4, 20, 1
 W, H = 720, 576
 HFOV, VFOV = math.radians(66.3), math.radians(52.3)
-VERT_GOAL, HORI_GOAL = 0.15, 0.5   # faithful reference: target near the TOP (maximise forward thrust)
+VERT_GOAL, HORI_GOAL = 0.40, 0.5   # target near CENTRE (on the velocity vector): fly INTO a ground target,
+                                   # not under it. (Reference's 0.15/top is for chasing a forward AIR target.)
 
 
 def clamp(v, lo, hi): return lo if v < lo else hi if v > hi else v
@@ -76,8 +77,9 @@ class Rate(Node):
         HALFPI = math.pi / 2
         # Faithful reference gains: pitch/yaw/roll are RATE PIDs (rad/s); thrust is hover-relative [0,1].
         self.pitch_pid = PID(1.0, 0.0, 0.2, out=HALFPI)   # Kd trimmed from ref 0.3: our ColorBlob box is noisier
-        self.thrust_pid = PID(1.1, 0.01, 0.2, out=0.3, ilim=5.0)   # trims throttle about learned hover (GUID_OPTIONS bit3 = real thrust)
+        self.thrust_pid = PID(0.85, 0.01, 0.1, out=0.3, ilim=5.0)  # eased + low Kd: smoother throttle (less dive oscillation)
         self.hover = 0.30                # learned in main() (this fast quad hovers well below 0.5)
+        self.aim_bias = 0.015            # rad (~1deg): small aim-beyond so it lands dead-centre, not a few m short (+0.05 overshot ~6m long)
         self.yaw_pid = PID(4.0, 0.0, 0.1, out=HALFPI, ilim=0.5)
         self.roll_pid = PID(3.0, 0.01, 0.1, out=HALFPI, ilim=0.5)
         self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
@@ -86,7 +88,7 @@ class Rate(Node):
                                          # FLIGHT-PATH dive (the path is shallower than the nose on a powered multirotor)
         self.camera_pitch = 0.0          # fixed bore-sight level with the airframe
         self.max_horiz_err = 0.4; self.horiz_thresh = 0.05
-        self.sm_yr = 0.0; self.sm_rr = 0.0; self.sm_pr = 0.0   # EMA state for all commanded rates (anti-jitter)
+        self.sm_yr = 0.0; self.sm_rr = 0.0; self.sm_pr = 0.0; self.sm_thr = 0.30   # EMA state (rates + thrust: anti-jitter/oscillation)
         self.writer = cv2.VideoWriter("/work/gz_rate.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 20.0, (W, H))
         self.frames = self.detected = 0; self.last_t = None
         self.create_subscription(Image, "/imx500/image", self.on_image, 10)
@@ -135,7 +137,7 @@ class Rate(Node):
             # AT the target -> a straight-line dive whose angle == the target's depression. gamma>los
             # (too shallow) -> error<0 -> thrust<hover -> descend until the velocity aims at the target.
             gamma = self.backend.flight_path_angle_rad()
-            thrust = clamp(self.hover + self.thrust_pid.update(ang_to_tgt - gamma, dt), 0.0, 1.0)
+            thrust = clamp(self.hover + self.thrust_pid.update(ang_to_tgt + self.aim_bias - gamma, dt), 0.0, 1.0)
             # YAW/ROLL blend: yaw dominates far off-axis, roll banks near centre; roll returns to level.
             ae = abs(horiz_err)
             alpha = clamp((ae - self.horiz_thresh) / max(self.max_horiz_err, ae - self.horiz_thresh), 0.0, 1.0)
@@ -158,7 +160,8 @@ class Rate(Node):
         # (airframe integrates the command) keeps the dive itself smooth.
         b = 0.35
         self.sm_pr += b * (pr - self.sm_pr); self.sm_yr += b * (yr - self.sm_yr); self.sm_rr += b * (rr - self.sm_rr)
-        pr, yr, rr = self.sm_pr, self.sm_yr, self.sm_rr
+        self.sm_thr += b * (thrust - self.sm_thr)            # smooth the throttle too -> less descent oscillation
+        pr, yr, rr, thrust = self.sm_pr, self.sm_yr, self.sm_rr, self.sm_thr
         self.send_rates(rr, pr, yr, thrust)
         for d in dets:
             cv2.rectangle(bgr, (int(d.x-d.w/2), int(d.y-d.h/2)), (int(d.x+d.w/2), int(d.y+d.h/2)), (120,120,120), 1)
