@@ -117,6 +117,7 @@ class RateState:
     track_pid: Optional[PID] = None
     hover: float = 0.30                    # learned hover thrust (set by the caller)
     engage_h: Optional[float] = None       # bbox height captured at TRACK entry (range to hold)
+    had_lock: bool = False                 # saw a target this engagement (gates the impact latch)
     impacted: bool = False
     sm_pr: float = 0.0
     sm_yr: float = 0.0
@@ -140,6 +141,7 @@ class RateState:
                 p.reset()
         self.impacted = False
         self.engage_h = None
+        self.had_lock = False
         self.sm_pr = self.sm_yr = self.sm_rr = 0.0
         self.sm_thr = self.hover
         self.last_t = None
@@ -152,7 +154,7 @@ class RateIntent:
     pitch_rate: float      # rad/s, + = nose up
     yaw_rate: float        # rad/s, + = yaw right
     thrust: float          # 0..1 (real throttle; 0.5 != hover on a high-TWR quad)
-    phase: str             # "RATE" | "SEARCH" | "STOP"
+    phase: str             # "DIVE" | "TRACK" | "SEARCH" | "STOP"
 
 
 def _preprocess(cfg: RateConfig, cx_n: float, cy_n: float, roll_rad: float):
@@ -184,13 +186,16 @@ def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state
     dt = _clamp((now - state.last_t) if state.last_t is not None else 0.0, 0.0, 0.2)
     state.last_t = now
 
-    if state.impacted or (mode is GuidanceMode.DIVE and target is None and agl_m < cfg.impact_agl_m):
-        # IMPACT latch (DIVE only): lost the target near the ground -> stop for good.
+    if state.impacted or (mode is GuidanceMode.DIVE and target is None
+                          and state.had_lock and agl_m < cfg.impact_agl_m):
+        # IMPACT latch (DIVE only): lost a target we HAD, near the ground -> stop for good.
+        # The had_lock gate means a never-locked low-altitude DIVE search never false-latches.
         state.impacted = True
         pr = _clamp(2.0 * (0.0 - pitch_rad), -0.6, 0.6)
         rr, yr, thrust = -cfg.roll_return * roll_rad, 0.0, 0.0
         phase = "STOP"
     elif target is not None:
+        state.had_lock = True
         det = target.detection
         cx_n, cy_n = det.x / cfg.frame_width, det.y / cfg.frame_height
         horiz_err, vert_err, in_frame_elev = _preprocess(cfg, cx_n, cy_n, roll_rad)
