@@ -280,7 +280,7 @@ def _safety(d: Dict[str, Any]) -> SafetyConfig:
     )
 
 
-_VALID_CONTROL_MODES = ("stabilize", "althold")
+_VALID_CONTROL_MODES = ("stabilize", "althold", "guided_nogps")
 
 
 def _validate(cfg: AppConfig) -> None:

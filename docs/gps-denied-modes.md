@@ -22,6 +22,33 @@
 > attitude sense, signs correct) and `probe_nogps_modes.py` 10/10 (ALT_HOLD +
 > STABILIZE enter/arm/steer with GPS disabled).
 
+> **Update (2026-06-01): GUIDED_NOGPS body-RATE re-adopted** as a selectable path
+> (`control_mode: guided_nogps`), alongside STABILIZE (still the default). The
+> earlier "retired" verdict was driven by the dive *planing* — which we have since
+> traced to a missing FC parameter, **not** a mode limitation.
+>
+> Root cause: ArduCopter reads the `SET_ATTITUDE_TARGET` **thrust** field as a
+> *climb-rate* unless `GUID_OPTIONS` **bit 3 (=8, ThrustAsThrust)** is set. Without
+> it, "throttle 0" means "hold altitude", so the craft never descends and the dive
+> planes. With it, the thrust field is real throttle and the dive comes down. The
+> backend now SETS+VERIFIES that bit in the preflight param check
+> (`ensure_param_bits`, `GUID_OPTIONS_THRUST_AS_THRUST`).
+>
+> Why a RATE surface (not the old attitude-quaternion one): body **rates** are
+> integrated by the airframe, so a noisy detector box yields smooth motion; an
+> absolute-attitude quaternion snapped to each frame and jittered. The control law
+> (pitch-rate framing to a CENTRE goal so it flies *into* a ground target, PURSUIT
+> thrust driving the flight-path angle onto the line-of-sight, yaw-centred horizontal
+> with a deadzone, learned hover) is in `guidance/rate_control.py`; the sim harness/
+> reference is `scripts/sitl_gz_rate.py`. SITL (Gazebo/ArduCopter) shows controlled
+> 25–30° dives that strike a ground target, including a moving one.
+>
+> **Open items:** a residual airframe oscillation in SITL appears to be the FC's
+> inner rate loop (the fast-quad sim model is light and its `ATC_RAT_*` rate gains
+> were not retuned) — a sim-tuning artifact, not the guidance; and the path is not
+> yet hardware-validated. STABILIZE + RC-override remains the default until those
+> close.
+
 Assumption: a bare analog FPV quad that **never** has GPS (no GPS, no optical
 flow, no VIO). Question: which ArduCopter mode can the companion command?
 
