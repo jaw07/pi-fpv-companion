@@ -83,6 +83,12 @@ class FramingConfig:
     thrust_ki: float = 0.05
     thrust_kd: float = 0.1
     max_thrust_off: float = 0.4            # thrust stays in [0.5-off, 0.5+off]
+    descent_pitch_fold: float = 1.0        # fraction of measured pitch folded into the descent angle.
+                                           # The framing pitch noses down EXTRA to hold the target near
+                                           # the top (vert_goal), so it overstates the depression — at
+                                           # 1.0 the descent over-counts that and drops vertically (lands
+                                           # short / loses a far target). <1 keeps the descent shallow
+                                           # enough to glide in. 0 = descend on in-frame elevation only.
     # YAW (deg/s per rad horizontal error) and ROLL (deg bank per rad horizontal error)
     yaw_kp: float = 90.0
     max_yaw_rate_dps: float = 90.0
@@ -142,7 +148,7 @@ def compute_framing_intent(target: FilteredTarget, cfg: FramingConfig, state: Fr
     # THRUST descent: PID on the target's TRUE angle below the horizon (in-frame
     # elevation from CENTRE + measured airframe pitch + fixed camera tilt). Below the
     # horizon (negative) -> thrust below hover -> descend onto it.
-    ang_to_target = (0.5 - cy_n) * vfov + math.radians(pitch_deg_measured + cfg.camera_pitch_deg)
+    ang_to_target = (0.5 - cy_n) * vfov + cfg.descent_pitch_fold * math.radians(pitch_deg_measured + cfg.camera_pitch_deg)
     thrust = HOVER_THRUST + state.thrust_pid.update(ang_to_target, dt)
     thrust = _clamp(thrust, HOVER_THRUST - cfg.max_thrust_off, HOVER_THRUST + cfg.max_thrust_off)
 
