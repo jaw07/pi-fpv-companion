@@ -209,6 +209,19 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
         return
     for name, st in status.items():
         print(f"    {name}: {st}")
+    # guided_nogps RATE path: the thrust field MUST be real throttle, not a climb-rate,
+    # or the dive planes. Enforce GUID_OPTIONS bit 3 (ThrustAsThrust), OR-ing it in so
+    # other guided bits are preserved. (Bench finding: a wrong/missing bit silently turns
+    # "throttle 0" into "hold altitude".)
+    if cfg.fc.control_mode == "guided_nogps":
+        ensure_bits = getattr(fc, "ensure_param_bits", None)
+        if callable(ensure_bits):
+            from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST
+            try:
+                st = ensure_bits("GUID_OPTIONS", GUID_OPTIONS_THRUST_AS_THRUST)
+                print(f"    GUID_OPTIONS(ThrustAsThrust): {st}")
+            except Exception as e:
+                print(f"  WARN: GUID_OPTIONS check failed: {e}")
 
 
 def _build_sink(cfg: AppConfig, no_gui: bool):

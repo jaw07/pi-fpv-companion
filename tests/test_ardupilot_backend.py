@@ -356,3 +356,40 @@ def test_streams_rerequested_periodically(ap_pair, monkeypatch):
     backend._last_stream_req -= _STREAM_REREQUEST_S + 1   # pretend interval elapsed
     backend._drain()
     assert len(calls) == 2
+
+
+def _bits_backend_with_params(params):
+    """Spin a backend talking to a FakeArduCopter preloaded with `params`."""
+    port = _free_udp_port()
+    backend = ArduPilotBackend(device=f"udpin:127.0.0.1:{port}", baud=0, switch_channel=7,
+                               track_threshold_us=1300, dive_threshold_us=1700)
+    backend.open()
+    fake = FakeArduCopter(target_port=port)
+    fake.params = dict(params)
+    fake.start()
+    backend.wait_ready(timeout=3.0)
+    return backend, fake
+
+
+def test_ensure_param_bits_sets_bit_preserving_other_bits():
+    # GUID_OPTIONS bit 3 (=8, ThrustAsThrust) must be OR-ed in without clobbering other
+    # bits already set (e.g. bit 0 =1 AllowArmingFromTX). This is THE guided-throttle check.
+    from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST as TAT
+    backend, fake = _bits_backend_with_params({"GUID_OPTIONS": 1.0})  # bit0 set, bit3 not
+    try:
+        status = backend.ensure_param_bits("GUID_OPTIONS", TAT)
+        assert status == "set"
+        assert int(fake.params["GUID_OPTIONS"]) == (1 | TAT)  # bit0 preserved, bit3 added
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_ensure_param_bits_ok_when_already_set():
+    from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST as TAT
+    backend, fake = _bits_backend_with_params({"GUID_OPTIONS": float(TAT | 1)})
+    try:
+        status = backend.ensure_param_bits("GUID_OPTIONS", TAT)
+        assert status == "ok"
+        assert int(fake.params["GUID_OPTIONS"]) == (TAT | 1)  # untouched
+    finally:
+        backend.close(); fake.stop()
