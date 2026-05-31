@@ -106,6 +106,13 @@ guidance:
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
   dive_lean_tau_s: 1.5       # low-pass on the dive lean: nose travels steadily, no up/down nod
+  dive_pitch_fold: 1.0       # fold MEASURED airframe pitch into the dive vertical error (Peregrine):
+                            # the nose-down lean depresses the fixed camera, so a far ground target
+                            # appears frame-centred while the aircraft is still high above it — frame-
+                            # only homing then reads "on bearing", stops descending, and OVERFLIES /
+                            # orbits at altitude. Folding pitch recovers the TRUE angle below the
+                            # horizon so the dive keeps descending onto the target (Gazebo-verified).
+  vfov_deg: 52.3            # camera vertical FoV (IMX500) — converts measured pitch to frame units
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 18.0     # m/s of climb command per unit normalised vertical frame error.
                             # Higher gain -> smaller pure-P steady-state offset: the terminal aim
