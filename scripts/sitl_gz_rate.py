@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """GUIDED_NOGPS rate-control node (faithful reference-style quad law).
 
-Unlike sitl_gz_attitude.py (which sent an attitude quaternion), this commands BODY RATES
-+ thrust via SET_ATTITUDE_TARGET with the attitude-ignore mask — the reference quad
-interceptor's surface. Control law:
+Commands BODY RATES + thrust via SET_ATTITUDE_TARGET with the attitude-ignore mask (the
+reference quad interceptor's surface). An absolute-attitude quaternion snaps to each noisy
+frame and jitters; rates are integrated by the airframe so the motion is smooth. The
+production port of this law is src/pi_fpv_companion/guidance/rate_control.py. Control law:
   * pitch RATE from a framing PID on the vertical angle error (target -> vert_goal, near top)
   * thrust from a PID on the TRUE angle below the horizon (in-frame elevation + measured pitch)
   * yaw RATE + roll RATE from a horizontal-error PID, blended (yaw far, roll near), with a
