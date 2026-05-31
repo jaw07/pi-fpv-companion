@@ -101,7 +101,10 @@ guidance:
   # descent instead let it collapse to gentle the moment the homing centred the
   # target, so a high dive descended onto the line of sight then CRAWLED and never
   # arrived — the committed lean fixes that (sim: hits from 15-55 m altitude).
-  dive_forward_deg: 14.0    # committed forward lean (held steep through the dive)
+  dive_forward_deg: 20.0    # committed forward lean (held steep through the dive). Steeper than
+                            # the original 14 for a FASTER dive — the pitch-fold holds the target
+                            # high in frame (Peregrine quad: aim near the top to maximise forward
+                            # thrust), so the steeper nose-down keeps it framed instead of losing it.
   dive_climb_forward_deg: 6.0   # gentle lean reached only when climbing hard to an above target
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
@@ -113,6 +116,9 @@ guidance:
                             # orbits at altitude. Folding pitch recovers the TRUE angle below the
                             # horizon so the dive keeps descending onto the target (Gazebo-verified).
   vfov_deg: 52.3            # camera vertical FoV (IMX500) — converts measured pitch to frame units
+  dive_terminal_lock_frac: 0.5  # once the bbox fills >half the frame, impact is ~a metre or two away
+                            # and the blob centroid clips/jumps — commit BALLISTIC (freeze yaw, ride
+                            # the gyro for descent) so the aim doesn't chase the jitter into a corner.
   dive_center_frac: 0.30    # horizontal aim tolerance before committing vertical
   dive_vrate_gain: 18.0     # m/s of climb command per unit normalised vertical frame error.
                             # Higher gain -> smaller pure-P steady-state offset: the terminal aim
@@ -120,7 +126,7 @@ guidance:
                             # 18 brings it to ~11px, a cleaner centre hit.
   dive_vrate_damp: 6.0      # derivative damping (m/s per err/s) — kills the dive up/down wiggle;
                             # scaled up with the gain so the higher-gain homing stays non-oscillatory
-  dive_max_descent_mps: 8.0 # clamp on commanded descent
+  dive_max_descent_mps: 10.0 # clamp on commanded descent (raised 8->10 for a faster dive)
   dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0

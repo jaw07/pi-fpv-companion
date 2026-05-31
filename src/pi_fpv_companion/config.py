@@ -259,6 +259,7 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_max_climb_mps=d.get("dive_max_climb_mps", 4.0),
         dive_pitch_fold=d.get("dive_pitch_fold", 0.0),
         vfov_deg=d.get("vfov_deg", 52.3),
+        dive_terminal_lock_frac=d.get("dive_terminal_lock_frac", 0.0),
         yaw_sign=d.get("yaw_sign", 1.0),
         pitch_sign=d.get("pitch_sign", 1.0),
     )
@@ -340,6 +341,11 @@ def _validate(cfg: AppConfig) -> None:
     if s.vfov_deg <= 0.0:
         raise ValueError(
             f"guidance.vfov_deg ({s.vfov_deg}) must be > 0 (camera vertical FoV)"
+        )
+    if not 0.0 <= s.dive_terminal_lock_frac <= 1.0:
+        raise ValueError(
+            f"guidance.dive_terminal_lock_frac ({s.dive_terminal_lock_frac}) must be in "
+            "[0,1] (bbox-height/frame fraction past which the dive commits ballistic; 0 = off)"
         )
     if s.dive_vrate_damp < 0.0:
         raise ValueError(
