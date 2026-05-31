@@ -168,6 +168,7 @@ class ArduPilotBackend:
         self._hover_pwm: float = float(self._mapping.hover_throttle_us)
         self._hover_t: float = 0.0           # last adapt time (for dt)
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
+        self._alt_m: float = 0.0             # latest VFR_HUD.alt
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
         self._roll_rad: float = 0.0          # latest ATTITUDE.roll (+bank-right)
@@ -325,6 +326,7 @@ class ArduPilotBackend:
                     self._select_pwm_us = getattr(msg, f"chan{self._select_channel}_raw")
             elif t == "VFR_HUD":
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
+                self._alt_m = float(msg.alt)         # altitude (AMSL-ish from baro)
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
@@ -361,6 +363,10 @@ class ArduPilotBackend:
         if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
             return 0.0
         return math.degrees(self._yaw_rad)
+
+    def alt_m(self) -> float:
+        """Latest VFR_HUD altitude (m). For telemetry/diagnostics."""
+        return self._alt_m
 
     def read_switch(self) -> SwitchState:
         self._drain()
