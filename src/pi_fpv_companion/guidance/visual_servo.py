@@ -237,6 +237,14 @@ class ServoConfig:
     # 0 = off (frame-only homing); 1 = full fold. Needs the backend to supply pitch.
     dive_pitch_fold: float = 0.0       # fraction of measured airframe pitch folded into the vert error
     vfov_deg: float = 52.3             # camera vertical FoV (IMX500) — converts pitch deg <-> frame units
+    # TERMINAL LOCK: once the target fills the frame (bbox height > this fraction of the
+    # frame) impact is a metre or two away and the blob CENTROID is no longer reliable —
+    # the target is clipping the frame edges, so its centroid jumps toward whatever stays
+    # in view and the yaw/vertical loops CHASE it, sliding the aim off into a corner in
+    # the last moments. At terminal lock the dive goes ballistic: yaw is frozen and the
+    # descent is driven by the gyro (the pitch-fold boresight term) alone, ignoring the
+    # clipping centroid — fly the committed line straight in. 0 = off (always home).
+    dive_terminal_lock_frac: float = 0.0   # bbox-height/frame fraction past which the dive commits ballistic
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
     # inverts the error->command sign -> divergent positive feedback ("spins
     # away from target"). MUST be bench-validated (docs/deployment-safety.md §4).
@@ -296,6 +304,12 @@ def compute_intent(
         cfg.yaw_sign * (cfg.yaw_p_gain * dx + cfg.yaw_ff_gain * target.vx_px_s),
         -cfg.max_yaw_rate_dps, cfg.max_yaw_rate_dps,
     )
+    # Terminal lock (DIVE): once the target fills the frame its centroid clips the
+    # edges and jumps — freeze yaw and fly the committed line straight in rather than
+    # chasing the jitter into a corner. (size_frac recomputed cheaply here.)
+    if mode is GuidanceMode.DIVE and cfg.dive_terminal_lock_frac > 0.0 \
+            and (det.h / cfg.frame_height if cfg.frame_height else 0.0) > cfg.dive_terminal_lock_frac:
+        yaw_rate = 0.0
 
     # Closure regulation: lean proportional to the apparent-size error.
     #   size_frac  = bbox height / frame height (a monotone range proxy)
@@ -309,6 +323,9 @@ def compute_intent(
     vertical_rate_mps = None
     if mode is GuidanceMode.DIVE:
         cy = cfg.frame_height / 2.0
+        # TERMINAL LOCK: once the bbox fills the frame the centroid is clipping the
+        # edges and jumps around — chasing it slides the aim off. Past the threshold,
+        # commit ballistic (see dive_terminal_lock_frac).
         # VERTICAL: constant-bearing homing. Command a climb rate that drives the
         # target's vertical frame error to zero — holding it at a fixed frame point
         # is a constant bearing, i.e. a collision course, so the flight path tracks

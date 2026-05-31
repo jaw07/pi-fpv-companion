@@ -115,7 +115,7 @@ def test_dive_hits_near_target_centre():
     # (a 20px deadzone left the target ~20-28px off-centre; 8px brings it to ~8-11px).
     # (Pitch-fold holds the target at the TRUE horizon — high in frame during the dive
     # — so this terminal-centroid guard is checked with the fold off.)
-    w = _world(target_pos=(60.0, 0.0, 0.0), alt=15.0, dive_pitch_fold=0.0)
+    w = _world(target_pos=(60.0, 0.0, 0.0), alt=15.0, dive_pitch_fold=0.0, dive_forward_deg=14.0)
     tr = w.run(GuidanceMode.DIVE, duration_s=120.0)
     assert tr.min_range < 4.0                           # it hit
     term = [((tk.px - 360) ** 2 + (tk.py - 288) ** 2) ** 0.5

@@ -425,10 +425,10 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         yaw_p_gain=0.15, yaw_ff_gain=0.05, desired_bbox_frac=0.15,
         closure_p_gain=4.0, closure_i_gain=1.0, pitch_p_gain=0.15,
         track_vcenter_gain=0.0,
-        dive_forward_deg=14.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0, dive_lean_tau_s=1.5,
+        dive_forward_deg=20.0, dive_climb_forward_deg=6.0, dive_max_pitch_deg=30.0, dive_lean_tau_s=1.5,
         dive_center_frac=0.30,
-        dive_vrate_gain=18.0, dive_vrate_damp=6.0, dive_max_descent_mps=8.0, dive_max_climb_mps=4.0,
-        dive_pitch_fold=1.0, vfov_deg=52.3,
+        dive_vrate_gain=18.0, dive_vrate_damp=6.0, dive_max_descent_mps=10.0, dive_max_climb_mps=4.0,
+        dive_pitch_fold=1.0, vfov_deg=52.3, dive_terminal_lock_frac=0.5,
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)
