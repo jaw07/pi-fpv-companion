@@ -150,13 +150,17 @@ class Rate(Node):
             # (too shallow) -> error<0 -> thrust<hover -> descend until the velocity aims at the target.
             gamma = self.backend.flight_path_angle_rad()
             thrust = clamp(self.hover + self.thrust_pid.update(ang_to_tgt + self.aim_bias - gamma, dt), 0.0, 1.0)
+            # DEADZONE: when the target is basically centred (|err|<~1.7deg) command ZERO horizontal
+            # rate. The detector box jitters a fraction of a degree every frame; without a deadzone the
+            # high-gain yaw chases that noise and pans the camera back and forth = the visible shaking.
+            he = 0.0 if abs(horiz_err) < 0.030 else horiz_err
             # YAW/ROLL blend: yaw dominates far off-axis, roll banks near centre; roll returns to level.
-            ae = abs(horiz_err)
+            ae = abs(he)
             alpha = clamp((ae - self.horiz_thresh) / max(self.max_horiz_err, ae - self.horiz_thresh), 0.0, 1.0)
             self.yaw_pid.kp = alpha * self.base_yaw_p
             self.roll_pid.kp = (1.0 - alpha) * self.base_roll_p
-            yr = self.yaw_pid.update(horiz_err, dt)
-            rr = self.roll_pid.update(horiz_err, dt) - self.roll_return * roll_m
+            yr = self.yaw_pid.update(he, dt)
+            rr = self.roll_pid.update(he, dt) - self.roll_return * roll_m
             # Scale horizontal authority by target SIZE: a small far target gives a noisy box, and the
             # high-gain yaw/roll turn that into gyration early in the run. Reduce it when far; full
             # authority once the target is large (deep in the dive), where the box is stable.
