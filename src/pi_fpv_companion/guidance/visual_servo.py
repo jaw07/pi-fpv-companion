@@ -225,7 +225,7 @@ class ServoConfig:
                                        # against the backend rate-loop lag + pitch coupling. 0 = pure-P.
     dive_max_descent_mps: float = 8.0  # clamp on commanded descent (+ down)
     dive_max_climb_mps: float = 4.0    # clamp on commanded climb (gravity-limited, < descent)
-    # PITCH-FOLDING (Peregrine): the camera is bolted to the airframe, so the nose-down
+    # PITCH-FOLDING: the camera is bolted to the airframe, so the nose-down
     # dive lean DEPRESSES the boresight — a ground target far below can then appear
     # near frame CENTRE even though the aircraft is high above it. A vertical homing on
     # frame position alone reads that as "on bearing", commands ~no descent, and
@@ -245,6 +245,21 @@ class ServoConfig:
     # descent is driven by the gyro (the pitch-fold boresight term) alone, ignoring the
     # clipping centroid — fly the committed line straight in. 0 = off (always home).
     dive_terminal_lock_frac: float = 0.0   # bbox-height/frame fraction past which the dive commits ballistic
+    # YAW/ROLL BLEND: pure yaw only ROTATES the heading — to close a
+    # lateral offset the aircraft must then fly forward along the new heading, which is
+    # slow and tail-chases a crossing target. Banking (ROLL) translates the quad
+    # sideways directly. So blend: yaw dominates when the target is far off-axis (turn
+    # toward it), roll fades in as it nears centre (bank to slide onto it / kill the
+    # crossing lag). roll_deg = roll_gain · dx · (1-alpha), alpha = |dx|/blend_px.
+    dive_roll_gain: float = 0.0        # deg of bank per px of horizontal error (0 = yaw-only, no roll)
+    dive_roll_damp: float = 0.0        # deg of bank per (px/s) of horizontal image velocity. Bank
+                                       # commands lateral ACCEL from a position error (a double
+                                       # integrator) — without this derivative term it oscillates.
+    dive_max_roll_deg: float = 20.0    # bank-angle clamp
+    yaw_roll_blend_px: float = 160.0   # |dx| at/above which it's pure yaw; below, roll fades in
+    roll_sign: float = 1.0             # set -1 if the bench self-test shows the bank inverts
+    roll_compensate: bool = True       # de-rotate the frame error by the measured bank (needed for
+                                       # stable roll control; harmless when not banking)
     # Operator-correctable sign overrides (audit §6). A mirrored/flipped camera
     # inverts the error->command sign -> divergent positive feedback ("spins
     # away from target"). MUST be bench-validated (docs/deployment-safety.md §4).
@@ -271,6 +286,7 @@ def compute_intent(
     target: FilteredTarget, cfg: ServoConfig, mode: GuidanceMode = GuidanceMode.TRACK,
     dive_elapsed_s: float = 1e9, closure: Optional[ClosureState] = None,
     dive: Optional[DiveState] = None, pitch_deg_measured: float = 0.0,
+    roll_deg_measured: float = 0.0,
 ) -> GuidanceIntent:
     """Map the filtered target's pixel state to an attitude intent.
 
@@ -290,11 +306,23 @@ def compute_intent(
     moving altitude onto the target whether it is below, level, or above. Yaw
     centring is identical in both."""
     cx = cfg.frame_width / 2.0
+    cy = cfg.frame_height / 2.0
     det = target.detection
     # Lead pursuit: aim at the target's predicted position (current + lead · image
     # velocity), so yaw/dive aim at the intercept instead of tail-chasing a crosser.
     aim_x = det.x + cfg.lead_time_s * target.vx_px_s
     aim_y = det.y + cfg.lead_time_s * target.vy_px_s
+    # Roll-compensate the frame error (roll-point correction): the camera is
+    # bolted to the airframe, so when it BANKS the image rolls about centre — the target's
+    # pixel offset rotates. De-rotating the offset by the measured bank recovers the TRUE
+    # world horizontal/vertical error, so the bank-to-translate manoeuvre below regulates a
+    # stable signal instead of chasing its own roll (which otherwise diverges laterally).
+    if cfg.roll_compensate and roll_deg_measured != 0.0:
+        rr = math.radians(roll_deg_measured)
+        cr, sr = math.cos(rr), math.sin(rr)
+        ax, ay = aim_x - cx, aim_y - cy
+        aim_x = cx + ax * cr + ay * sr
+        aim_y = cy - ax * sr + ay * cr
 
     # Horizontal: P on the centring error + feedforward on the target's image
     # velocity. P alone leaves a structural lag against a moving target; the
@@ -304,12 +332,26 @@ def compute_intent(
         cfg.yaw_sign * (cfg.yaw_p_gain * dx + cfg.yaw_ff_gain * target.vx_px_s),
         -cfg.max_yaw_rate_dps, cfg.max_yaw_rate_dps,
     )
-    # Terminal lock (DIVE): once the target fills the frame its centroid clips the
-    # edges and jumps — freeze yaw and fly the committed line straight in rather than
-    # chasing the jitter into a corner. (size_frac recomputed cheaply here.)
-    if mode is GuidanceMode.DIVE and cfg.dive_terminal_lock_frac > 0.0 \
-            and (det.h / cfg.frame_height if cfg.frame_height else 0.0) > cfg.dive_terminal_lock_frac:
+    roll_deg = 0.0
+    size_frac = (det.h / cfg.frame_height) if cfg.frame_height else 0.0
+    terminal = (mode is GuidanceMode.DIVE and cfg.dive_terminal_lock_frac > 0.0
+                and size_frac > cfg.dive_terminal_lock_frac)
+    if terminal:
+        # Target fills the frame, centroid clips/jumps — freeze the lateral channels
+        # and fly the committed line straight in (don't chase the jitter into a corner).
         yaw_rate = 0.0
+    elif mode is GuidanceMode.DIVE and cfg.dive_roll_gain > 0.0:
+        # Yaw/roll blend: bank to translate sideways onto the target as it nears centre,
+        # yaw to turn toward it when far off-axis. Banking gives the lateral authority a
+        # pure-yaw dive lacks (it would tail-chase a crosser / lag a high-altitude miss).
+        alpha = _clamp(abs(dx) / cfg.yaw_roll_blend_px, 0.0, 1.0) if cfg.yaw_roll_blend_px > 0 else 1.0
+        # PD bank: proportional to the horizontal error + a derivative (image x-velocity)
+        # term. The derivative is essential — bank sets lateral ACCEL, so regulating a
+        # position error through it is a double integrator that oscillates on P alone.
+        roll_cmd = cfg.dive_roll_gain * dx + cfg.dive_roll_damp * target.vx_px_s
+        roll_deg = _clamp(cfg.roll_sign * roll_cmd * (1.0 - alpha),
+                          -cfg.dive_max_roll_deg, cfg.dive_max_roll_deg)
+        yaw_rate *= alpha               # ease yaw out as roll takes over near centre
 
     # Closure regulation: lean proportional to the apparent-size error.
     #   size_frac  = bbox height / frame height (a monotone range proxy)
@@ -323,9 +365,7 @@ def compute_intent(
     vertical_rate_mps = None
     if mode is GuidanceMode.DIVE:
         cy = cfg.frame_height / 2.0
-        # TERMINAL LOCK: once the bbox fills the frame the centroid is clipping the
-        # edges and jumps around — chasing it slides the aim off. Past the threshold,
-        # commit ballistic (see dive_terminal_lock_frac).
+        # (Terminal lock freezes the lateral channels at frame-fill — handled above.)
         # VERTICAL: constant-bearing homing. Command a climb rate that drives the
         # target's vertical frame error to zero — holding it at a fixed frame point
         # is a constant bearing, i.e. a collision course, so the flight path tracks
@@ -441,7 +481,7 @@ def compute_intent(
             ) / cfg.closure_i_gain
 
     return GuidanceIntent(
-        roll_deg=0.0,
+        roll_deg=roll_deg,
         pitch_deg=pitch,
         yaw_rate_dps=yaw_rate,
         thrust=thrust,
