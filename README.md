@@ -138,6 +138,16 @@ releasing the override hands control straight back (a dead Pi fail-safes via the
 FC's RC-override timeout). **STABILIZE** is the default over ALT_HOLD because it
 allows a real dive (SITL 4.6: ~16 m/s / 77° vs ALT_HOLD's ~1–5 m/s); the cost is
 no baro altitude floor (the companion owns altitude). See `docs/gps-denied-modes.md`
+
+**`control_mode: guided_nogps` (body-rate, selectable):** GUIDED_NOGPS with
+`SET_ATTITUDE_TARGET` **body rates** + real thrust (`guidance/rate_control.py`,
+`backend.send_body_rates`). Rates are integrated by the airframe so the motion is
+smooth; the descent uses pursuit guidance (velocity vector onto the line of sight).
+It **requires** `GUID_OPTIONS` bit 3 (ThrustAsThrust) — the preflight param check
+sets+verifies it, otherwise the FC reads the thrust field as a climb-rate and the
+dive planes. Validated in SITL (controlled 25–30° strikes, incl. a moving target);
+not yet hardware-validated, so STABILIZE remains the default. See
+`docs/gps-denied-modes.md`.
 and `docs/architecture-audit.md` §1.
 
 ## Failsafe principles
