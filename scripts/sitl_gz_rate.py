@@ -76,14 +76,15 @@ class Rate(Node):
         self.flt = AlphaBetaTargetFilter()
         HALFPI = math.pi / 2
         # Faithful reference gains: pitch/yaw/roll are RATE PIDs (rad/s); thrust is hover-relative [0,1].
-        self.pitch_pid = PID(1.0, 0.0, 0.2, out=HALFPI)   # Kd trimmed from ref 0.3: our ColorBlob box is noisier
+        self.pitch_pid = PID(1.0, 0.0, 0.08, out=HALFPI)  # low Kd: derivative on the noisy ColorBlob box was a shake source
         self.thrust_pid = PID(0.85, 0.30, 0.1, out=0.3, ilim=0.3)  # strong integral: drives the velocity onto the
                                                                     # line-of-sight regardless of hover-feedforward error (robust to hover-learn scatter)
         self.hover = 0.30                # learned in main() (this fast quad hovers well below 0.5)
+        self.home = 0.0                  # ground AMSL alt (set in main) for AGL = alt - home
         self.aim_bias = -0.06            # rad (~3.4deg steeper): put the VELOCITY VECTOR on the target (it rides
                                          # ~one mush-angle above the bore, so aiming on the LOS passes a few m high)
-        self.yaw_pid = PID(4.0, 0.0, 0.1, out=HALFPI, ilim=0.5)
-        self.roll_pid = PID(3.0, 0.01, 0.1, out=HALFPI, ilim=0.5)
+        self.yaw_pid = PID(3.0, 0.0, 0.04, out=HALFPI, ilim=0.5)   # eased P + low Kd (anti-shake)
+        self.roll_pid = PID(2.2, 0.01, 0.04, out=HALFPI, ilim=0.5) # eased P + low Kd (anti-shake)
         self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
         self.base_yaw_p, self.base_roll_p = 4.0, 3.0
         self.max_pitch = 0.70            # rad (~40deg): moderate nose; with forward drag this yields a ~25-30deg
@@ -153,10 +154,14 @@ class Rate(Node):
             sg = clamp((th - 8.0) / 18.0, 0.3, 1.0)
             yr *= sg; rr *= sg
             phase = "RATE"; tpx, tpy = det.x, det.y
+        elif (alt - self.home) < 12.0:
+            # Target lost near the GROUND = we just impacted. STOP: level + cut throttle, settle at the
+            # impact point. (Don't nose-down-and-fly-away, which corrupts the landed pose and looks bad.)
+            pr = clamp(2.0 * (0.0 - pitch_m), -0.6, 0.6)
+            rr, yr, thrust = -self.roll_return * roll_m, 0.0, 0.0
+            phase = "STOP"; tpx, tpy = -1, -1
         else:
-            # SEARCH: nose down to ~-25deg to bring a below ground target into the FOV. Our targets sit
-            # below the airframe; from a steep engagement a level hover never sees the target, so the
-            # craft must look down to acquire. Hold level roll, hover thrust.
+            # SEARCH (still high): nose down to ~-25deg to bring a below ground target into the FOV.
             pr = clamp(2.0 * (math.radians(-25) - pitch_m), -0.6, 0.6)
             rr, yr, thrust = -self.roll_return * roll_m, 0.0, self.hover
             phase = "SRCH"; tpx, tpy = -1, -1
@@ -165,7 +170,7 @@ class Rate(Node):
         # high-gain rate PIDs turn that into pitch/yaw/roll twitch. EMA-smoothing the rate the
         # airframe is asked to fly removes the visible jitter/oscillation while the rate surface
         # (airframe integrates the command) keeps the dive itself smooth.
-        b = 0.35
+        b = 0.22   # heavier low-pass on commanded rates -> less airframe shake
         self.sm_pr += b * (pr - self.sm_pr); self.sm_yr += b * (yr - self.sm_yr); self.sm_rr += b * (rr - self.sm_rr)
         self.sm_thr += b * (thrust - self.sm_thr)            # smooth the throttle too -> less descent oscillation
         pr, yr, rr, thrust = self.sm_pr, self.sm_yr, self.sm_rr, self.sm_thr
@@ -211,7 +216,7 @@ def main():
         mav.mav.set_attitude_target_send(0, mav.target_system, AP, 0b10000000, [1,0,0,0], 0,0,0, hover); time.sleep(0.05)
     if samples: hover = sum(samples) / len(samples)
     print("learned hover thrust = %.3f (avg of %d); RATE control (search -> dive)." % (hover, len(samples)), flush=True)
-    rclpy.init(); node = Rate(backend, a); node.hover = hover
+    rclpy.init(); node = Rate(backend, a); node.hover = hover; node.home = home
     end = time.monotonic() + a.duration
     while rclpy.ok() and time.monotonic() < end: rclpy.spin_once(node, timeout_sec=0.5)
     node.writer.release(); backend.release()
