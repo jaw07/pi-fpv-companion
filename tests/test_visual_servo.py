@@ -374,6 +374,18 @@ def test_dive_pitch_fold_adds_descent_for_a_nosedown_attitude():
                               pitch_deg_measured=-15.0).vertical_rate_mps) < 1e-6  # fold off -> inert
 
 
+def test_dive_terminal_lock_freezes_yaw_at_frame_fill():
+    # Once the bbox fills past the terminal-lock fraction the centroid clips the frame
+    # edges and jumps; chasing it in yaw slides the aim into a corner. At frame-fill the
+    # dive freezes yaw (commits ballistic) so an off-centre (clipping) blob doesn't yank it.
+    cfg = _dcfg(dive_terminal_lock_frac=0.5)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    small = _target(cx + 120, cy, h=40)                          # off-centre, far (small box)
+    huge = _target(cx + 120, cy, h=int(0.6 * cfg.frame_height))  # same offset, frame-filling
+    assert abs(compute_intent(small, cfg, GuidanceMode.DIVE).yaw_rate_dps) > 1.0   # far -> yaw corrects
+    assert compute_intent(huge, cfg, GuidanceMode.DIVE).yaw_rate_dps == 0.0        # terminal -> frozen
+
+
 def test_dive_vertical_disabled_when_gain_zero():
     cfg = _dcfg(dive_vrate_gain=0.0)               # vertical homing off -> DIVE just leans
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
