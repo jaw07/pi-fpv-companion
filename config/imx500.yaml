@@ -109,12 +109,15 @@ guidance:
   dive_max_pitch_deg: 30.0  # DIVE nose-down clamp (steeper than the gentler TRACK max_pitch_deg)
   dive_lean_ramp_s: 0.5      # soft-start: ramp the lean in over this many s at commit
   dive_lean_tau_s: 1.5       # low-pass on the dive lean: nose travels steadily, no up/down nod
-  dive_pitch_fold: 1.0       # fold MEASURED airframe pitch into the dive vertical error:
-                            # the nose-down lean depresses the fixed camera, so a far ground target
-                            # appears frame-centred while the aircraft is still high above it — frame-
-                            # only homing then reads "on bearing", stops descending, and OVERFLIES /
-                            # orbits at altitude. Folding pitch recovers the TRUE angle below the
-                            # horizon so the dive keeps descending onto the target (Gazebo-verified).
+  dive_pitch_fold: 0.6       # fold a FRACTION of the measured airframe pitch into the dive vertical
+                            # error: the nose-down lean depresses the fixed camera, so a far ground
+                            # target appears frame-centred while the aircraft is still high above it —
+                            # frame-only homing (fold 0) reads "on bearing", stops descending, and
+                            # ORBITS at altitude. Folding pitch recovers the target's true angle below
+                            # the horizon so the dive keeps descending onto it. FULL fold (1.0) is
+                            # pure-pursuit-in-elevation and OVER-descends a far high target (curves
+                            # down early, lands short); 0.6 descends enough to avoid the orbit but
+                            # shallow enough to reach — Gazebo-verified striking from alt 25-55 m.
   vfov_deg: 52.3            # camera vertical FoV (IMX500) — converts measured pitch to frame units
   dive_terminal_lock_frac: 0.5  # once the bbox fills >half the frame, impact is ~a metre or two away
                             # and the blob centroid clips/jumps — commit BALLISTIC (freeze yaw, ride
@@ -140,7 +143,7 @@ guidance:
                             # 18 brings it to ~11px, a cleaner centre hit.
   dive_vrate_damp: 6.0      # derivative damping (m/s per err/s) — kills the dive up/down wiggle;
                             # scaled up with the gain so the higher-gain homing stays non-oscillatory
-  dive_max_descent_mps: 10.0 # clamp on commanded descent (raised 8->10 for a faster dive)
+  dive_max_descent_mps: 8.0 # clamp on commanded descent
   dive_max_climb_mps: 4.0   # clamp on commanded climb (gravity-limited, < descent)
   # Sign overrides — MUST be bench-validated (docs/deployment-safety.md §4).
   yaw_sign: 1.0
