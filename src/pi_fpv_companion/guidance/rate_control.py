@@ -213,7 +213,13 @@ def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state
             # DIVE: frame the target to vert_goal (pitch) + PURSUIT thrust (velocity onto the LOS).
             ang_to_target = in_frame_elev + pitch_rad + math.radians(cfg.camera_pitch_deg)
             pr = state.pitch_pid.update(vert_err, dt)
-            if (pitch_rad <= -cfg.max_pitch_rad and pr < 0) or (pitch_rad >= cfg.max_pitch_rad and pr > 0):
+            if agl_m < cfg.impact_agl_m:
+                # TERMINAL COMMIT: inside the impact radius the lateral/vertical aim is already
+                # locked; a frame-filling (often frame-edge) target's angular rate explodes in
+                # the last moment, so chasing it slams the airframe at impact (nose past vertical,
+                # huge roll). Freeze ALL rates -> hold the committed dive vector ballistically.
+                pr = yr = rr = 0.0
+            elif (pitch_rad <= -cfg.max_pitch_rad and pr < 0) or (pitch_rad >= cfg.max_pitch_rad and pr > 0):
                 pr = 0.0
             thrust = _clamp(state.hover + state.thrust_pid.update(
                 ang_to_target + cfg.aim_bias_rad - gamma_rad, dt), 0.0, 1.0)
