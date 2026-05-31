@@ -86,8 +86,8 @@ class Rate(Node):
                                          # ~one mush-angle above the bore, so aiming on the LOS passes a few m high)
         self.yaw_pid = PID(3.0, 0.0, 0.04, out=HALFPI, ilim=0.5)   # eased P + low Kd (anti-shake)
         self.roll_pid = PID(2.2, 0.01, 0.04, out=HALFPI, ilim=0.5) # eased P + low Kd (anti-shake)
-        self.roll_return = 2.5           # softer return-to-level (5.0 + frame-rate lag overshot -> roll wobble/drift)
-        self.base_yaw_p, self.base_roll_p = 3.5, 0.8   # YAW centres horizontally (smooth); ROLL kept gentle (banking wobbles on this fixed-cam quad)
+        self.roll_return = 4.0           # return-to-level for banking
+        self.base_yaw_p, self.base_roll_p = 2.0, 2.5   # YAW gain dropped (it was the oscillation); ROLL restored for banking
         self.max_pitch = 0.70            # rad (~40deg): moderate nose; with forward drag this yields a ~25-30deg
                                          # FLIGHT-PATH dive (the path is shallower than the nose on a powered multirotor)
         self.camera_pitch = 0.0          # fixed bore-sight level with the airframe
@@ -160,7 +160,7 @@ class Rate(Node):
             self.yaw_pid.kp = alpha * self.base_yaw_p
             self.roll_pid.kp = (1.0 - alpha) * self.base_roll_p
             yr = self.yaw_pid.update(he, dt)
-            rr = self.roll_pid.update(he, dt) - self.roll_return * roll_m
+            rr = self.roll_pid.update(he, dt) - self.roll_return * roll_m   # roll re-enabled (banking)
             # Scale horizontal authority by target SIZE: a small far target gives a noisy box, and the
             # high-gain yaw/roll turn that into gyration early in the run. Reduce it when far; full
             # authority once the target is large (deep in the dive), where the box is stable.
@@ -180,9 +180,9 @@ class Rate(Node):
         # Differential low-pass: PITCH heavy (the dive shake came from pitch; the size-gain already
         # damps far-target gyration), YAW/ROLL lighter so lateral centring stays precise (heavy
         # smoothing lagged it and left a few-m lateral miss), thrust mid.
-        bp, bh, bt = 0.22, 0.35, 0.30
-        self.sm_pr += bp * (pr - self.sm_pr); self.sm_yr += bh * (yr - self.sm_yr)
-        self.sm_rr += bh * (rr - self.sm_rr); self.sm_thr += bt * (thrust - self.sm_thr)
+        bp, by, br, bt = 0.22, 0.18, 0.35, 0.30   # yaw heavily low-passed (anti-oscillation); roll moderate (banking)
+        self.sm_pr += bp * (pr - self.sm_pr); self.sm_yr += by * (yr - self.sm_yr)
+        self.sm_rr += br * (rr - self.sm_rr); self.sm_thr += bt * (thrust - self.sm_thr)
         pr, yr, rr, thrust = self.sm_pr, self.sm_yr, self.sm_rr, self.sm_thr
         self.send_rates(rr, pr, yr, thrust)
         for d in dets:
