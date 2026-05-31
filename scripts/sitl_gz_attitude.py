@@ -18,7 +18,7 @@ from pi_fpv_companion.guidance.framing_control import FramingConfig, FramingStat
 from pi_fpv_companion.fc.ardupilot import ArduPilotBackend, ArduCopterRcMapping
 from pi_fpv_companion.types import GuidanceIntent
 
-STABILIZE, GUIDED, AP = 0, 4, 1
+STABILIZE, GUIDED, GUIDED_NOGPS, AP = 0, 4, 20, 1
 
 
 def euler_to_quat(roll, pitch, yaw):
@@ -47,7 +47,7 @@ def arm_takeoff(mav, M, alt, home_alt, settle=18.0):
     while time.time() < end:
         v = mav.recv_match(type="VFR_HUD", blocking=True, timeout=2)
         if v and v.alt - home_alt >= alt - 0.5: break       # fully at altitude before engaging
-    mav.set_mode(GUIDED); time.sleep(1.0); return True
+    mav.set_mode(GUIDED_NOGPS); time.sleep(1.0); return True
 
 
 class Att(Node):
@@ -58,7 +58,7 @@ class Att(Node):
         self.det = ColorBlobDetector(min_area_px=50)
         self.tracker = IouAssociator(max_lost_frames=25, max_match_dist_px=160.0)
         self.flt = AlphaBetaTargetFilter()
-        self.fcfg = FramingConfig(720, 576, descent_pitch_fold=0.5, vert_goal=0.30, max_thrust_off=0.25, thrust_kp=0.45); self.fstate = FramingState()
+        self.fcfg = FramingConfig(720, 576, vert_goal=0.20, max_pitch_deg=48.0, descent_pitch_fold=0.6, max_thrust_off=0.3, pitch_kp=30.0, thrust_kp=0.55); self.fstate = FramingState()
         self.writer = cv2.VideoWriter("/work/gz_att.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 20.0, (720, 576))
         self.frames = self.detected = 0
         self.yaw_sp = None; self.last_t = None; self.acquired = False
