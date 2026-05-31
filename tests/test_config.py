@@ -110,7 +110,7 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_pitch_fold == 0.6      # partial fold: descends onto a high target without over-descending
     assert s.vfov_deg == 52.3            # IMX500 vertical FoV (pitch -> frame units)
     assert s.dive_terminal_lock_frac == 0.5   # commit ballistic at frame-fill
-    assert s.dive_roll_gain == 0.0       # roll banking OFF (yaw-only) on the fixed camera — see imx500.yaml
+    assert s.dive_roll_gain == 0.05 and s.dive_roll_damp == 0.45   # gentle heavily-damped bank (stable, off-axis help)
     assert s.roll_compensate is True     # de-roll stays on (no-op at 0 bank), for when roll is enabled
 
 

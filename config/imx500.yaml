@@ -122,17 +122,17 @@ guidance:
   dive_terminal_lock_frac: 0.5  # once the bbox fills >half the frame, impact is ~a metre or two away
                             # and the blob centroid clips/jumps — commit BALLISTIC (freeze yaw, ride
                             # the gyro for descent) so the aim doesn't chase the jitter into a corner.
-  # YAW/ROLL BLEND — banking to translate sideways onto the target. OFF on this airframe.
-  # The blend (bank-to-slide-near-centre, yaw-to-turn-when-far) is implemented and stable
-  # in the kinematic sim, but on the FIXED (airframe-bolted) camera banking ROLLS the image
-  # about centre — combined with the steep dive pitch it rotated a crossing target out of
-  # the frame and dropped the lock in Gazebo, at every gain and both signs tested. And it
-  # buys nothing here anyway: yaw alone already tracks a mover continuously, and the dive's
-  # closure on a crosser is forward-speed-limited, not lateral-authority-limited (more yaw
-  # rate changes nothing). So dive_roll_gain=0 (yaw-only). The mechanism is left wired for a
-  # future GIMBALLED camera (no image-roll) or a bench-validated roll_sign + gentle tuning.
-  dive_roll_gain: 0.0       # deg bank per px of horizontal error — 0 = yaw-only (see above)
-  dive_roll_damp: 0.15      # PD derivative (deg bank per px/s) — anti-oscillation when roll is on
+  # YAW/ROLL BLEND — bank to translate sideways onto the target (yaw turns toward it when
+  # far, roll banks to slide on near centre). GENTLE + HEAVILY DAMPED here: the fixed
+  # (airframe-bolted) camera rolls the image when it banks, so a high-gain bank oscillates
+  # and rotates the target out of the frame (it lost the lock in Gazebo). Low gain + a big
+  # PD derivative keeps the bank stable — it holds the lock and strikes an off-axis target.
+  # The bank is modest on purpose: with STABILISE + RC-angle control (not attitude-RATE
+  # control) the lateral-position loop has limited phase margin, so a strong bank can't be
+  # flown safely on the fixed camera. It is inert for a centred target (dx~0 -> bank~0), so
+  # it never disturbs the core centre-mass dive; it just adds gentle lateral help off-axis.
+  dive_roll_gain: 0.05      # deg bank per px of horizontal error (gentle; 0 = yaw-only)
+  dive_roll_damp: 0.45      # PD derivative (deg bank per px/s) — heavy, to stop the bank oscillating
   dive_max_roll_deg: 14.0   # bank-angle clamp
   yaw_roll_blend_px: 160.0  # |dx| at/above which it's pure yaw; below, roll fades in
   roll_compensate: true     # de-rotate the frame error by the measured bank (for when roll is on)
