@@ -98,13 +98,13 @@ guidance: {{{guidance_line}}}
 def test_imx500_enables_closed_loop_dive():
     cfg = load(Path(__file__).resolve().parent.parent / "config" / "imx500.yaml")
     s = cfg.servo
-    assert s.dive_forward_deg == 14.0     # steeper dive keeps a below/ground target framed to impact
+    assert s.dive_forward_deg == 20.0     # committed lean — steeper for a faster dive (target held high)
     assert s.dive_climb_forward_deg == 6.0   # gentle when level/climbing
     assert s.dive_max_pitch_deg == 30.0   # DIVE's own steeper clamp
     assert s.dive_vrate_gain == 18.0      # closed-loop vertical homing (P); higher -> centred aim
     assert s.dive_vrate_damp == 6.0       # derivative damping (anti-wiggle), scaled with the gain
     assert s.dive_lean_tau_s == 1.5       # lean low-pass (anti-nod, steady travel to target)
-    assert s.dive_max_descent_mps == 8.0
+    assert s.dive_max_descent_mps == 10.0
     assert s.dive_max_climb_mps == 4.0
     assert s.track_vcenter_gain == 0.0   # TRACK is pure range-hold (vertical re-centre off)
     assert s.dive_pitch_fold == 1.0      # fold measured airframe pitch into the dive vert error
