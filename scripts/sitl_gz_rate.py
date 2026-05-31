@@ -87,12 +87,13 @@ class Rate(Node):
         self.yaw_pid = PID(3.0, 0.0, 0.04, out=HALFPI, ilim=0.5)   # eased P + low Kd (anti-shake)
         self.roll_pid = PID(2.2, 0.01, 0.04, out=HALFPI, ilim=0.5) # eased P + low Kd (anti-shake)
         self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
-        self.base_yaw_p, self.base_roll_p = 4.0, 3.0
+        self.base_yaw_p, self.base_roll_p = 3.0, 2.5   # eased (anti-dither)
         self.max_pitch = 0.70            # rad (~40deg): moderate nose; with forward drag this yields a ~25-30deg
                                          # FLIGHT-PATH dive (the path is shallower than the nose on a powered multirotor)
         self.camera_pitch = 0.0          # fixed bore-sight level with the airframe
         self.max_horiz_err = 0.4; self.horiz_thresh = 0.05
         self.sm_yr = 0.0; self.sm_rr = 0.0; self.sm_pr = 0.0; self.sm_thr = 0.30   # EMA state (rates + thrust: anti-jitter/oscillation)
+        self.sm_cxn = 0.5; self.sm_cyn = 0.5   # smoothed bbox centre (kill detector pixel noise at the SOURCE)
         self.writer = cv2.VideoWriter("/work/gz_rate.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 20.0, (W, H))
         self.frames = self.detected = 0; self.last_t = None
         self.create_subscription(Image, "/imx500/image", self.on_image, 10)
@@ -135,12 +136,12 @@ class Rate(Node):
             # at the impact point). The sim truck persists, so without latching the craft re-acquires
             # it post-impact and wanders -- ruining the ending and the landed measurement.
             self.impacted = True
-            pr = clamp(2.0 * (0.0 - pitch_m), -0.6, 0.6)
-            rr, yr, thrust = -self.roll_return * roll_m, 0.0, 0.0
+            pr, rr, yr, thrust = 0.0, 0.0, 0.0, 0.0   # cut everything; settle at impact (no tumble-driven commands)
             phase = "STOP"; tpx, tpy = -1, -1
         elif target is not None:
             det = target.detection; cxn, cyn = det.x / W, det.y / H
-            horiz_err, vert_err, ang_to_tgt = self._preprocess(cxn, cyn, roll_m)
+            ac = 0.5; self.sm_cxn += ac * (cxn - self.sm_cxn); self.sm_cyn += ac * (cyn - self.sm_cyn)
+            horiz_err, vert_err, ang_to_tgt = self._preprocess(self.sm_cxn, self.sm_cyn, roll_m)
             # PITCH rate frames the target to the top goal; only zero the rate at the attitude limit.
             pr = self.pitch_pid.update(vert_err, dt)
             if (pitch_m <= -self.max_pitch and pr < 0) or (pitch_m >= self.max_pitch and pr > 0): pr = 0.0
@@ -176,7 +177,7 @@ class Rate(Node):
         # Differential low-pass: PITCH heavy (the dive shake came from pitch; the size-gain already
         # damps far-target gyration), YAW/ROLL lighter so lateral centring stays precise (heavy
         # smoothing lagged it and left a few-m lateral miss), thrust mid.
-        bp, bh, bt = 0.22, 0.45, 0.30
+        bp, bh, bt = 0.22, 0.35, 0.30
         self.sm_pr += bp * (pr - self.sm_pr); self.sm_yr += bh * (yr - self.sm_yr)
         self.sm_rr += bh * (rr - self.sm_rr); self.sm_thr += bt * (thrust - self.sm_thr)
         pr, yr, rr, thrust = self.sm_pr, self.sm_yr, self.sm_rr, self.sm_thr
