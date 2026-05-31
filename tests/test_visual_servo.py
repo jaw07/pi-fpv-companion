@@ -357,7 +357,7 @@ def test_dive_lean_smoothing_steadies_the_pitch():
 
 
 def test_dive_pitch_fold_adds_descent_for_a_nosedown_attitude():
-    # Pitch-fold (Peregrine): a target at frame CENTRE while the nose is pitched DOWN
+    # Pitch-fold: a target at frame CENTRE while the nose is pitched DOWN
     # is truly below the horizon — the nose-down lean depresses the fixed camera, so a
     # far ground target sits at centre while the aircraft is still high above it. Frame-
     # only homing reads "on bearing" and overflies; folding the measured pitch in keeps
@@ -372,6 +372,36 @@ def test_dive_pitch_fold_adds_descent_for_a_nosedown_attitude():
     off = _dcfg(dive_pitch_fold=0.0)
     assert abs(compute_intent(centred, off, GuidanceMode.DIVE,
                               pitch_deg_measured=-15.0).vertical_rate_mps) < 1e-6  # fold off -> inert
+
+
+def test_dive_yaw_roll_blend_banks_toward_a_lateral_target():
+    # Pure yaw only rotates the heading; banking translates the quad sideways onto the
+    # target. The blend banks toward a target off to one side (and yaws to turn toward
+    # it when far). A target to the RIGHT (dx>0) banks right (roll_deg>0).
+    cfg = _dcfg(dive_roll_gain=0.2, dive_roll_damp=0.0, yaw_roll_blend_px=300.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    right = _target(cx + 120, cy, h=40)
+    out = compute_intent(right, cfg, GuidanceMode.DIVE)
+    assert out.roll_deg > 1.0                                   # banks right toward the target
+    centred = compute_intent(_target(cx, cy, h=40), cfg, GuidanceMode.DIVE)
+    assert abs(centred.roll_deg) < 1e-6                         # centred -> no bank
+    # roll off -> no bank (yaw-only, backward compatible)
+    assert compute_intent(right, _dcfg(dive_roll_gain=0.0), GuidanceMode.DIVE).roll_deg == 0.0
+
+
+def test_dive_roll_compensation_derotates_the_error():
+    # When banked, the bolted camera rolls the image — a purely-horizontal target offset
+    # acquires an apparent vertical component. Roll-compensation de-rotates it back, so the
+    # measured bank doesn't bleed the horizontal error into the vertical (dive) channel.
+    cfg = _dcfg(dive_roll_gain=0.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    off = _target(cx + 100, cy, h=40)                           # purely horizontal offset in-image
+    # With a measured right bank, without compensation the vertical aim would shift; with
+    # it (default on), the de-rotated vertical error stays ~centred -> ~no false descent bias.
+    comp = compute_intent(off, cfg, GuidanceMode.DIVE, pitch_deg_measured=0.0, roll_deg_measured=20.0)
+    nocomp = compute_intent(off, _dcfg(dive_roll_gain=0.0, roll_compensate=False),
+                            GuidanceMode.DIVE, pitch_deg_measured=0.0, roll_deg_measured=20.0)
+    assert comp.vertical_rate_mps != nocomp.vertical_rate_mps   # compensation changes the vertical handling
 
 
 def test_dive_terminal_lock_freezes_yaw_at_frame_fill():

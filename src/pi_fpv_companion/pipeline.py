@@ -221,9 +221,12 @@ class Pipeline:
             # makes the fold inert (frame-only homing).
             pitch_fn = getattr(self._fc, "pitch_deg", None)
             pitch_meas = pitch_fn() if pitch_fn is not None else 0.0
+            roll_fn = getattr(self._fc, "roll_deg", None)
+            roll_meas = roll_fn() if roll_fn is not None else 0.0
             intent = compute_intent(target, self._servo_cfg, preview_mode,
                                     dive_elapsed_s, closure, dive,
-                                    pitch_deg_measured=pitch_meas)
+                                    pitch_deg_measured=pitch_meas,
+                                    roll_deg_measured=roll_meas)
         else:
             intent = ZERO_INTENT
         gated = gate(intent, target, switch, armed, now, self._safety_cfg)
