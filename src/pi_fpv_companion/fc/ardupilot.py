@@ -170,7 +170,8 @@ class ArduPilotBackend:
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
-        self._pitch_t: float = 0.0           # when _pitch_rad was last updated
+        self._roll_rad: float = 0.0          # latest ATTITUDE.roll (+bank-right)
+        self._pitch_t: float = 0.0           # when _pitch_rad / _roll_rad was last updated
         self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
@@ -326,6 +327,7 @@ class ArduPilotBackend:
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
+                self._roll_rad = float(msg.roll)     # +bank-right
                 self._pitch_t = time.monotonic()
 
     def select_pwm(self) -> int:
@@ -342,6 +344,14 @@ class ArduPilotBackend:
         if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
             return 0.0
         return math.degrees(self._pitch_rad)
+
+    def roll_deg(self) -> float:
+        """Airframe roll in degrees (+bank-right) from ATTITUDE, for roll-compensating
+        the frame error (the bolted camera rolls with the airframe). Returns 0.0 (level)
+        on stale telemetry — compensation then no-ops, which is safe."""
+        if not self._pitch_t or (time.monotonic() - self._pitch_t) > 0.5:
+            return 0.0
+        return math.degrees(self._roll_rad)
 
     def read_switch(self) -> SwitchState:
         self._drain()

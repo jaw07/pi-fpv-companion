@@ -100,17 +100,25 @@ class CameraModel:
     def fpx_v(self) -> float:
         return (self.height / 2.0) / math.tan(math.radians(self.vfov_deg) / 2.0)
 
-    def project(self, d_world: Vec, psi: float, phi: float):
+    def project(self, d_world: Vec, psi: float, phi: float, roll: float = 0.0):
         """Map a world relative-vector (target - aircraft) to a pixel detection.
 
         Returns (Detection | None, depth, in_frame). None when the target is
         behind the camera; in_frame is False when the projected centre falls
-        outside [0,W)×[0,H) (the tracker would then get no box → coast)."""
+        outside [0,W)×[0,H) (the tracker would then get no box → coast).
+
+        `roll` is the airframe bank (rad, + = right). The camera is bolted to the
+        airframe, so banking rolls the IMAGE about the boresight — a translation
+        manoeuvre (banking to slide laterally onto the target) therefore also
+        rotates the target around frame centre, exactly as on the aircraft."""
         cphi, sphi = math.cos(phi), math.sin(phi)
         cpsi, spsi = math.cos(psi), math.sin(psi)
         F = (cphi * cpsi, cphi * spsi, sphi)        # boresight (forward)
-        R = (spsi, -cpsi, 0.0)                       # image right
-        U = _cross(R, F)                             # image up
+        R0 = (spsi, -cpsi, 0.0)                       # image right (un-rolled)
+        U0 = _cross(R0, F)                            # image up (un-rolled)
+        cr, sr = math.cos(roll), math.sin(roll)       # bank rolls the image about F
+        R = (R0[0] * cr + U0[0] * sr, R0[1] * cr + U0[1] * sr, R0[2] * cr + U0[2] * sr)
+        U = (-R0[0] * sr + U0[0] * cr, -R0[1] * sr + U0[1] * cr, -R0[2] * sr + U0[2] * cr)
         depth = _dot(d_world, F)
         if depth <= 0.05:
             return None, depth, False                # behind / on the lens plane
@@ -133,7 +141,9 @@ class Airframe:
     pos: Vec = (0.0, 0.0, 0.0)
     psi: float = 0.0                 # heading (rad)
     phi: float = 0.0                 # pitch attitude (rad), + = nose up
+    roll: float = 0.0                # roll attitude (rad), + = bank right
     v_fwd: float = 0.0               # body forward speed (m/s)
+    v_lat: float = 0.0               # body lateral (rightward) speed (m/s), from bank
     tau_att: float = 0.12            # attitude (pitch) first-order time constant (s)
     # Defaults grounded in SITL (scripts/measure_dive_sitl.py on ArduCopter 4.6.3):
     # STABILIZE full throttle-cut gives ~16 m/s descent, and a 30° lean yields only
@@ -176,6 +186,12 @@ class Airframe:
         # Forward accel from the lean: nose-down (φ<0) → accelerate forward.
         a_fwd = G * math.tan(-self.phi)
         self.v_fwd += (a_fwd - self.drag * self.v_fwd) * dt
+        # Roll attitude tracks its command (same lag); bank → lateral (rightward) accel,
+        # the quad-native way to translate sideways onto the target (vs yaw-then-fly).
+        cmd_roll = math.radians(intent.roll_deg)
+        self.roll += (cmd_roll - self.roll) * k
+        a_lat = G * math.tan(self.roll)
+        self.v_lat += (a_lat - self.drag * self.v_lat) * dt
         # Vertical: a closed-loop rate command (DIVE) is tracked by the backend's
         # climb-rate loop (under-delivered by vrate_track_eff, clamped to physical
         # capability — descent up to v_climb_max, climb gravity-limited). Otherwise a
@@ -196,9 +212,10 @@ class Airframe:
         # (backend rate loop). This phase lag is what makes a high-gain P homing wiggle.
         kv = 1.0 - math.exp(-dt / self.tau_vrate) if self.tau_vrate > 0 else 1.0
         self._v_vert += (v_cmd - self._v_vert) * kv
+        # Forward along heading + lateral along the right vector (sin ψ, -cos ψ).
         self.pos = (
-            self.pos[0] + self.v_fwd * math.cos(self.psi) * dt,
-            self.pos[1] + self.v_fwd * math.sin(self.psi) * dt,
+            self.pos[0] + (self.v_fwd * math.cos(self.psi) + self.v_lat * math.sin(self.psi)) * dt,
+            self.pos[1] + (self.v_fwd * math.sin(self.psi) - self.v_lat * math.cos(self.psi)) * dt,
             self.pos[2] + self._v_vert * dt,
         )
 
@@ -349,7 +366,7 @@ class SimWorld:
             tpos = (tpos[0] + tvel[0] * dt, tpos[1] + tvel[1] * dt, tpos[2] + tvel[2] * dt)
             d_world = (tpos[0] - af.pos[0], tpos[1] - af.pos[1], tpos[2] - af.pos[2])
             rng = _norm(d_world)
-            det, depth, in_frame = self.camera.project(d_world, af.psi, af.phi)
+            det, depth, in_frame = self.camera.project(d_world, af.psi, af.phi, af.roll)
 
             # --- Perception realism: latency, dropout, noise, injected glitch ---
             clean = det if (det is not None and in_frame) else None
@@ -394,7 +411,8 @@ class SimWorld:
                     track_closure = dive_arg = None
                 proposed = compute_intent(filtered, servo, mode, dive_elapsed_s,
                                           track_closure, dive_arg,
-                                          pitch_deg_measured=math.degrees(af.phi))
+                                          pitch_deg_measured=math.degrees(af.phi),
+                                          roll_deg_measured=math.degrees(af.roll))
                 res = gate(proposed, filtered, switch, self.armed, t, self.safety)
                 intent = res.intent
                 muted, reason, q = res.muted, res.reason, filtered.quality
@@ -429,6 +447,7 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         dive_center_frac=0.30,
         dive_vrate_gain=18.0, dive_vrate_damp=6.0, dive_max_descent_mps=10.0, dive_max_climb_mps=4.0,
         dive_pitch_fold=1.0, vfov_deg=52.3, dive_terminal_lock_frac=0.5,
+        dive_roll_gain=0.2, dive_roll_damp=0.15, yaw_roll_blend_px=160.0,
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)
