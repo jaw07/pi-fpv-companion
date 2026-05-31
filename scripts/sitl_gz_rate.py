@@ -27,26 +27,34 @@ W, H = 720, 576
 def clamp(v, lo, hi): return lo if v < lo else hi if v > hi else v
 
 
-def arm_takeoff(mav, M, alt, home_alt, settle=18.0):
+def drain_for(backend, secs):
+    # Continuously drain the backend for `secs` (mirrors the production pipeline, which ticks
+    # the FC link every frame). Keeps _armed / alt fresh so the disarmed-only AGL home capture
+    # freezes at the true ground/arming altitude instead of re-homing at altitude.
+    t = time.monotonic()
+    while time.monotonic() - t < secs:
+        backend._drain(); time.sleep(0.02)
+
+
+def arm_takeoff(backend, mav, M, alt, settle=18.0):
     # GUID_OPTIONS bit3 (=8) SetAttitudeTarget_ThrustAsThrust: make the thrust field REAL throttle.
     for n, v in [("FRAME_CLASS", 1), ("FRAME_TYPE", 1), ("ARMING_CHECK", 0), ("GUID_OPTIONS", 8)]:
-        mav.mav.param_set_send(mav.target_system, AP, n.encode(), float(v), M.MAV_PARAM_TYPE_INT32); time.sleep(0.4)
-    print("  settling %.0fs..." % settle, flush=True); time.sleep(settle)
-    mav.set_mode(GUIDED); time.sleep(1); t0 = time.time(); armed = False; last = 0
-    while time.time() - t0 < 75 and not armed:
+        mav.mav.param_set_send(mav.target_system, AP, n.encode(), float(v), M.MAV_PARAM_TYPE_INT32); drain_for(backend, 0.4)
+    print("  settling %.0fs..." % settle, flush=True); drain_for(backend, settle)
+    mav.set_mode(GUIDED); drain_for(backend, 1); t0 = time.time(); last = 0
+    while time.time() - t0 < 75 and not backend.is_armed():
         if time.time() - last > 5:
             force = 21196 if (time.time() - t0 > 30) else 0
             mav.mav.command_long_send(mav.target_system, AP, M.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, force, 0, 0, 0, 0, 0); last = time.time()
-        hb = mav.recv_match(type="HEARTBEAT", blocking=True, timeout=2)
-        if hb: armed = bool(hb.base_mode & M.MAV_MODE_FLAG_SAFETY_ARMED)
-    if not armed: return False
+        drain_for(backend, 0.3)
+    if not backend.is_armed(): return False
     print("  armed; NAV_TAKEOFF", flush=True)
     mav.mav.command_long_send(mav.target_system, AP, M.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, alt)
     end = time.time() + 40
     while time.time() < end:
-        v = mav.recv_match(type="VFR_HUD", blocking=True, timeout=2)
-        if v and v.alt - home_alt >= alt - 0.5: break
-    mav.set_mode(GUIDED_NOGPS); time.sleep(1.0); return True   # rate control in GUIDED_NOGPS
+        drain_for(backend, 0.1)
+        if backend.agl_m() >= alt - 0.5: break   # AGL now valid (home frozen at ground)
+    mav.set_mode(GUIDED_NOGPS); drain_for(backend, 1.0); return True   # rate control in GUIDED_NOGPS
 
 
 class Rate(Node):
@@ -119,26 +127,23 @@ def main():
                                mapping=ArduCopterRcMapping(control_mode="stabilize", hover_learn=True, hover_learn_band=0.05))
     backend.open(); mav = backend._mav; mav.wait_heartbeat(timeout=60); mav.target_component = AP
     mav.mav.request_data_stream_send(mav.target_system, AP, M.MAV_DATA_STREAM_ALL, 15, 1); backend._request_streams()
-    v0 = mav.recv_match(type="VFR_HUD", blocking=True, timeout=5); home = v0.alt if v0 else 0.0
-    # Drain telemetry while still DISARMED so the backend captures its ground home reference
-    # (agl_m). The control loop only starts post-takeoff, so without this the first drained
-    # VFR_HUD would be at altitude and AGL would be wrong (premature impact-latch).
+    # Drain continuously from here (as the production pipeline ticks the FC every frame) so the
+    # backend captures its ground home (agl_m) while DISARMED and freezes it at the arm instant.
     print("capturing ground home (disarmed)...", flush=True)
-    for _ in range(60):
-        backend._drain(); time.sleep(0.05)
-    print("arming+takeoff to %.1fm... (home agl ref captured)" % a.alt, flush=True)
-    if not arm_takeoff(mav, M, a.alt, home): print("FAIL takeoff"); return 1
+    drain_for(backend, 3.0)
+    print("arming+takeoff to %.1fm..." % a.alt, flush=True)
+    if not arm_takeoff(backend, mav, M, a.alt): print("FAIL takeoff"); return 1
     print("airborne; learning hover thrust (null climb)...", flush=True)
     hover = 0.30; t0 = time.monotonic(); samples = []
     while time.monotonic() - t0 < 16.0:
-        v = mav.recv_match(type="VFR_HUD", blocking=False)
-        if v is not None:
-            hover = min(0.55, max(0.05, hover - 0.010 * float(v.climb)))
-            if time.monotonic() - t0 > 10.0:
-                samples.append(hover)
+        backend._drain()                                   # keep _armed/alt fresh + read climb
+        hover = min(0.55, max(0.05, hover - 0.010 * backend.climb_mps()))
+        if time.monotonic() - t0 > 10.0:
+            samples.append(hover)
         mav.mav.set_attitude_target_send(0, mav.target_system, AP, 0b10000000, [1,0,0,0], 0,0,0, hover); time.sleep(0.05)
     if samples: hover = sum(samples) / len(samples)
-    print("learned hover thrust = %.3f (avg of %d); production rate law (TRACK -> DIVE)." % (hover, len(samples)), flush=True)
+    print("learned hover=%.3f; home_agl=%.1f (ground); production rate law (TRACK -> DIVE)." % (
+        hover, backend._home_alt or 0.0), flush=True)
     rclpy.init(); node = Rate(backend, a); node.state.hover = hover; node.state.sm_thr = hover
     end = time.monotonic() + a.duration
     while rclpy.ok() and time.monotonic() < end: rclpy.spin_once(node, timeout_sec=0.5)

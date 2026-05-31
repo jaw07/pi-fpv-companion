@@ -39,6 +39,17 @@ def test_dive_low_target_noses_down():
     assert out.phase == "DIVE"
 
 
+def test_dive_terminal_commit_freezes_all_rates():
+    # DIVE inside the impact radius (agl < impact) with an off-axis, frame-filling target:
+    # normally pitch would nose-over and yaw/roll would slam to chase the frame-edge box.
+    # Terminal commit -> all rates frozen (ballistic) so the airframe doesn't whip at impact.
+    out, _ = _run([_ft(0.85, 0.10, h=120, ts=i) for i in range(8)], mode=GuidanceMode.DIVE, agl=5.0)
+    assert abs(out.pitch_rate) < 1e-6
+    assert abs(out.yaw_rate) < 1e-6
+    assert abs(out.roll_rate) < 1e-6
+    assert out.phase == "DIVE"
+
+
 def test_track_holds_altitude_at_hover():
     # TRACK follows but does NOT descend: thrust stays at the learned hover (no commit).
     out, _ = _run([_ft(0.5, 0.55, ts=i) for i in range(8)], mode=GuidanceMode.TRACK)
