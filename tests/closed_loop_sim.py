@@ -447,7 +447,7 @@ def imx500_servo(width: int = 720, height: int = 576, **overrides) -> ServoConfi
         dive_center_frac=0.30,
         dive_vrate_gain=18.0, dive_vrate_damp=6.0, dive_max_descent_mps=10.0, dive_max_climb_mps=4.0,
         dive_pitch_fold=1.0, vfov_deg=52.3, dive_terminal_lock_frac=0.5,
-        dive_roll_gain=0.2, dive_roll_damp=0.15, yaw_roll_blend_px=160.0,
+        dive_roll_gain=0.0, dive_roll_damp=0.15, yaw_roll_blend_px=160.0,  # roll off (yaw-only; see imx500.yaml)
         yaw_sign=1.0, pitch_sign=1.0,
     )
     base.update(overrides)
