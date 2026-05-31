@@ -257,6 +257,8 @@ def _servo(d: Dict[str, Any], width: int, height: int) -> ServoConfig:
         dive_vrate_damp=d.get("dive_vrate_damp", 0.0),
         dive_max_descent_mps=d.get("dive_max_descent_mps", 8.0),
         dive_max_climb_mps=d.get("dive_max_climb_mps", 4.0),
+        dive_pitch_fold=d.get("dive_pitch_fold", 0.0),
+        vfov_deg=d.get("vfov_deg", 52.3),
         yaw_sign=d.get("yaw_sign", 1.0),
         pitch_sign=d.get("pitch_sign", 1.0),
     )
@@ -328,6 +330,16 @@ def _validate(cfg: AppConfig) -> None:
     if s.dive_max_descent_mps < 0.0 or s.dive_max_climb_mps < 0.0:
         raise ValueError(
             "guidance.dive_max_descent_mps / dive_max_climb_mps must be >= 0"
+        )
+    if s.dive_pitch_fold < 0.0:
+        raise ValueError(
+            f"guidance.dive_pitch_fold ({s.dive_pitch_fold}) must be >= 0 "
+            "(fraction of measured airframe pitch folded into the dive vertical error; "
+            "negative would invert it and climb away from a below target)"
+        )
+    if s.vfov_deg <= 0.0:
+        raise ValueError(
+            f"guidance.vfov_deg ({s.vfov_deg}) must be > 0 (camera vertical FoV)"
         )
     if s.dive_vrate_damp < 0.0:
         raise ValueError(

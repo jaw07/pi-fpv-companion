@@ -107,6 +107,8 @@ def test_imx500_enables_closed_loop_dive():
     assert s.dive_max_descent_mps == 8.0
     assert s.dive_max_climb_mps == 4.0
     assert s.track_vcenter_gain == 0.0   # TRACK is pure range-hold (vertical re-centre off)
+    assert s.dive_pitch_fold == 1.0      # fold measured airframe pitch into the dive vert error
+    assert s.vfov_deg == 52.3            # IMX500 vertical FoV (pitch -> frame units)
 
 
 def test_rejects_out_of_range_angle_max(tmp_path):
