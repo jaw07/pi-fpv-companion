@@ -443,3 +443,58 @@ def test_watchdog_mutes_when_detections_stop_arriving():
     assert "target stale" in reasons                     # the watchdog actually fires
     # ...and it fires while the target still exists (not because it dropped to None).
     assert reasons.index("target stale") < (reasons + ["no target"]).index("no target")
+
+
+# ---- guided_nogps body-RATE path (control_mode: guided_nogps) ----
+
+from pi_fpv_companion.guidance.rate_control import RateConfig   # noqa: E402
+
+
+class RateStubFC(StubFC):
+    """StubFC + the body-rate surface and airframe-state accessors the rate path uses."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.body_rates = []                   # (roll_rate, pitch_rate, yaw_rate, thrust)
+
+    def send_body_rates(self, rr, pr, yr, thrust):
+        self.body_rates.append((rr, pr, yr, thrust))
+
+    def pitch_deg(self): return 0.0
+    def roll_deg(self): return 0.0
+    def flight_path_angle_rad(self): return 0.0
+    def agl_m(self): return 40.0
+    def climb_mps(self): return 0.0
+
+
+def test_guided_nogps_rate_path_sends_body_rates_not_sticks():
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC()
+    fc.mode = GuidanceMode.DIVE
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2, max_lost_frames=10),
+                    _servo(), _safety(), fc, rate_cfg=RateConfig(720, 576))
+    for i in range(5):
+        pipe.tick(cam.render_at(i * 0.05))
+    assert fc.body_rates, "guided_nogps must command body rates"
+    assert fc.sent == [], "the RC-stick (send_intent) path must NOT be used in rate mode"
+
+
+def test_guided_nogps_rate_path_releases_in_standby():
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC(switch_active=False)       # STANDBY
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
+                    rate_cfg=RateConfig(720, 576))
+    pipe.tick(cam.render_at(0.0))
+    assert fc.released >= 1
+    assert fc.body_rates == []
+
+
+def test_stabilize_path_unchanged_uses_send_intent():
+    # control_mode != guided_nogps (rate_cfg=None) -> the RC-stick path is used, untouched.
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC()
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2, max_lost_frames=10),
+                    _servo(), _safety(), fc)   # no rate_cfg
+    for i in range(5):
+        pipe.tick(cam.render_at(i * 0.05))
+    assert fc.sent, "STABILIZE path must still send RC-stick intents"
+    assert fc.body_rates == [], "STABILIZE path must NOT command body rates"

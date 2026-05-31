@@ -54,7 +54,13 @@ _STREAM_REREQUEST_S = 5.0
 # (control_ready) refuses to override unless the FC is actually in the mode that
 # matches control_mode — so a stabilize mapping can't be pushed into ALT_HOLD /
 # LOITER / a GPS mode by mistake. None for control_mode -> no interlock.
-_EXPECTED_MODE = {"stabilize": 0, "althold": 2}   # STABILIZE / ALT_HOLD custom_mode
+_EXPECTED_MODE = {"stabilize": 0, "althold": 2, "guided_nogps": 20}   # STABILIZE / ALT_HOLD / GUIDED_NOGPS custom_mode
+
+# GUID_OPTIONS bit 3 (=8): SetAttitudeTarget interprets the thrust field as THRUST,
+# not a climb-rate. MANDATORY for the guided_nogps rate path — without it ArduCopter
+# reads SET_ATTITUDE_TARGET.thrust as a climb-rate command (0.5 = hold altitude), so
+# "throttle 0" never descends and the dive planes. Verified in the preflight param check.
+GUID_OPTIONS_THRUST_AS_THRUST = 8
 
 
 @dataclass(frozen=True)
@@ -170,6 +176,7 @@ class ArduPilotBackend:
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._gs_mps: float = 0.0            # latest VFR_HUD.groundspeed (forward speed)
         self._alt_m: float = 0.0             # latest VFR_HUD.alt
+        self._home_alt: Optional[float] = None   # first VFR_HUD.alt = ground reference (for AGL)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
         self._roll_rad: float = 0.0          # latest ATTITUDE.roll (+bank-right)
@@ -256,6 +263,32 @@ class ArduPilotBackend:
                 result[name] = "write-fail"
         return result
 
+    def ensure_param_bits(self, name: str, bits: int, timeout: float = 2.0) -> str:
+        """Confirm specific BITS are set in a bitmask FC parameter, OR-ing them in (and
+        verifying) without clobbering the other bits. Used for GUID_OPTIONS bit 3
+        (ThrustAsThrust) on the guided_nogps path — see GUID_OPTIONS_THRUST_AS_THRUST.
+        Returns 'ok' (already set) | 'set' (written) | 'read-fail' | 'write-fail'."""
+        cur = self.read_param(name, timeout=timeout)
+        if cur is None:
+            _log.warning("FC param %s: no response — cannot verify bits 0x%X", name, bits)
+            return "read-fail"
+        value, ptype = cur
+        ivalue = int(round(value))
+        if (ivalue & bits) == bits:
+            _log.info("FC param %s = %d (bits 0x%X already set)", name, ivalue, bits)
+            return "ok"
+        want = ivalue | bits
+        _log.warning("FC param %s = %d, setting bits 0x%X -> %d", name, ivalue, bits, want)
+        self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
+                                     name.encode(), float(want), ptype)
+        check = self.read_param(name)
+        if check is not None and (int(round(check[0])) & bits) == bits:
+            _log.warning("FC param %s -> %d (bits 0x%X set, verified)", name, want, bits)
+            return "set"
+        got = int(round(check[0])) if check else -1
+        _log.error("FC param %s bit-set FAILED (still %d, wanted bits 0x%X)", name, got, bits)
+        return "write-fail"
+
     def _request_streams(self, rate_hz: int = 10) -> None:
         """ArduPilot does not stream RC_CHANNELS / VFR_HUD / ATTITUDE on a MAVLink
         serial port until a GCS asks. Without RC_CHANNELS the engage switch is
@@ -332,6 +365,8 @@ class ArduPilotBackend:
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._alt_m = float(msg.alt)         # altitude (AMSL-ish from baro)
                 self._gs_mps = float(msg.groundspeed)  # forward speed (m/s) for flight-path angle
+                if self._home_alt is None:
+                    self._home_alt = self._alt_m     # first reading = ground reference for AGL
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
@@ -394,6 +429,19 @@ class ArduPilotBackend:
         """Latest VFR_HUD altitude (m). For telemetry/diagnostics."""
         return self._alt_m
 
+    def agl_m(self) -> float:
+        """Height above ground (m) = alt - home, where home is the first VFR_HUD.alt (ground
+        at boot). Used by the rate-control DIVE impact latch. Large fallback before the first
+        VFR_HUD so a missing baro never reads as 'on the ground'."""
+        if self._home_alt is None:
+            return 1e9
+        return self._alt_m - self._home_alt
+
+    def climb_mps(self) -> float:
+        """Latest VFR_HUD climb rate (m/s, +up; baro-derived, GPS-free). For the rate path's
+        online hover trim (TRACK holds altitude -> trim hover toward null climb)."""
+        return self._climb_mps
+
     def read_switch(self) -> SwitchState:
         self._drain()
         if self._last_switch is None:
@@ -423,6 +471,20 @@ class ArduPilotBackend:
                          "in that mode.", self._current_mode, expected, self._mapping.control_mode)
             self._interlock_warned = True
         return False
+
+    def send_body_rates(self, roll_rate: float, pitch_rate: float, yaw_rate: float,
+                        thrust: float) -> None:
+        """guided_nogps RATE surface: command BODY RATES (rad/s) + thrust via
+        SET_ATTITUDE_TARGET (type_mask 0b10000000 = ignore-attitude, identity quaternion).
+        Rates are integrated by the airframe so a noisy detector box yields smooth motion
+        (an absolute-attitude quaternion snaps to each frame and jitters). thrust is real
+        throttle 0..1 (REQUIRES GUID_OPTIONS bit 3 — see GUID_OPTIONS_THRUST_AS_THRUST;
+        without it the FC treats thrust as a climb-rate and the dive planes)."""
+        tb = int(time.time() * 1000) & 0xFFFFFFFF
+        self._mav.mav.set_attitude_target_send(
+            tb, self._mav.target_system, self._mav.target_component, 0b10000000,
+            [1.0, 0.0, 0.0, 0.0], float(roll_rate), float(pitch_rate), float(yaw_rate),
+            float(_clamp(thrust, 0.0, 1.0)))
 
     def send_intent(self, intent: GuidanceIntent) -> None:
         """Override the AETR channels from the intent (the rest released to the

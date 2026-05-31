@@ -209,6 +209,19 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
         return
     for name, st in status.items():
         print(f"    {name}: {st}")
+    # guided_nogps RATE path: the thrust field MUST be real throttle, not a climb-rate,
+    # or the dive planes. Enforce GUID_OPTIONS bit 3 (ThrustAsThrust), OR-ing it in so
+    # other guided bits are preserved. (Bench finding: a wrong/missing bit silently turns
+    # "throttle 0" into "hold altitude".)
+    if cfg.fc.control_mode == "guided_nogps":
+        ensure_bits = getattr(fc, "ensure_param_bits", None)
+        if callable(ensure_bits):
+            from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST
+            try:
+                st = ensure_bits("GUID_OPTIONS", GUID_OPTIONS_THRUST_AS_THRUST)
+                print(f"    GUID_OPTIONS(ThrustAsThrust): {st}")
+            except Exception as e:
+                print(f"  WARN: GUID_OPTIONS check failed: {e}")
 
 
 def _build_sink(cfg: AppConfig, no_gui: bool):
@@ -292,6 +305,14 @@ def main(argv=None) -> int:
     if force_mode is not None:
         print(f"  FORCE    mode={force_mode.name} (ignoring RC switch — bench/test)")
 
+    # guided_nogps body-RATE path: build a RateConfig (frame dims from the camera) so the
+    # pipeline dispatches to the rate controller. None for STABILIZE/ALT_HOLD (RC-override path).
+    rate_cfg = None
+    if cfg.fc.control_mode == "guided_nogps":
+        from pi_fpv_companion.guidance.rate_control import RateConfig
+        rate_cfg = RateConfig(frame_width=cfg.video.width, frame_height=cfg.video.height)
+        print(f"  guided_nogps RATE path active (frame {cfg.video.width}x{cfg.video.height})")
+
     pipeline = Pipeline(
         camera, tracker, cfg.servo, cfg.safety, fc,
         detector=detector,
@@ -300,6 +321,7 @@ def main(argv=None) -> int:
         on_status=on_status,
         force_mode=force_mode,
         camera_watchdog_s=5.0,   # restart the process if the camera stalls
+        rate_cfg=rate_cfg,
     )
 
     orig_tick = pipeline.tick
