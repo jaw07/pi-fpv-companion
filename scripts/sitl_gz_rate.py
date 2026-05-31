@@ -81,6 +81,7 @@ class Rate(Node):
                                                                     # line-of-sight regardless of hover-feedforward error (robust to hover-learn scatter)
         self.hover = 0.30                # learned in main() (this fast quad hovers well below 0.5)
         self.home = 0.0                  # ground AMSL alt (set in main) for AGL = alt - home
+        self.impacted = False            # latched once we hit (lost target near ground) -> stay stopped
         self.aim_bias = -0.06            # rad (~3.4deg steeper): put the VELOCITY VECTOR on the target (it rides
                                          # ~one mush-angle above the bore, so aiming on the LOS passes a few m high)
         self.yaw_pid = PID(3.0, 0.0, 0.04, out=HALFPI, ilim=0.5)   # eased P + low Kd (anti-shake)
@@ -129,7 +130,15 @@ class Rate(Node):
         self.pitch_m = pitch_m
         th = target.detection.h if target is not None else 0.0
         alt = self.backend.alt_m()
-        if target is not None:
+        if self.impacted or ((alt - self.home) < 12.0 and target is None and self.frames > 20):
+            # IMPACT latch: target lost near the ground -> stop for good (level + cut throttle, settle
+            # at the impact point). The sim truck persists, so without latching the craft re-acquires
+            # it post-impact and wanders -- ruining the ending and the landed measurement.
+            self.impacted = True
+            pr = clamp(2.0 * (0.0 - pitch_m), -0.6, 0.6)
+            rr, yr, thrust = -self.roll_return * roll_m, 0.0, 0.0
+            phase = "STOP"; tpx, tpy = -1, -1
+        elif target is not None:
             det = target.detection; cxn, cyn = det.x / W, det.y / H
             horiz_err, vert_err, ang_to_tgt = self._preprocess(cxn, cyn, roll_m)
             # PITCH rate frames the target to the top goal; only zero the rate at the attitude limit.
@@ -154,12 +163,6 @@ class Rate(Node):
             sg = clamp((th - 8.0) / 18.0, 0.3, 1.0)
             yr *= sg; rr *= sg
             phase = "RATE"; tpx, tpy = det.x, det.y
-        elif (alt - self.home) < 12.0:
-            # Target lost near the GROUND = we just impacted. STOP: level + cut throttle, settle at the
-            # impact point. (Don't nose-down-and-fly-away, which corrupts the landed pose and looks bad.)
-            pr = clamp(2.0 * (0.0 - pitch_m), -0.6, 0.6)
-            rr, yr, thrust = -self.roll_return * roll_m, 0.0, 0.0
-            phase = "STOP"; tpx, tpy = -1, -1
         else:
             # SEARCH (still high): nose down to ~-25deg to bring a below ground target into the FOV.
             pr = clamp(2.0 * (math.radians(-25) - pitch_m), -0.6, 0.6)
@@ -170,9 +173,12 @@ class Rate(Node):
         # high-gain rate PIDs turn that into pitch/yaw/roll twitch. EMA-smoothing the rate the
         # airframe is asked to fly removes the visible jitter/oscillation while the rate surface
         # (airframe integrates the command) keeps the dive itself smooth.
-        b = 0.22   # heavier low-pass on commanded rates -> less airframe shake
-        self.sm_pr += b * (pr - self.sm_pr); self.sm_yr += b * (yr - self.sm_yr); self.sm_rr += b * (rr - self.sm_rr)
-        self.sm_thr += b * (thrust - self.sm_thr)            # smooth the throttle too -> less descent oscillation
+        # Differential low-pass: PITCH heavy (the dive shake came from pitch; the size-gain already
+        # damps far-target gyration), YAW/ROLL lighter so lateral centring stays precise (heavy
+        # smoothing lagged it and left a few-m lateral miss), thrust mid.
+        bp, bh, bt = 0.22, 0.45, 0.30
+        self.sm_pr += bp * (pr - self.sm_pr); self.sm_yr += bh * (yr - self.sm_yr)
+        self.sm_rr += bh * (rr - self.sm_rr); self.sm_thr += bt * (thrust - self.sm_thr)
         pr, yr, rr, thrust = self.sm_pr, self.sm_yr, self.sm_rr, self.sm_thr
         self.send_rates(rr, pr, yr, thrust)
         for d in dets:
