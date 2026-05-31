@@ -44,7 +44,9 @@ class PID:
 
 
 def arm_takeoff(mav, M, alt, home_alt, settle=18.0):
-    for n, v in [("FRAME_CLASS", 1), ("FRAME_TYPE", 1), ("ARMING_CHECK", 0)]:
+    # GUID_OPTIONS bit3 (=8) SetAttitudeTarget_ThrustAsThrust: make the thrust field REAL throttle.
+    # Without it ArduCopter reads thrust as a CLIMB RATE (0 = hold altitude) -> the dive planes.
+    for n, v in [("FRAME_CLASS", 1), ("FRAME_TYPE", 1), ("ARMING_CHECK", 0), ("GUID_OPTIONS", 8)]:
         mav.mav.param_set_send(mav.target_system, AP, n.encode(), float(v), M.MAV_PARAM_TYPE_INT32); time.sleep(0.4)
     print("  settling %.0fs..." % settle, flush=True); time.sleep(settle)
     mav.set_mode(GUIDED); time.sleep(1); t0 = time.time(); armed = False; last = 0
@@ -74,13 +76,14 @@ class Rate(Node):
         HALFPI = math.pi / 2
         # Faithful reference gains: pitch/yaw/roll are RATE PIDs (rad/s); thrust is hover-relative [0,1].
         self.pitch_pid = PID(1.0, 0.0, 0.2, out=HALFPI)   # Kd trimmed from ref 0.3: our ColorBlob box is noisier
-        self.thrust_pid = PID(1.1, 0.01, 0.2, out=0.5, ilim=5.0)   # out 0.5 -> thrust spans [0,1] (note: ArduCopter floors throttle, so DESCENT is driven by pitch-tilt, not this)
+        self.thrust_pid = PID(1.1, 0.01, 0.2, out=0.3, ilim=5.0)   # trims throttle about learned hover (GUID_OPTIONS bit3 = real thrust)
+        self.hover = 0.30                # learned in main() (this fast quad hovers well below 0.5)
         self.yaw_pid = PID(4.0, 0.0, 0.1, out=HALFPI, ilim=0.5)
         self.roll_pid = PID(3.0, 0.01, 0.1, out=HALFPI, ilim=0.5)
         self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
         self.base_yaw_p, self.base_roll_p = 4.0, 3.0
-        self.max_pitch = 1.13            # rad (~65deg): allow a steep terminal dive (more vertical = more
-                                         # descent) so the glide steepens onto the target; FC ANGLE_MAX hard-limits
+        self.max_pitch = 0.70            # rad (~40deg): moderate nose; with forward drag this yields a ~25-30deg
+                                         # FLIGHT-PATH dive (the path is shallower than the nose on a powered multirotor)
         self.camera_pitch = 0.0          # fixed bore-sight level with the airframe
         self.max_horiz_err = 0.4; self.horiz_thresh = 0.05
         self.sm_yr = 0.0; self.sm_rr = 0.0; self.sm_pr = 0.0   # EMA state for all commanded rates (anti-jitter)
@@ -127,11 +130,12 @@ class Rate(Node):
             # PITCH rate frames the target to the top goal; only zero the rate at the attitude limit.
             pr = self.pitch_pid.update(vert_err, dt)
             if (pitch_m <= -self.max_pitch and pr < 0) or (pitch_m >= self.max_pitch and pr > 0): pr = 0.0
-            # THRUST: hover + PID on the true angle below horizon (faithful reference). NOTE: ArduCopter
-            # floors the throttle, so real descent comes from PITCH steepening (tilts the hover-thrust
-            # vector: vertical lift = hover*cos(pitch)); this just trims it. The steep framing pitch is
-            # what dives the craft -> so vert_goal near the top (hard nose-down) is what makes it descend.
-            thrust = clamp(0.5 + self.thrust_pid.update(ang_to_tgt, dt), 0.0, 1.0)
+            # THRUST = PURSUIT (now that GUID_OPTIONS bit3 gives REAL throttle authority): descend just
+            # enough to drive the flight-path angle onto the line-of-sight, so the velocity vector points
+            # AT the target -> a straight-line dive whose angle == the target's depression. gamma>los
+            # (too shallow) -> error<0 -> thrust<hover -> descend until the velocity aims at the target.
+            gamma = self.backend.flight_path_angle_rad()
+            thrust = clamp(self.hover + self.thrust_pid.update(ang_to_tgt - gamma, dt), 0.0, 1.0)
             # YAW/ROLL blend: yaw dominates far off-axis, roll banks near centre; roll returns to level.
             ae = abs(horiz_err)
             alpha = clamp((ae - self.horiz_thresh) / max(self.max_horiz_err, ae - self.horiz_thresh), 0.0, 1.0)
@@ -145,7 +149,7 @@ class Rate(Node):
             # below the airframe; from a steep engagement a level hover never sees the target, so the
             # craft must look down to acquire. Hold level roll, hover thrust.
             pr = clamp(2.0 * (math.radians(-25) - pitch_m), -0.6, 0.6)
-            rr, yr, thrust = -self.roll_return * roll_m, 0.0, 0.5
+            rr, yr, thrust = -self.roll_return * roll_m, 0.0, self.hover
             phase = "SRCH"; tpx, tpy = -1, -1
         # Low-pass ALL commanded rates: the ColorBlob box jitters in size/centre (worst when the
         # target is small/far and again as it whips through the frame in the terminal), and the
@@ -186,12 +190,16 @@ def main():
     v0 = mav.recv_match(type="VFR_HUD", blocking=True, timeout=5); home = v0.alt if v0 else 0.0
     print("arming+takeoff to %.1fm..." % a.alt, flush=True)
     if not arm_takeoff(mav, M, a.alt, home): print("FAIL takeoff"); return 1
-    print("airborne (GUIDED) at altitude; settling 4s (rates=0)...", flush=True)
-    t_settle = time.monotonic() + 4.0
+    print("airborne; learning hover thrust (null climb)...", flush=True)
+    hover = 0.30
+    t_settle = time.monotonic() + 10.0
     while time.monotonic() < t_settle:
-        mav.mav.set_attitude_target_send(0, mav.target_system, AP, 0b10000000, [1,0,0,0], 0,0,0, 0.5); time.sleep(0.05)
-    print("airborne; RATE control (search -> dive).", flush=True)
-    rclpy.init(); node = Rate(backend, a)
+        v = mav.recv_match(type="VFR_HUD", blocking=False)
+        if v is not None:
+            hover = min(0.55, max(0.08, hover - 0.015 * float(v.climb)))  # climbing -> lower hover; sinking -> raise
+        mav.mav.set_attitude_target_send(0, mav.target_system, AP, 0b10000000, [1,0,0,0], 0,0,0, hover); time.sleep(0.05)
+    print("learned hover thrust = %.3f; RATE control (search -> dive)." % hover, flush=True)
+    rclpy.init(); node = Rate(backend, a); node.hover = hover
     end = time.monotonic() + a.duration
     while rclpy.ok() and time.monotonic() < end: rclpy.spin_once(node, timeout_sec=0.5)
     node.writer.release(); backend.release()
