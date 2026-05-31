@@ -176,6 +176,7 @@ class ArduPilotBackend:
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._gs_mps: float = 0.0            # latest VFR_HUD.groundspeed (forward speed)
         self._alt_m: float = 0.0             # latest VFR_HUD.alt
+        self._home_alt: Optional[float] = None   # first VFR_HUD.alt = ground reference (for AGL)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
         self._roll_rad: float = 0.0          # latest ATTITUDE.roll (+bank-right)
@@ -364,6 +365,8 @@ class ArduPilotBackend:
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._alt_m = float(msg.alt)         # altitude (AMSL-ish from baro)
                 self._gs_mps = float(msg.groundspeed)  # forward speed (m/s) for flight-path angle
+                if self._home_alt is None:
+                    self._home_alt = self._alt_m     # first reading = ground reference for AGL
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
@@ -425,6 +428,19 @@ class ArduPilotBackend:
     def alt_m(self) -> float:
         """Latest VFR_HUD altitude (m). For telemetry/diagnostics."""
         return self._alt_m
+
+    def agl_m(self) -> float:
+        """Height above ground (m) = alt - home, where home is the first VFR_HUD.alt (ground
+        at boot). Used by the rate-control DIVE impact latch. Large fallback before the first
+        VFR_HUD so a missing baro never reads as 'on the ground'."""
+        if self._home_alt is None:
+            return 1e9
+        return self._alt_m - self._home_alt
+
+    def climb_mps(self) -> float:
+        """Latest VFR_HUD climb rate (m/s, +up; baro-derived, GPS-free). For the rate path's
+        online hover trim (TRACK holds altitude -> trim hover toward null climb)."""
+        return self._climb_mps
 
     def read_switch(self) -> SwitchState:
         self._drain()

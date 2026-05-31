@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 
-from pi_fpv_companion.types import Detection, FilteredTarget
+from pi_fpv_companion.types import Detection, FilteredTarget, GuidanceMode
 from pi_fpv_companion.guidance.rate_control import (
     PID, RateConfig, RateState, compute_rate_intent)
 
@@ -15,12 +15,13 @@ def _ft(cx_n, cy_n, h=40, ts=0.0):
         track_id=1, vx_px_s=0.0, vy_px_s=0.0, quality=0.9, timestamp=ts)
 
 
-def _run(target_seq, *, pitch=0.0, roll=0.0, gamma=0.0, agl=40.0, cfg=None, st=None, n_from=0):
+def _run(target_seq, *, mode=GuidanceMode.DIVE, pitch=0.0, roll=0.0, gamma=0.0, agl=40.0,
+         cfg=None, st=None, n_from=0):
     cfg = cfg or RateConfig(W, H)
     st = st or RateState()
     out = None
     for i, t in enumerate(target_seq):
-        out = compute_rate_intent(t, cfg, st, now=(n_from + i) * 0.05,
+        out = compute_rate_intent(t, cfg, st, now=(n_from + i) * 0.05, mode=mode,
                                   pitch_rad=pitch, roll_rad=roll, gamma_rad=gamma, agl_m=agl)
     return out, st
 
@@ -31,11 +32,32 @@ def test_pid_proportional_and_clamp():
     assert p.update(100.0, 0.1) == 5.0
 
 
-def test_low_target_noses_down():
-    # Target below the vert_goal row -> nose DOWN (negative pitch rate, aerospace sign).
-    out, _ = _run([_ft(0.5, 0.75, ts=i) for i in range(8)])
+def test_dive_low_target_noses_down():
+    # DIVE: target below the vert_goal row -> nose DOWN (negative pitch rate, aerospace sign).
+    out, _ = _run([_ft(0.5, 0.75, ts=i) for i in range(8)], mode=GuidanceMode.DIVE)
     assert out.pitch_rate < 0.0
-    assert out.phase == "RATE"
+    assert out.phase == "DIVE"
+
+
+def test_track_holds_altitude_at_hover():
+    # TRACK follows but does NOT descend: thrust stays at the learned hover (no commit).
+    out, _ = _run([_ft(0.5, 0.55, ts=i) for i in range(8)], mode=GuidanceMode.TRACK)
+    assert out.phase == "TRACK"
+    assert abs(out.thrust - 0.30) < 1e-6          # hover, not descending
+
+
+def test_track_holds_range_noses_down_when_target_recedes():
+    # TRACK captures the engage bbox size, then noses down to CLOSE BACK when the target
+    # recedes (gets smaller) — maintaining the engagement range, never committing.
+    cfg, st = RateConfig(W, H), RateState()
+    seq = [_ft(0.5, 0.55, h=40, ts=0)]            # engage at h=40
+    seq += [_ft(0.5, 0.55, h=24, ts=i) for i in range(1, 8)]   # target receded (smaller)
+    out = None
+    for i, t in enumerate(seq):
+        out = compute_rate_intent(t, cfg, st, now=i * 0.05, mode=GuidanceMode.TRACK,
+                                  pitch_rad=0.0, roll_rad=0.0, gamma_rad=0.0, agl_m=40.0)
+    assert st.engage_h == 40.0
+    assert out.pitch_rate < 0.0                   # noses down to re-close the gap
 
 
 def test_below_horizon_target_descends():

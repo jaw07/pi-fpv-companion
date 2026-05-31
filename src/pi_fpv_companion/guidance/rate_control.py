@@ -29,7 +29,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
-from pi_fpv_companion.types import FilteredTarget
+from pi_fpv_companion.types import FilteredTarget, GuidanceMode
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -97,6 +97,11 @@ class RateConfig:
     ema_yaw: float = 0.18
     ema_roll: float = 0.35
     ema_thrust: float = 0.30
+    # TRACK: hold the engagement RANGE (follow without committing). Pitch-rate from a PI on
+    # the bbox-height error vs the size captured at TRACK entry; thrust holds altitude (hover).
+    track_kp: float = 3.0                  # rad/s per unit normalised bbox-height error
+    track_ki: float = 0.5
+    track_max_pitch_rad: float = 0.44      # ~25deg: TRACK leans gently, never the full dive
     # Acquisition / impact
     search_pitch_rad: float = -0.436       # ~-25deg: nose down to bring a below target into the FOV
     impact_agl_m: float = 12.0             # target lost below this AGL -> latch STOP
@@ -109,7 +114,9 @@ class RateState:
     thrust_pid: Optional[PID] = None
     yaw_pid: Optional[PID] = None
     roll_pid: Optional[PID] = None
+    track_pid: Optional[PID] = None
     hover: float = 0.30                    # learned hover thrust (set by the caller)
+    engage_h: Optional[float] = None       # bbox height captured at TRACK entry (range to hold)
     impacted: bool = False
     sm_pr: float = 0.0
     sm_yr: float = 0.0
@@ -124,12 +131,15 @@ class RateState:
                                   out_limit=cfg.thrust_out, i_limit=cfg.thrust_ilim)
             self.yaw_pid = PID(cfg.yaw_kp, 0.0, cfg.yaw_kd, out_limit=math.pi / 2, i_limit=0.5)
             self.roll_pid = PID(cfg.roll_kp, 0.01, cfg.roll_kd, out_limit=math.pi / 2, i_limit=0.5)
+            self.track_pid = PID(cfg.track_kp, cfg.track_ki, 0.0,
+                                 out_limit=cfg.track_max_pitch_rad, i_limit=0.5)
 
     def reset(self) -> None:
-        for p in (self.pitch_pid, self.thrust_pid, self.yaw_pid, self.roll_pid):
+        for p in (self.pitch_pid, self.thrust_pid, self.yaw_pid, self.roll_pid, self.track_pid):
             if p is not None:
                 p.reset()
         self.impacted = False
+        self.engage_h = None
         self.sm_pr = self.sm_yr = self.sm_rr = 0.0
         self.sm_thr = self.hover
         self.last_t = None
@@ -162,17 +172,20 @@ def _preprocess(cfg: RateConfig, cx_n: float, cy_n: float, roll_rad: float):
 
 
 def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state: RateState,
-                        now: float, *, pitch_rad: float, roll_rad: float, gamma_rad: float,
+                        now: float, *, mode: GuidanceMode = GuidanceMode.DIVE,
+                        pitch_rad: float, roll_rad: float, gamma_rad: float,
                         agl_m: float) -> RateIntent:
-    """One control step. `pitch_rad`/`roll_rad` = measured airframe attitude, `gamma_rad` =
-    flight-path angle (+climb), `agl_m` = height above ground. Returns the smoothed body-rate
-    intent. The caller sends it via backend.send_body_rates()."""
+    """One control step for the switch-selected `mode` (TRACK follows + holds range/altitude;
+    DIVE commits + dives onto the target). `pitch_rad`/`roll_rad` = measured airframe attitude,
+    `gamma_rad` = flight-path angle (+climb), `agl_m` = height above ground. Returns the smoothed
+    body-rate intent for backend.send_body_rates(). STANDBY is handled by the caller (release).
+    Reset state (RateState.reset) on a mode change / new lock."""
     state.ensure(cfg)
     dt = _clamp((now - state.last_t) if state.last_t is not None else 0.0, 0.0, 0.2)
     state.last_t = now
 
-    if state.impacted or (target is None and agl_m < cfg.impact_agl_m):
-        # IMPACT latch: lost the target near the ground -> stop for good (level + cut throttle).
+    if state.impacted or (mode is GuidanceMode.DIVE and target is None and agl_m < cfg.impact_agl_m):
+        # IMPACT latch (DIVE only): lost the target near the ground -> stop for good.
         state.impacted = True
         pr = _clamp(2.0 * (0.0 - pitch_rad), -0.6, 0.6)
         rr, yr, thrust = -cfg.roll_return * roll_rad, 0.0, 0.0
@@ -181,26 +194,36 @@ def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state
         det = target.detection
         cx_n, cy_n = det.x / cfg.frame_width, det.y / cfg.frame_height
         horiz_err, vert_err, in_frame_elev = _preprocess(cfg, cx_n, cy_n, roll_rad)
-        ang_to_target = in_frame_elev + pitch_rad + math.radians(cfg.camera_pitch_deg)
-        # PITCH rate frames the target to vert_goal; zero the rate at the attitude limit.
-        pr = state.pitch_pid.update(vert_err, dt)
-        if (pitch_rad <= -cfg.max_pitch_rad and pr < 0) or (pitch_rad >= cfg.max_pitch_rad and pr > 0):
-            pr = 0.0
-        # THRUST pursuit: drive the flight-path angle onto the LOS (+aim bias into the target).
-        thrust = _clamp(state.hover + state.thrust_pid.update(ang_to_target + cfg.aim_bias_rad - gamma_rad, dt),
-                        0.0, 1.0)
-        # DEADZONE: near-centred -> no horizontal command (kills the yaw-pan shake from box noise).
+        # HORIZONTAL (shared TRACK/DIVE): deadzone (no pan-shake on box noise) + yaw/roll blend
+        # + size-gain (less authority on a far/noisy box).
         he = 0.0 if abs(horiz_err) < cfg.horiz_deadzone_rad else horiz_err
         ae = abs(he)
         alpha = _clamp((ae - cfg.horiz_thresh) / max(cfg.max_horiz_err, ae - cfg.horiz_thresh), 0.0, 1.0)
         state.yaw_pid.kp = alpha * cfg.yaw_kp                 # yaw dominates far off-axis
         state.roll_pid.kp = (1.0 - alpha) * cfg.roll_kp       # roll banks near centre
-        yr = state.yaw_pid.update(he, dt)
-        rr = state.roll_pid.update(he, dt) - cfg.roll_return * roll_rad
-        sg = _clamp((det.h - 8.0) / 18.0, 0.3, 1.0)           # reduce horizontal authority when far/small
-        yr *= sg
-        rr *= sg
-        phase = "RATE"
+        sg = _clamp((det.h - 8.0) / 18.0, 0.3, 1.0)
+        yr = state.yaw_pid.update(he, dt) * sg
+        rr = (state.roll_pid.update(he, dt) - cfg.roll_return * roll_rad) * sg
+        if mode is GuidanceMode.DIVE:
+            # DIVE: frame the target to vert_goal (pitch) + PURSUIT thrust (velocity onto the LOS).
+            ang_to_target = in_frame_elev + pitch_rad + math.radians(cfg.camera_pitch_deg)
+            pr = state.pitch_pid.update(vert_err, dt)
+            if (pitch_rad <= -cfg.max_pitch_rad and pr < 0) or (pitch_rad >= cfg.max_pitch_rad and pr > 0):
+                pr = 0.0
+            thrust = _clamp(state.hover + state.thrust_pid.update(
+                ang_to_target + cfg.aim_bias_rad - gamma_rad, dt), 0.0, 1.0)
+            phase = "DIVE"
+        else:
+            # TRACK: follow + HOLD RANGE (pitch maintains the bbox size captured at entry) and
+            # HOLD ALTITUDE (thrust = hover). Does not commit/descend onto the target.
+            if state.engage_h is None:
+                state.engage_h = float(det.h)
+            size_err = (state.engage_h - det.h) / cfg.frame_height   # + = target too far -> nose down to close back
+            pr = -state.track_pid.update(size_err, dt)
+            if (pitch_rad <= -cfg.track_max_pitch_rad and pr < 0) or (pitch_rad >= cfg.track_max_pitch_rad and pr > 0):
+                pr = 0.0
+            thrust = state.hover
+            phase = "TRACK"
     else:
         # SEARCH (still high, no target): nose down to bring a below ground target into the FOV.
         pr = _clamp(2.0 * (cfg.search_pitch_rad - pitch_rad), -0.6, 0.6)

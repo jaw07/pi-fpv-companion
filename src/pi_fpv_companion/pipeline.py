@@ -23,6 +23,7 @@ from pi_fpv_companion.detect.async_detector import AsyncDetector
 from pi_fpv_companion.detect.base import Detector
 from pi_fpv_companion.guidance.safety import GateResult, SafetyConfig, gate
 from pi_fpv_companion.guidance.visual_servo import ClosureState, DiveState, ServoConfig, compute_intent
+from pi_fpv_companion.guidance.rate_control import RateConfig, RateState, compute_rate_intent
 from pi_fpv_companion.track.base import Tracker
 from pi_fpv_companion.types import GuidanceIntent, GuidanceMode, SwitchState, Target, ZERO_INTENT
 from typing import List
@@ -49,6 +50,7 @@ class Pipeline:
         on_status: Optional[StatusCallback] = None,
         force_mode: Optional[GuidanceMode] = None,
         camera_watchdog_s: float = 0.0,
+        rate_cfg: Optional[RateConfig] = None,
     ) -> None:
         self._force_mode = force_mode
         # Camera stall watchdog (0 = off; production sets ~5s). The IMX500/
@@ -74,6 +76,11 @@ class Pipeline:
         self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
         self._closure = ClosureState()                  # TRACK PI closure integrator
         self._dive = DiveState()                        # DIVE lean low-pass (anti-nod)
+        # guided_nogps body-RATE path (control_mode: guided_nogps). None -> the STABILIZE/RC
+        # path below is used unchanged. When set, step() dispatches to _step_rate instead.
+        self._rate_cfg = rate_cfg
+        self._rate_state = RateState()
+        self._last_rate_mode: Optional[GuidanceMode] = None
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -190,6 +197,10 @@ class Pipeline:
         target = self._target_filter.update(
             raw_target, bundle.width, bundle.height, now
         )
+        # guided_nogps body-RATE path: dispatch to the rate controller and return early; the
+        # STABILIZE/RC-override path below is left completely unchanged for other control_modes.
+        if self._rate_cfg is not None:
+            return self._tick_rate(switch, target, armed, now, bundle)
         if target is not None:
             # Preview the intent even in STANDBY (using TRACK behaviour) so the
             # HUD shows what guidance would do; the gate decides what's actually
@@ -243,4 +254,45 @@ class Pipeline:
         if self._on_status is not None:
             self._on_status(target, intent, gated, switch, armed, bundle, self._tracks)
 
+        return gated
+
+    def _tick_rate(self, switch, target, armed, now, bundle) -> GateResult:
+        """guided_nogps body-RATE dispatch (mode-aware: TRACK follows + holds range/altitude,
+        DIVE commits). STANDBY / not-control_ready -> release. Reuses the safety gate() for
+        staleness/quality/armed; the impact STOP is sent regardless (it IS the safe action at
+        ground contact). Resets the rate state on any mode change."""
+        import math as _math
+        fc = self._fc
+        if switch.mode is not self._last_rate_mode:
+            self._rate_state.reset()
+            self._last_rate_mode = switch.mode
+        ready = getattr(fc, "control_ready", None)
+        if switch.mode is GuidanceMode.STANDBY or (ready is not None and not ready()):
+            fc.release()
+            gated = GateResult(ZERO_INTENT, True, "standby/not-ready")
+            if self._on_status is not None:
+                self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
+            return gated
+        pitch = _math.radians(fc.pitch_deg()) if hasattr(fc, "pitch_deg") else 0.0
+        roll = _math.radians(fc.roll_deg()) if hasattr(fc, "roll_deg") else 0.0
+        gamma = fc.flight_path_angle_rad() if hasattr(fc, "flight_path_angle_rad") else 0.0
+        agl = fc.agl_m() if hasattr(fc, "agl_m") else 1e9
+        # Online hover trim: TRACK holds altitude, so nudge the hover thrust toward null climb
+        # (TWR-independent; the high-TWR airframe hovers well below 0.5).
+        if switch.mode is GuidanceMode.TRACK and target is not None and hasattr(fc, "climb_mps"):
+            self._rate_state.hover = max(0.05, min(0.6, self._rate_state.hover - 0.01 * fc.climb_mps()))
+        ri = compute_rate_intent(target, self._rate_cfg, self._rate_state, now, mode=switch.mode,
+                                 pitch_rad=pitch, roll_rad=roll, gamma_rad=gamma, agl_m=agl)
+        # Safety gate (armed / staleness / quality). Probe carries the commanded thrust+yaw.
+        probe = GuidanceIntent(0.0, 0.0, _math.degrees(ri.yaw_rate), ri.thrust,
+                               target.timestamp if target is not None else now)
+        gated = gate(probe, target, switch, armed, now, self._safety_cfg)
+        if ri.phase == "STOP" or not gated.muted:
+            fc.send_body_rates(ri.roll_rate, ri.pitch_rate, ri.yaw_rate, ri.thrust)
+        else:
+            # Muted (no/stale/low-quality target) -> SAFE HOLD: level + hover, never search-dive.
+            fc.send_body_rates(0.0, max(-0.6, min(0.6, 2.0 * (0.0 - pitch))), 0.0, self._rate_state.hover)
+        if self._on_status is not None:
+            hud = GuidanceIntent(0.0, 0.0, _math.degrees(ri.yaw_rate), ri.thrust, now)
+            self._on_status(target, hud, gated, switch, armed, bundle, self._tracks)
         return gated

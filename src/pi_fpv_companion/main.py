@@ -305,6 +305,14 @@ def main(argv=None) -> int:
     if force_mode is not None:
         print(f"  FORCE    mode={force_mode.name} (ignoring RC switch — bench/test)")
 
+    # guided_nogps body-RATE path: build a RateConfig (frame dims from the camera) so the
+    # pipeline dispatches to the rate controller. None for STABILIZE/ALT_HOLD (RC-override path).
+    rate_cfg = None
+    if cfg.fc.control_mode == "guided_nogps":
+        from pi_fpv_companion.guidance.rate_control import RateConfig
+        rate_cfg = RateConfig(frame_width=cfg.video.width, frame_height=cfg.video.height)
+        print(f"  guided_nogps RATE path active (frame {cfg.video.width}x{cfg.video.height})")
+
     pipeline = Pipeline(
         camera, tracker, cfg.servo, cfg.safety, fc,
         detector=detector,
@@ -313,6 +321,7 @@ def main(argv=None) -> int:
         on_status=on_status,
         force_mode=force_mode,
         camera_watchdog_s=5.0,   # restart the process if the camera stalls
+        rate_cfg=rate_cfg,
     )
 
     orig_tick = pipeline.tick
