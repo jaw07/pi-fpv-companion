@@ -356,6 +356,24 @@ def test_dive_lean_smoothing_steadies_the_pitch():
     assert abs(p2 - p1) < abs(p2_raw - p1)          # smoothed pitch changes far less
 
 
+def test_dive_pitch_fold_adds_descent_for_a_nosedown_attitude():
+    # Pitch-fold (Peregrine): a target at frame CENTRE while the nose is pitched DOWN
+    # is truly below the horizon — the nose-down lean depresses the fixed camera, so a
+    # far ground target sits at centre while the aircraft is still high above it. Frame-
+    # only homing reads "on bearing" and overflies; folding the measured pitch in keeps
+    # the dive descending. With the fold off, the same centred target commands no descent.
+    cfg = _dcfg(dive_pitch_fold=1.0)
+    cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
+    centred = _target(cx, cy)
+    level = compute_intent(centred, cfg, GuidanceMode.DIVE, pitch_deg_measured=0.0)
+    nosedown = compute_intent(centred, cfg, GuidanceMode.DIVE, pitch_deg_measured=-15.0)
+    assert abs(level.vertical_rate_mps) < 1e-6          # centred + level -> no descent
+    assert nosedown.vertical_rate_mps < -1.0            # centred + nose-down -> descend (truly below)
+    off = _dcfg(dive_pitch_fold=0.0)
+    assert abs(compute_intent(centred, off, GuidanceMode.DIVE,
+                              pitch_deg_measured=-15.0).vertical_rate_mps) < 1e-6  # fold off -> inert
+
+
 def test_dive_vertical_disabled_when_gain_zero():
     cfg = _dcfg(dive_vrate_gain=0.0)               # vertical homing off -> DIVE just leans
     cx, cy = cfg.frame_width / 2, cfg.frame_height / 2
