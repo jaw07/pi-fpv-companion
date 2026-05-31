@@ -25,7 +25,7 @@ from pi_fpv_companion.fc.ardupilot import ArduPilotBackend, ArduCopterRcMapping
 STABILIZE, GUIDED, GUIDED_NOGPS, AP = 0, 4, 20, 1
 W, H = 720, 576
 HFOV, VFOV = math.radians(66.3), math.radians(52.3)
-VERT_GOAL, HORI_GOAL = 0.15, 0.5
+VERT_GOAL, HORI_GOAL = 0.15, 0.5   # faithful reference: target near the TOP (maximise forward thrust)
 
 
 def clamp(v, lo, hi): return lo if v < lo else hi if v > hi else v
@@ -72,22 +72,41 @@ class Rate(Node):
         self.tracker = IouAssociator(max_lost_frames=25, max_match_dist_px=160.0)
         self.flt = AlphaBetaTargetFilter()
         HALFPI = math.pi / 2
-        self.pitch_pid = PID(0.6, 0.0, 0.3, out=math.radians(35))    # limit pitch slew -> no overshoot past the lean cap
-        self.thrust_pid = PID(1.1, 0.01, 0.2, out=0.5, ilim=5.0)
+        # Faithful reference gains: pitch/yaw/roll are RATE PIDs (rad/s); thrust is hover-relative [0,1].
+        self.pitch_pid = PID(1.0, 0.0, 0.2, out=HALFPI)   # Kd trimmed from ref 0.3: our ColorBlob box is noisier
+        self.thrust_pid = PID(1.1, 0.01, 0.2, out=0.5, ilim=5.0)   # out 0.5 -> thrust spans [0,1] (note: ArduCopter floors throttle, so DESCENT is driven by pitch-tilt, not this)
         self.yaw_pid = PID(4.0, 0.0, 0.1, out=HALFPI, ilim=0.5)
         self.roll_pid = PID(3.0, 0.01, 0.1, out=HALFPI, ilim=0.5)
         self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
         self.base_yaw_p, self.base_roll_p = 4.0, 3.0
-        self.max_pitch = math.radians(45); self.max_roll = math.radians(35)   # cap lean at 45: forward push w/o wasting thrust down
+        self.max_pitch = 1.13            # rad (~65deg): allow a steep terminal dive (more vertical = more
+                                         # descent) so the glide steepens onto the target; FC ANGLE_MAX hard-limits
+        self.camera_pitch = 0.0          # fixed bore-sight level with the airframe
         self.max_horiz_err = 0.4; self.horiz_thresh = 0.05
+        self.sm_yr = 0.0; self.sm_rr = 0.0; self.sm_pr = 0.0   # EMA state for all commanded rates (anti-jitter)
         self.writer = cv2.VideoWriter("/work/gz_rate.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 20.0, (W, H))
         self.frames = self.detected = 0; self.last_t = None
         self.create_subscription(Image, "/imx500/image", self.on_image, 10)
 
     def send_rates(self, rr, pr, yr, thrust):
         # type_mask 0b10000000 + identity quaternion + body rates + thrust (reference form)
-        self.mav.mav.set_attitude_target_send(0, self.mav.target_system, AP, 0b10000000,
+        tb = int(time.time() * 1000) & 0xFFFFFFFF
+        self.mav.mav.set_attitude_target_send(tb, self.mav.target_system, AP, 0b10000000,
                                               [1.0, 0.0, 0.0, 0.0], rr, pr, yr, thrust)
+
+    def _preprocess(self, cxn, cyn, roll_m):
+        # De-rotate the target pixel about frame centre by the airframe roll, and widen the
+        # effective FOV for that roll, so a banked airframe still computes correct angle errors.
+        dx, dy = cxn - 0.5, cyn - 0.5
+        c, s = math.cos(roll_m), math.sin(roll_m)
+        rx, ry = c * dx - s * dy, s * dx + c * dy
+        cxn, cyn = rx + 0.5, ry + 0.5
+        hfov = abs(HFOV * c) + abs(VFOV * s)
+        vfov = abs(VFOV * c) + abs(HFOV * s)
+        horiz_err = (cxn - HORI_GOAL) * hfov                       # + = target right of centre
+        vert_err = (VERT_GOAL - cyn) * vfov                        # + = target above the top goal
+        ang_to_tgt = (0.5 - cyn) * vfov + (self.pitch_m + self.camera_pitch)  # true angle below horizon
+        return horiz_err, vert_err, ang_to_tgt
 
     def on_image(self, msg):
         now = time.monotonic()
@@ -99,27 +118,43 @@ class Rate(Node):
         raw = self.tracker.consume(bgr, dets, now)
         target = self.flt.update(raw, msg.width, msg.height, now)
         pitch_m = math.radians(self.backend.pitch_deg()); roll_m = math.radians(self.backend.roll_deg())
+        self.pitch_m = pitch_m
         th = target.detection.h if target is not None else 0.0
         alt = self.backend.alt_m()
         if target is not None:
             det = target.detection; cxn, cyn = det.x / W, det.y / H
-            horiz_err = (cxn - HORI_GOAL) * HFOV
-            vert_err = (VERT_GOAL - cyn) * VFOV
-            ang_to_tgt = (0.5 - cyn) * VFOV + pitch_m
+            horiz_err, vert_err, ang_to_tgt = self._preprocess(cxn, cyn, roll_m)
+            # PITCH rate frames the target to the top goal; only zero the rate at the attitude limit.
             pr = self.pitch_pid.update(vert_err, dt)
             if (pitch_m <= -self.max_pitch and pr < 0) or (pitch_m >= self.max_pitch and pr > 0): pr = 0.0
-            thrust = clamp(0.5 + self.thrust_pid.update(ang_to_tgt, dt), 0.45, 0.6)  # keep thrust ~hover: the lean propels forward
+            # THRUST: hover + PID on the true angle below horizon (faithful reference). NOTE: ArduCopter
+            # floors the throttle, so real descent comes from PITCH steepening (tilts the hover-thrust
+            # vector: vertical lift = hover*cos(pitch)); this just trims it. The steep framing pitch is
+            # what dives the craft -> so vert_goal near the top (hard nose-down) is what makes it descend.
+            thrust = clamp(0.5 + self.thrust_pid.update(ang_to_tgt, dt), 0.0, 1.0)
+            # YAW/ROLL blend: yaw dominates far off-axis, roll banks near centre; roll returns to level.
             ae = abs(horiz_err)
             alpha = clamp((ae - self.horiz_thresh) / max(self.max_horiz_err, ae - self.horiz_thresh), 0.0, 1.0)
-            self.yaw_pid.kp = alpha * self.base_yaw_p          # yaw dominates far off-axis
-            self.roll_pid.kp = (1.0 - alpha) * self.base_roll_p  # roll banks on near centre
+            self.yaw_pid.kp = alpha * self.base_yaw_p
+            self.roll_pid.kp = (1.0 - alpha) * self.base_roll_p
             yr = self.yaw_pid.update(horiz_err, dt)
             rr = self.roll_pid.update(horiz_err, dt) - self.roll_return * roll_m
-            if (roll_m <= -self.max_roll and rr < 0) or (roll_m >= self.max_roll and rr > 0): rr = 0.0
             phase = "RATE"; tpx, tpy = det.x, det.y
         else:
-            rr, pr, yr, thrust = -self.roll_return * roll_m, math.radians(-12), 0.0, 0.5  # search: nose down, level roll
+            # SEARCH: nose down to ~-25deg to bring a below ground target into the FOV. Our targets sit
+            # below the airframe; from a steep engagement a level hover never sees the target, so the
+            # craft must look down to acquire. Hold level roll, hover thrust.
+            pr = clamp(2.0 * (math.radians(-25) - pitch_m), -0.6, 0.6)
+            rr, yr, thrust = -self.roll_return * roll_m, 0.0, 0.5
             phase = "SRCH"; tpx, tpy = -1, -1
+        # Low-pass ALL commanded rates: the ColorBlob box jitters in size/centre (worst when the
+        # target is small/far and again as it whips through the frame in the terminal), and the
+        # high-gain rate PIDs turn that into pitch/yaw/roll twitch. EMA-smoothing the rate the
+        # airframe is asked to fly removes the visible jitter/oscillation while the rate surface
+        # (airframe integrates the command) keeps the dive itself smooth.
+        b = 0.35
+        self.sm_pr += b * (pr - self.sm_pr); self.sm_yr += b * (yr - self.sm_yr); self.sm_rr += b * (rr - self.sm_rr)
+        pr, yr, rr = self.sm_pr, self.sm_yr, self.sm_rr
         self.send_rates(rr, pr, yr, thrust)
         for d in dets:
             cv2.rectangle(bgr, (int(d.x-d.w/2), int(d.y-d.h/2)), (int(d.x+d.w/2), int(d.y+d.h/2)), (120,120,120), 1)
@@ -133,8 +168,9 @@ class Rate(Node):
         cv2.putText(bgr, s, (8,22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
         self.writer.write(bgr); self.frames += 1; self.detected += bool(dets)
         if self.frames % 15 == 0:
-            self.get_logger().info("%s f=%d alt=%.0f det=%d h=%.0f py=%.0f pitch_m=%+.0f thr=%.2f" % (
-                phase, self.frames, alt, self.detected, th, tpy, math.degrees(pitch_m), thrust))
+            px, py_pos = self.backend.pos_xy()
+            self.get_logger().info("%s f=%d alt=%.0f x=%.0f y=%.0f det=%d h=%.0f py=%.0f pitch_m=%+.0f thr=%.2f" % (
+                phase, self.frames, alt, px, py_pos, self.detected, th, tpy, math.degrees(pitch_m), thrust))
 
 
 def main():
