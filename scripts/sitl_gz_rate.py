@@ -86,8 +86,8 @@ class Rate(Node):
                                          # ~one mush-angle above the bore, so aiming on the LOS passes a few m high)
         self.yaw_pid = PID(3.0, 0.0, 0.04, out=HALFPI, ilim=0.5)   # eased P + low Kd (anti-shake)
         self.roll_pid = PID(2.2, 0.01, 0.04, out=HALFPI, ilim=0.5) # eased P + low Kd (anti-shake)
-        self.roll_return = 5.0           # roll_position_p: rad/s per rad of current roll -> level
-        self.base_yaw_p, self.base_roll_p = 3.0, 2.5   # eased (anti-dither)
+        self.roll_return = 2.5           # softer return-to-level (5.0 + frame-rate lag overshot -> roll wobble/drift)
+        self.base_yaw_p, self.base_roll_p = 3.5, 0.8   # YAW centres horizontally (smooth); ROLL kept gentle (banking wobbles on this fixed-cam quad)
         self.max_pitch = 0.70            # rad (~40deg): moderate nose; with forward drag this yields a ~25-30deg
                                          # FLIGHT-PATH dive (the path is shallower than the nose on a powered multirotor)
         self.camera_pitch = 0.0          # fixed bore-sight level with the airframe
@@ -140,8 +140,7 @@ class Rate(Node):
             phase = "STOP"; tpx, tpy = -1, -1
         elif target is not None:
             det = target.detection; cxn, cyn = det.x / W, det.y / H
-            ac = 0.5; self.sm_cxn += ac * (cxn - self.sm_cxn); self.sm_cyn += ac * (cyn - self.sm_cyn)
-            horiz_err, vert_err, ang_to_tgt = self._preprocess(self.sm_cxn, self.sm_cyn, roll_m)
+            horiz_err, vert_err, ang_to_tgt = self._preprocess(cxn, cyn, roll_m)
             # PITCH rate frames the target to the top goal; only zero the rate at the attitude limit.
             pr = self.pitch_pid.update(vert_err, dt)
             if (pitch_m <= -self.max_pitch and pr < 0) or (pitch_m >= self.max_pitch and pr > 0): pr = 0.0
