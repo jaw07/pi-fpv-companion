@@ -1,15 +1,17 @@
 # ArduPilot SITL — validating the GPS-denied control surface
 
-> **Control path is RC_CHANNELS_OVERRIDE into STABILIZE (default) or ALT_HOLD**
-> (not GUIDED_NOGPS — see `docs/gps-denied-modes.md`). Validated on **ArduCopter
+> **The flight path is GUIDED_NOGPS + `SET_ATTITUDE_TARGET` body rates** (see
+> `docs/gps-denied-modes.md`); validated in SITL + Gazebo camera-in-the-loop
+> (`scripts/sitl_gz_validate.py` drives the production Pipeline against SITL:
+> GUID_OPTIONS bit-3 preflight, STANDBY safe-hold, Pi-death hold, TRACK→DIVE→impact).
+> The **RC-override fallbacks** (STABILIZE / ALT_HOLD) are validated on **ArduCopter
 > 4.6.3** (build it: `docker/sitl-4.6/Dockerfile`): `validate_sitl.py` 9/9 (RC
 > override steers correct sense, signs verified), `probe_nogps_modes.py` 10/10
 > (STABILIZE + ALT_HOLD enter/arm/steer GPS-off), `measure_dive_sitl.py` (dive:
-> STABILIZE ~16 m/s vs ALT_HOLD ~1–5 m/s → STABILIZE is the default).
+> STABILIZE ~16 m/s vs ALT_HOLD ~1–5 m/s).
 > 4.6 notes: EKF3 needs ~45–60 s to settle before arming; use GUIDED `NAV_TAKEOFF`
 > to get airborne (RC-override takeoff is unreliable on fresh 4.6); publish the
-> port as `-p 127.0.0.1:5760:5760` (IPv6-only publish blocks IPv4). The
-> GUIDED_NOGPS material below is historical context.
+> port as `-p 127.0.0.1:5760:5760` (IPv6-only publish blocks IPv4).
 
 ## Validated on `main` (2026-05-30, ArduCopter 4.6.3, commit 4eccd75)
 

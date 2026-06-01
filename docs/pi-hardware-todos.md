@@ -120,10 +120,14 @@ loud-but-non-fatal is correct). Camera path stays fatal.
 
 ## Behavior
 
-- [ ] **Failsafe gate timing**. Toggle the switch off; the next-frame intent
-      sent to the FC should be zero. Measure round-trip time.
+- [ ] **Failsafe gate timing**. Toggle ch7 to STANDBY; in guided_nogps the
+      companion should command a level hover (on the fallbacks, intent → zero /
+      release). Measure round-trip time. Also confirm leaving GUIDED_NOGPS hands
+      the sticks back at once.
 - [ ] **FC failsafe on Pi crash**. Kill the Pi process mid-flight in SITL; the
-      FC's GUIDED-mode timeout must take over within its configured window.
-- [ ] **GUIDED-mode behavior with stale commands**. ArduCopter is conservative
-      about stale velocity setpoints. Verify our 20 Hz command rate is high
-      enough to avoid the FC reverting to hover.
+      FC's GUIDED command timeout must take over (and `FS_GCS` → LAND fire once the
+      ~1 Hz GCS heartbeat stops) within its configured window.
+- [ ] **GUIDED_NOGPS behavior with stale commands**. ArduCopter is conservative
+      about stale `SET_ATTITUDE_TARGET` setpoints. Verify our command rate is high
+      enough to avoid the FC reverting to hover, and that `GUID_OPTIONS` bit 3
+      (ThrustAsThrust) reads back set so thrust is real throttle (not a climb-rate).
