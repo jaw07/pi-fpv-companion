@@ -452,18 +452,40 @@ from pi_fpv_companion.guidance.rate_control import RateConfig   # noqa: E402
 
 class RateStubFC(StubFC):
     """StubFC + the body-rate surface and airframe-state accessors the rate path uses."""
-    def __init__(self, **kw):
+    def __init__(self, pitch=0.0, climb=0.0, **kw):
         super().__init__(**kw)
         self.body_rates = []                   # (roll_rate, pitch_rate, yaw_rate, thrust)
+        self._pitch = pitch                    # deg
+        self._climb = climb                    # m/s, +up
 
     def send_body_rates(self, rr, pr, yr, thrust):
         self.body_rates.append((rr, pr, yr, thrust))
 
-    def pitch_deg(self): return 0.0
+    def pitch_deg(self): return self._pitch
     def roll_deg(self): return 0.0
     def flight_path_angle_rad(self): return 0.0
     def agl_m(self): return 40.0
-    def climb_mps(self): return 0.0
+    def climb_mps(self): return self._climb
+
+
+def test_hover_trim_only_learns_while_level():
+    # Online hover trim must adapt only while roughly LEVEL. Pitched-down chase (sinking by
+    # intent) must NOT crank hover, or a later hold/SEARCH balloons up on the bad hover.
+    cam = SyntheticCamera(width=720, height=576)
+
+    def _run_track(pitch_deg):
+        fc = RateStubFC(pitch=pitch_deg, climb=-2.0)   # descending
+        fc.mode = GuidanceMode.TRACK
+        pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2, max_lost_frames=10),
+                        _servo(), _safety(), fc, rate_cfg=RateConfig(720, 576))
+        for i in range(6):
+            pipe.tick(cam.render_at(i * 0.05))
+        return pipe._rate_state.hover
+
+    level = _run_track(0.0)
+    steep = _run_track(40.0)
+    assert level > 0.30, "level + sinking -> hover trims UP"
+    assert abs(steep - 0.30) < 1e-9, "pitched-down chase -> hover frozen"
 
 
 def test_guided_nogps_rate_path_sends_body_rates_not_sticks():

@@ -279,7 +279,11 @@ class Pipeline:
         agl = fc.agl_m() if hasattr(fc, "agl_m") else 1e9
         # Online hover trim: TRACK holds altitude, so nudge the hover thrust toward null climb
         # (TWR-independent; the high-TWR airframe hovers well below 0.5).
-        if switch.mode is GuidanceMode.TRACK and target is not None and hasattr(fc, "climb_mps"):
+        # Only learn hover while roughly LEVEL: climb then reflects hover error, not a commanded
+        # lean/descent. Trimming during a pitched-down chase would crank hover up (the craft is
+        # sinking by intent), then a subsequent SEARCH/hold would balloon up on that bad hover.
+        if (switch.mode is GuidanceMode.TRACK and target is not None
+                and hasattr(fc, "climb_mps") and abs(pitch) < 0.26):
             self._rate_state.hover = max(0.05, min(0.6, self._rate_state.hover - 0.01 * fc.climb_mps()))
         ri = compute_rate_intent(target, self._rate_cfg, self._rate_state, now, mode=switch.mode,
                                  pitch_rad=pitch, roll_rad=roll, gamma_rad=gamma, agl_m=agl)

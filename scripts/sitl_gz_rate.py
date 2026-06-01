@@ -89,8 +89,9 @@ class Rate(Node):
         roll = math.radians(self.backend.roll_deg())
         gamma = self.backend.flight_path_angle_rad()
         agl = self.backend.agl_m()
-        # Online hover trim during TRACK (hold altitude -> trim hover toward null climb).
-        if mode is GuidanceMode.TRACK and target is not None:
+        # Online hover trim during TRACK, but ONLY while roughly level (else a pitched-down chase
+        # cranks hover up on intentional sink -> later hold/SEARCH balloons up). Matches production.
+        if mode is GuidanceMode.TRACK and target is not None and abs(pitch) < 0.26:
             self.state.hover = clamp(self.state.hover - 0.01 * self.backend.climb_mps(), 0.05, 0.6)
         ri = compute_rate_intent(target, self.cfg, self.state, now, mode=mode,
                                  pitch_rad=pitch, roll_rad=roll, gamma_rad=gamma, agl_m=agl)
