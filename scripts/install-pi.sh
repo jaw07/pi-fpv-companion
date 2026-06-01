@@ -79,6 +79,6 @@ fi
 
 echo
 echo "==> install complete"
-echo "    edit:  $INSTALL_DIR/config/default.yaml"
+echo "    edit:  $INSTALL_DIR/config/imx500.yaml"
 echo "    start: sudo systemctl start pi-fpv-companion"
 echo "    logs:  journalctl -u pi-fpv-companion -f"

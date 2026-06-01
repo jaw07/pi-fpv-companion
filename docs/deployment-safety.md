@@ -123,9 +123,9 @@ flips, and confidence decay; the safety gate mutes below
 ## 6. Detector path (audit §3)
 
 - [ ] Flight detector is **IMX500** (`camera.type: imx500`) — on-sensor
-      inference, ~30 FPS, ~0 host CPU.
-- [ ] CPU-NanoDet (`detector.type: nanodet`) is a **dev/sim path only**
-      (~4 Hz on Zero 2W — a slideshow, not a tracker). Not a flight config.
+      inference, ~30 FPS, ~0 host CPU. It is the only flight camera/detector.
+- [ ] Dev/sim hosts use light detectors (`color`, `haar`, ArUco) on synthetic,
+      file, or webcam sources. Never a flight config.
 
 ## 7. General
 

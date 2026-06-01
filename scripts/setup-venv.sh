@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# One-shot venv bootstrap. Handles the ncnn -> opencv-python -> contrib conflict
-# by force-reinstalling opencv-contrib-python last (so its cv2 module wins on import).
+# One-shot venv bootstrap. Ensures opencv-contrib-python wins on import (the classical
+# cv2.legacy trackers need it) by force-reinstalling it last, in case any dependency
+# pulls in plain opencv-python alongside it.
 #
 # Run from project root:
 #   bash scripts/setup-venv.sh
@@ -21,10 +22,10 @@ PIP="$VENV_DIR/bin/pip"
 echo "installing package + deps ..."
 "$PIP" install -q -e .
 
-# ncnn declares opencv-python as a dep. That installs alongside opencv-contrib-python
-# and silently wins on import, breaking cv2.legacy.TrackerKCF/CSRT/etc. Force-reinstall
-# the contrib package as the last step so its cv2.so is the one that ends up resolved.
-echo "fixing opencv-python/contrib conflict ..."
+# If any dep pulls in opencv-python, it installs alongside opencv-contrib-python and can
+# silently win on import, breaking cv2.legacy.TrackerKCF/CSRT/etc. Force-reinstall the
+# contrib package as the last step so its cv2.so is the one that ends up resolved.
+echo "ensuring opencv-contrib wins on import ..."
 "$PIP" uninstall -q -y opencv-python || true
 "$PIP" install -q --force-reinstall --no-deps opencv-contrib-python
 

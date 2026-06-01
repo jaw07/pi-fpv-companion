@@ -1,15 +1,14 @@
 """Detector abstraction.
 
-Implementations:
+Implementations (dev/sim only — the flight camera does inference on-sensor):
 
-  NanoDetDetector    — NanoDet-Plus via NCNN on the Pi CPU. Pareto-optimal for Zero 2W.
-  Yolov8Detector     — YOLOv8 via NCNN (alternative to NanoDet)
   HaarFaceDetector   — OpenCV bundled Haar cascade; webcam dev validation
-  ColorBlobDetector  — HSV mask + contour finder; no model file required, dev only
+  ColorBlobDetector  — HSV mask + contour finder; no model file (Gazebo SITL sim)
+  ArucoDetector      — fiducial markers; Webots/SITL bring-up
 
-On the IMX500 path no Detector is used — detections are produced by the camera
-itself and surface inline in the FrameBundle. Pipeline runs a Detector only
-when the bundle's detections list is empty.
+On the IMX500 (flight) path no Detector is used — detections are produced by the
+camera itself and surface inline in the FrameBundle. Pipeline runs a Detector
+only when the bundle's detections list is empty (file/webcam dev cameras).
 """
 from __future__ import annotations
 from typing import List, Protocol

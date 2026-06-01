@@ -1,12 +1,10 @@
 """YAML config loader.
 
 Parses `config/*.yaml` into typed config objects that the rest of the project
-already uses (`ServoConfig`, `SafetyConfig`, `BetaflightMapping`, `NanoDetConfig`).
+already uses (`ServoConfig`, `SafetyConfig`, `BetaflightMapping`).
 Also selects which Camera / Detector / Tracker / FC backend implementations to
 construct — actual construction lives in `main.py` since it needs runtime
 dependencies (a model file, a serial device, etc.).
-
-Backward-compatible with the existing `config/default.yaml` shape.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -30,25 +28,19 @@ class VideoSection:
 
 @dataclass
 class CameraSection:
-    type: str = "picam"                  # picam | imx500 | webcam | file | synthetic
+    type: str = "imx500"                 # imx500 (flight) | webcam | file | synthetic (dev)
     framerate: int = 30
     imx500_model: str = ""
     file_path: str = ""
     webcam_device: int = 0
-    # PiCam tuning (FPV defaults: short exposure = low motion blur on a moving drone)
-    exposure_mode: str = "short"         # short | normal | long
-    noise_reduction: str = "fast"        # off | fast | high_quality
-    hflip: bool = False
-    vflip: bool = False
 
 
 @dataclass
 class DetectorSection:
-    type: str = "nanodet"                # nanodet | yolov8 | color | haar | none
-    model_dir: str = ""
-    input_size: int = 320
-    conf_threshold: float = 0.35
-    nms_threshold: float = 0.45
+    # IMX500 (flight) and SyntheticCamera emit detections inline -> type: none. color/haar are
+    # light dev detectors for the file/webcam dev path.
+    type: str = "none"                   # none | color | haar
+    conf_threshold: float = 0.35         # IMX500 on-sensor confidence gate
     classes_of_interest: List[str] = field(default_factory=list)
     detect_period_frames: int = 10
 
@@ -118,14 +110,6 @@ class FcSection:
 
 
 @dataclass
-class CpuSection:
-    # Pin the NCNN detector worker to a dedicated core set so it can't starve
-    # camera capture + the main pipeline loop. Linux + >=4 cores only; otherwise
-    # a silent no-op. On the 4-core Zero 2W: pipeline gets {0,1}, detector {2,3}.
-    pin: bool = True
-
-
-@dataclass
 class AppConfig:
     video: VideoSection
     camera: CameraSection
@@ -134,7 +118,6 @@ class AppConfig:
     fc: FcSection
     servo: ServoConfig
     safety: SafetyConfig
-    cpu: CpuSection
 
 
 def _video(d: Dict[str, Any]) -> VideoSection:
@@ -148,25 +131,18 @@ def _video(d: Dict[str, Any]) -> VideoSection:
 
 def _camera(d: Dict[str, Any]) -> CameraSection:
     return CameraSection(
-        type=d.get("type", "picam"),
+        type=d.get("type", "imx500"),
         framerate=d.get("framerate", 30),
         imx500_model=d.get("imx500_model", ""),
         file_path=d.get("file_path", ""),
         webcam_device=d.get("webcam_device", 0),
-        exposure_mode=d.get("exposure_mode", "short"),
-        noise_reduction=d.get("noise_reduction", "fast"),
-        hflip=d.get("hflip", False),
-        vflip=d.get("vflip", False),
     )
 
 
 def _detector(d: Dict[str, Any]) -> DetectorSection:
     return DetectorSection(
-        type=d.get("type", "nanodet"),
-        model_dir=d.get("model_dir", ""),
-        input_size=d.get("input_size", 320),
+        type=d.get("type", "none"),
         conf_threshold=d.get("conf_threshold", 0.35),
-        nms_threshold=d.get("nms_threshold", 0.45),
         classes_of_interest=list(d.get("classes_of_interest", [])),
         detect_period_frames=d.get("detect_period_frames", 10),
     )
@@ -396,7 +372,6 @@ def load(path: str | Path) -> AppConfig:
         fc=_fc(raw.get("fc", {})),
         servo=_servo(raw.get("guidance", {}), video.width, video.height),
         safety=_safety(raw.get("safety", {})),
-        cpu=CpuSection(pin=raw.get("cpu", {}).get("pin", True)),
     )
     _validate(cfg)
     return cfg
