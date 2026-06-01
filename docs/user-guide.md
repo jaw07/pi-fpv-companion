@@ -5,14 +5,15 @@
 
 ## The one rule
 
-**The 3-position switch is your steering wheel.** Flick it down and the companion
-lets go — you have the sticks, instantly. Keep a finger near it the whole time.
+**Your flight-mode switch is the kill switch.** Flick the FC out of GUIDED_NOGPS
+and the companion lets go — you have the sticks, instantly. The 3-position switch
+(ch7) is your steering wheel within an engagement. Keep a finger near both.
 
-| Switch | Mode | What happens |
+| ch7 | Mode | What happens |
 |--------|------|--------------|
-| **Down** | STANDBY | Companion is asleep. **You fly, normally.** |
-| **Middle** | TRACK | It takes the sticks: yaws to center the target, follows, holds height. |
-| **Up** | DIVE | It commits: noses down and drops onto the target. |
+| **Down** | STANDBY | Companion holds a **level hover** (it's still flying — to get the sticks back, leave GUIDED_NOGPS). |
+| **Middle** | TRACK | It flies: yaws to center the target and holds the range. |
+| **Up** | DIVE | It commits: pursuit guidance drops onto the target. |
 
 That's the whole mental model. Everything below is making it work and trusting it.
 
@@ -34,9 +35,12 @@ Say yes to the IMX500 firmware and the boot config when asked, then **reboot**.
 ### c. Set up the flight controller (ArduCopter 4.6+)
 On every boot the companion **validates the FC params it needs and writes any that
 are wrong** (logged at startup; disable with `fc.enforce_params_on_start: false`).
-It auto-enforces **`ANGLE_MAX`** (= `fc.angle_max_deg`, so commanded lean = actual
-lean) and **`RC7_OPTION`/`RC9_OPTION` = 0** (so the FC leaves the companion's mode
-+ select channels alone). Add more with `fc.enforce_params: {SR2_EXTRA2: 5, ...}`.
+For the guided_nogps flight path it sets+verifies **`GUID_OPTIONS` bit 3
+(ThrustAsThrust)** — without it the FC reads the thrust field as a climb-rate and
+the dive planes. It also auto-enforces **`ANGLE_MAX`** (= `fc.angle_max_deg`, for
+the RC-override fallbacks) and **`RC7_OPTION`/`RC9_OPTION` = 0** (so the FC leaves
+the companion's mode + select channels alone). Add more with
+`fc.enforce_params: {SR2_EXTRA2: 5, ...}`.
 
 What it will **not** touch (set these yourself in Mission Planner, once):
 
@@ -44,7 +48,8 @@ What it will **not** touch (set these yourself in Mission Planner, once):
 |-------|-------|---------|
 | `SERIALn_PROTOCOL` / `_BAUD` | `2` / `115` | MAVLink on the UART wired to the Pi (the link itself — can't auto-fix the port it's on) |
 | `SRn_EXTRA2` | `≥ 5` | streams climb rate / attitude (or add to `enforce_params`) |
-| flight-mode switch | → **STABILIZE** | the mode the companion flies in (your modes, not ours) |
+| flight-mode switch | → **GUIDED_NOGPS** | the mode the companion flies in (your modes, not ours) |
+| `FS_GCS_ENABLE` | → **LAND** | GCS-failsafe action if the Pi dies (RTL/SmartRTL need GPS — use LAND) |
 | ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
 | ch9 (a spare input, e.g. rocker) | cycle target (tap) | maps in FreedomTX → ch9 |
 
@@ -56,7 +61,8 @@ Edit `config/imx500.yaml` on the Pi (`/opt/pi-fpv-companion/config/imx500.yaml`)
 ```yaml
 camera: { type: imx500, hflip: false, vflip: false }   # flip to match your mount
 fc:
-  control_mode: stabilize     # diving mode (default). 'althold' = gentle/altitude-safe.
+  control_mode: guided_nogps  # flight path (FC in GUIDED_NOGPS). 'stabilize'/'althold'
+                              #   = RC-override fallbacks (set to match the FC mode).
   rc_roll_sign: 1             # <- you'll confirm these on the bench (Part 2)
   rc_pitch_sign: 1
   rc_yaw_sign: 1
@@ -96,9 +102,11 @@ Walk an object (a person works) across the camera and check:
   **eases off**, doesn't lunge. If any axis goes the wrong way, flip that
   `rc_*_sign` (or fix `camera.hflip`) and re-check. *A wrong sign makes it chase
   away from the target, faster and faster — find it here, not in the air.*
-- ✋ **You can take it back** — set the real switch to STANDBY → your sticks
-  return at once. Then kill the program (Ctrl-C) mid-track → the FC falls back to
-  your radio within a second or two.
+- ✋ **You can take it back** — flip the FC-mode channel out of GUIDED_NOGPS → your
+  sticks return at once (ch7 STANDBY only parks a hover). Then kill the program
+  (Ctrl-C) mid-track → in GUIDED_NOGPS the FC holds via its command timeout (set
+  `FS_GCS_ENABLE` to LAND); on the stabilize/althold fallbacks it falls back to your
+  radio within a second or two.
 
 Re-enable the service when done: `sudo systemctl start pi-fpv-companion`.
 
@@ -112,8 +120,9 @@ like a maiden flight.
 **1. Power up and warm up.** Battery in, give it ~a minute. In your goggles you
 should see the live feed with boxes on detected objects. Switch **down** (STANDBY).
 
-**2. Take off and fly — normally.** It's just your STABILIZE quad right now; the
-companion is asleep. Get comfortable, climb to a safe height with margin below you.
+**2. Take off and fly — normally.** Fly in your usual mode; the companion only
+takes over once you're in GUIDED_NOGPS with ch7 engaged. Get comfortable, climb to
+a safe height with margin below you.
 
 **3. Line up — and pick your target.** Put targets in the frame. With the
 multi-target tracker (`tracker.type: multi_iou`, the IMX500 default) the HUD shows
@@ -126,15 +135,16 @@ mid-engagement (and if your target is lost while committed it **holds**, it neve
 silently re-targets). Choose before you commit; to re-choose, flick back to
 STANDBY. (No select channel wired? It auto-locks the highest-confidence detection.)
 
-**4. Hand it the wheel — flick to TRACK (middle).** Now *let go of the sticks.*
-The companion yaws to center the target, leans in to follow, and holds your
-altitude by itself. Watch it turn **toward** the target. It should feel like a
-smooth, hands-off chase that keeps the target the same size in frame.
-> If it ever turns *away* or wanders off — flick to STANDBY immediately. Something's
-> miscalibrated; land and recheck Part 2.
+**4. Hand it the wheel — flick to TRACK (middle).** With the FC in GUIDED_NOGPS,
+*let go of the sticks.* The companion commands body rates to yaw toward the target
+and follow it. Watch it turn **toward** the target. It should feel like a smooth,
+hands-off chase that keeps the target the same size in frame.
+> If it ever turns *away* or wanders off — leave GUIDED_NOGPS immediately (or flick
+> to STANDBY for a hover). Something's miscalibrated; land and recheck Part 2.
 
-**5. Follow as long as you like.** Re-take the sticks anytime by flicking to
-STANDBY. TRACK won't dive — it just follows and holds range.
+**5. Follow as long as you like.** Take the sticks back anytime by flipping the FC
+out of GUIDED_NOGPS (ch7 STANDBY just holds a hover). TRACK won't dive — it just
+follows and holds range.
 
 **6. Commit — flick to DIVE (up).** It commits to the target and closes, moving
 altitude onto it — **dives** onto a target below you, **holds** for one level
@@ -147,14 +157,16 @@ end the dive.
 > ahead (shallow enough); something steeply below you is below the frame. Engage
 > from a moderate altitude for the most reliable closure.
 
-**7. Bail out / finish — flick to STANDBY (down).** Instant manual control. Pull
+**7. Bail out / finish — leave GUIDED_NOGPS (flight-mode switch).** Instant manual
+control. (Flicking ch7 to STANDBY parks it in a level hover — still flying.) Pull
 up, recover, fly home.
 
-That's it. STANDBY → fly. TRACK → it follows. DIVE → it commits. STANDBY → you're
-back.
+That's it. GUIDED_NOGPS + ch7 TRACK → it follows. DIVE → it commits. Out of
+GUIDED_NOGPS → you're back.
 
 ### What each mode feels like
-- **STANDBY** — nothing different; you're flying.
+- **STANDBY** — a steady level hover (the companion is holding it; you're not on the
+  sticks until you leave GUIDED_NOGPS).
 - **TRACK** — hands-off; it gently yaws and leans to keep the target centered and
   **the same distance away that you were when you flicked to TRACK**, holding
   height. It maintains that gap as the target moves — following, not closing in,
@@ -188,14 +200,15 @@ pi-fpv-companion`). One change at a time.
 | It holds altitude poorly | confirm `SRn_EXTRA2` is streaming; nudge `stab_hover_throttle_us` |
 | Altitude bounces/hunts | lower `stab_hover_learn_kp`, then `stab_hover_learn_gain` |
 | Stop chasing wrong objects | trim `classes_of_interest`; raise `safety.min_track_quality` |
-| Calm, altitude-safe mode | `fc.control_mode: althold` (won't dive hard, but holds height) |
+| Fall back off guided_nogps | `fc.control_mode: stabilize` or `althold` (RC override; set the FC to that mode) |
+| Calm, altitude-safe fallback | `fc.control_mode: althold` (won't dive hard, but holds height) |
 
 ---
 
 ## Part 5 — When something's off
 
-**Abort, always:** switch to STANDBY, or change your flight-mode switch out of
-STABILIZE. Either gives you full manual control immediately.
+**Abort, always:** change your flight-mode switch out of GUIDED_NOGPS — that gives
+you full manual control immediately. (ch7 STANDBY only parks a level hover.)
 
 - **Watch it live:** the composited feed (bbox + HUD) is on the analog composite / TV out.
 - **Read the logs:** `journalctl -u pi-fpv-companion -f`
@@ -214,11 +227,12 @@ STABILIZE. Either gives you full manual control immediately.
 
 ## Please remember
 
-- **No GPS, and in STABILIZE no altitude floor** — a dive keeps descending until
-  *you* stop it. Fly with height to spare and a finger on the switch.
+- **No GPS, and no altitude floor** — a dive keeps descending until *you* stop it.
+  Fly with height to spare and a finger on the flight-mode switch.
 - **The bench check (Part 2) is the real safety test.** A wrong stick sign is the
   one thing that turns this dangerous; SITL can't catch it for your airframe.
-- **You are the safety system:** the engage switch, a flight-mode switch back to
-  manual, and the FC's own failsafes. Keep all three.
+- **You are the safety system:** the ch7 engage switch, the flight-mode switch back
+  to manual (out of GUIDED_NOGPS), and the FC's own failsafes (incl. `FS_GCS` →
+  LAND). Keep all of them.
 - Proven in simulation (ArduCopter 4.6.3), **not yet on a real airframe** — your
   first flights are the real test. Go slow, go low, build up.

@@ -11,74 +11,69 @@ mitigations below; none is sufficient alone.
 
 ---
 
-## 1. Engage switch + pilot stays in the matching mode (audit §1, gps-denied-modes.md)
+## 1. Engage switch + handover — guided_nogps flight path (audit §1, gps-denied-modes.md)
 
-The control path is **RC_CHANNELS_OVERRIDE into a self-levelling pilot mode**
-(default **STABILIZE**; ALT_HOLD selectable) — not GUIDED_NOGPS. The pilot keeps
-the craft in that mode; while the engage switch is in TRACK/DIVE the Pi overrides
-the AETR sticks, and in STANDBY it **releases** them (`release()` sends override
-0 = "use the receiver"). Because it's a pilot mode, handback is immediate and
-needs no flight-mode change — and a Pi crash is *fail-safe*: when override frames
-stop, ArduPilot's RC-override timeout reverts the channels to the real radio.
+The flight path is **GUIDED_NOGPS + `SET_ATTITUDE_TARGET`** (body rates + real thrust):
+`fc.control_mode: guided_nogps`. The pilot's flight-MODE channel selects GUIDED_NOGPS to
+hand the airframe to the companion; **ch7** (engage) selects STANDBY / TRACK / DIVE; **ch9**
+cycles the locked target among detections. The companion never changes flight mode itself.
 
-`fc.control_mode` MUST match the FC's flight mode (stabilize ↔ STABILIZE,
-althold ↔ ALT_HOLD) or the throttle mapping is wrong.
+Handover / failsafe (validated in SITL + Gazebo via `scripts/sitl_gz_validate.py`):
+- **Manual recovery — always available, independent of the Pi:** the pilot flips the FC-mode
+  channel OUT of GUIDED_NOGPS (e.g. to STABILIZE). The companion sees the FC is no longer in
+  GUIDED_NOGPS (`control_ready()` false) and commands nothing → instant manual control.
+- **STANDBY (ch7) while still in GUIDED_NOGPS:** the companion HOLDS a level hover (self-trimming
+  to null climb). It never leaves the FC coasting on the last (possibly dive) attitude.
+- **Pi death:** with no `SET_ATTITUDE_TARGET`, ArduCopter's GUIDED command timeout holds the
+  craft; the companion's ~1 Hz GCS heartbeat also arms FS_GCS (§2). Recovery is the FC-mode flip.
 
 Required wiring / config:
-- [ ] The "engage" switch is a spare 3-position channel; `fc.switch_channel`
-      points at it (STANDBY / TRACK / DIVE via track/dive thresholds).
-- [ ] The pilot's flight-MODE channel selects the mode matching `fc.control_mode`
-      (STABILIZE by default). The Pi never changes flight mode.
-- [ ] The Pi overrides only the AETR channels (RCMAP roll/pitch/throttle/yaw,
-      default 1–4); it releases 5–8 so the pilot keeps mode + engage.
-- [ ] Bench-verified: flipping the engage switch to STANDBY instantly returns
-      full manual stick authority (override released).
-- [ ] Bench-verified: killing the Pi process (`sudo systemctl stop
-      pi-fpv-companion`) mid-engagement — within the FC's RC-override timeout
-      (`RC_OVERRIDE_TIME`, ~1–3 s) the radio sticks resume automatically.
+- [ ] `fc.switch_channel: 7` — spare 3-position channel (STANDBY / TRACK / DIVE via the
+      track/dive thresholds).
+- [ ] `fc.select_channel: 9` — spare channel; a rising edge past 1700 µs **in STANDBY** cycles
+      the locked target (needs `tracker.type: multi_iou`). Frozen once engaged.
+- [ ] The pilot's flight-MODE channel can select **GUIDED_NOGPS** (engage) *and* a pilot mode
+      like STABILIZE (manual recovery). Bench-verify the mode switch reaches both.
+- [ ] Bench-verified: flipping the FC mode OUT of GUIDED_NOGPS returns full manual stick authority.
+- [ ] Bench-verified (props off): ch7 → STANDBY with the FC in GUIDED_NOGPS commands a LEVEL
+      hover (level attitude + hover thrust), not a dive attitude.
+- [ ] Bench-verified: killing the Pi (`sudo systemctl stop pi-fpv-companion`) → the craft holds
+      (GUIDED timeout / FS_GCS) and the pilot's FC-mode flip recovers it.
 
-## 2. ArduPilot RC-override flight (audit §1, gps-denied-modes.md)
+## 2. GUIDED_NOGPS flight params (audit §1, gps-denied-modes.md)
 
-A bare FPV quad has no GPS / EKF position estimate. The backend injects AETR
-sticks via `RC_CHANNELS_OVERRIDE` — needs only baro + IMU, no GPS, no EKF origin
-(SITL-proven on 4.6.3). No SET_ATTITUDE_TARGET, no GUIDED, no `GUID_OPTIONS`.
+A bare FPV quad has no GPS / EKF position estimate. GUIDED_NOGPS + `SET_ATTITUDE_TARGET`
+(body rates + thrust) needs only baro + IMU — no GPS, no EKF origin (SITL-proven on 4.6.3).
 
-- [ ] FC firmware: ArduCopter 4.6+. On boot the companion **validates + writes**
-      the FC params it needs — `ANGLE_MAX` (= `fc.angle_max_deg`, so commanded lean
-      = actual lean) and the companion RC channels' `*_OPTION = 0` — verifying each
-      write. **Check the startup log** (`ok`/`set`/`write-fail` per param). It does
-      NOT touch serial/baud (the link it's on) or flight modes/failsafes — set
-      those yourself. Disable with `fc.enforce_params_on_start: false`.
-- [ ] **`control_mode: stabilize` (default) has no FC altitude hold** — throttle
-      is direct. TRACK altitude is held by the companion's **adaptive hover**
-      (a vertical-velocity PI loop on `VFR_HUD.climb`: it learns the hover throttle
-      and damps climb, SITL-proven to level out from a wrong seed in ~6 s). So set
-      `stab_hover_throttle_us` to a *rough* seed only — the learner refines it.
-      **Requires `VFR_HUD` streamed from the FC** (SR*_EXTRA2); without it, adaptive
-      hover falls back to the fixed seed. There is NO altitude *floor*: a commanded
-      DIVE descends until released (SITL: ~16 m/s, 77° path) — intentional for a
-      diving craft. Fly with altitude margin and a finger on the engage switch.
-      Bench-verify the learner holds level before trusting it.
-- [ ] **Closed-loop DIVE vertical-rate sign** (`stabilize` only) — the dive's
-      throttle loop tracks a commanded climb rate on `VFR_HUD.climb`. A reversed
-      throttle channel or inverted climb sign makes the loop **diverge** (commands
-      descent → climbs → commands more descent → flyaway). This is as dangerous as
-      a yaw-sign inversion. **Validate in SITL before flight**:
-      `scripts/validate_vrate_sitl.py` must show a commanded **−3 m/s descends**
-      and **+2 m/s climbs** (not reversed). The bench check (props off) cannot test
-      this — it needs a hover; confirm in SITL or a cautious tethered/altitude-
-      margin hover with a finger on the engage switch. **Also requires `VFR_HUD`**;
-      without it the dive falls back to an open-loop throttle map (still descends,
-      but uncalibrated).
-- [ ] `control_mode: althold` alternative: throttle = climb rate (0.5 = hold via
-      baro), descent capped at `PILOT_SPEED_DN`. Safer altitude, gentle dive only.
-- [ ] **Stick signs** (`rc_roll_sign` / `rc_pitch_sign` / `rc_yaw_sign`):
-      bench/SITL-validate per §4. Defaults (+1,+1,+1) are SITL-correct but
-      TX/RCMAP/airframe dependent.
-- [ ] The vehicle arms in the chosen mode and responds to test sticks (props off)
-      in the correct directions.
-- [ ] `RC_OVERRIDE_TIME` (or equivalent) set so a Pi stall reverts to the radio
-      quickly. FC's own RC-loss + battery failsafes configured/tested.
+- [ ] FC firmware: ArduCopter 4.6+. On boot the companion **validates + writes** the params it
+      needs — `ANGLE_MAX`, the companion RC channels' `*_OPTION = 0`, and **`GUID_OPTIONS` bit 3
+      (ThrustAsThrust)** (OR-ed in, verified by readback). **Check the startup log**
+      (`ok`/`set`/`write-fail`; the `GUID_OPTIONS(ThrustAsThrust)` line must report success).
+      It does NOT touch serial/baud or the failsafe params — set those yourself.
+      Disable with `fc.enforce_params_on_start: false`.
+- [ ] **`GUID_OPTIONS` bit 3 is MANDATORY.** Without it the FC reads the thrust field as a
+      climb-rate (0.5 = hold altitude), so "throttle 0" never descends and the dive planes.
+      SITL-confirmed the preflight sets it (readback = 8).
+- [ ] **GPS-denied GCS failsafe = LAND.** Set `FS_GCS_ENABLE`/`FS_OPTIONS` so a lost GCS lands
+      (NOT RTL/SmartRTL — they need GPS). The companion emits a ~1 Hz GCS heartbeat so FS_GCS is
+      armed on Pi death; the GUIDED command timeout is the inner backstop. Configure + bench-test.
+- [ ] **Arming GPS-denied:** the EKF must allow arming without GPS (e.g. `EK3_SRC1_POSXY`/`VELXY`
+      = 0, `POSZ` = Baro; relax `ARMING_CHECK` only on the bench). The craft must reach
+      GUIDED_NOGPS armed + airborne (e.g. take off in a pilot mode, then switch to GUIDED_NOGPS).
+- [ ] **No altitude floor:** a commanded DIVE descends to impact; the impact latch cuts throttle
+      at ground contact (AGL keyed to the disarmed-captured home). Fly with margin; finger on ch7.
+- [ ] **Hover thrust is learned in flight** (TWR-independent — a high-TWR quad hovers well below
+      0.5): the rate path trims hover toward null climb during TRACK and the STANDBY hover-hold.
+      **Requires `VFR_HUD` streamed** (SR*_EXTRA2).
+
+**Fallbacks — `stabilize` / `althold` (RC-override path).** Set `fc.control_mode` to match the
+FC's flight mode. These inject AETR via `RC_CHANNELS_OVERRIDE` into a self-levelling pilot mode;
+STANDBY releases the override (instant handback), and a dead Pi reverts via `RC_OVERRIDE_TIME`.
+STABILIZE = direct throttle + the companion's adaptive-hover loop (no FC alt hold, true ~16 m/s
+dive); ALT_HOLD = climb-rate throttle (gentle). On the stabilize path the **closed-loop DIVE
+vertical-rate sign** must be SITL-validated (`scripts/validate_vrate_sitl.py`: −3 m/s descends,
++2 m/s climbs) — a reversed sign diverges into a flyaway. Stick signs (`rc_*_sign`) and arming +
+test sticks (props off) bench/SITL-validate per §4.
 
 ## 3. Betaflight path is DEMO-ONLY (audit §1)
 
@@ -100,12 +95,12 @@ Mitigations in code: `camera.hflip`/`camera.vflip` (un-mirror before detection)
 and `guidance.yaw_sign`/`guidance.pitch_sign` (±1 operator override, applied in
 the servo). Neither helps if set wrong — they must be **bench-validated**:
 
-- [ ] Props OFF, FC in the matching mode (STABILIZE default), engaged (Pi overriding).
-- [ ] Place a target to the **right** of frame centre. Confirm the FC
-      commands **yaw right** (nose rotates toward the target), not away.
-      If it yaws away → flip `guidance.yaw_sign` (or fix `camera.hflip`).
-- [ ] Move the target **closer** (larger in frame). Confirm pitch eases
-      toward zero / noses up (backs off), does not accelerate forward.
+- [ ] Props OFF, FC in **GUIDED_NOGPS**, ch7 engaged to TRACK (companion commanding body rates).
+- [ ] Place a target to the **right** of frame centre. Confirm the commanded **yaw rate is to
+      the right** (nose rotates toward the target), not away. If it yaws away → flip
+      `guidance.yaw_sign` (or fix `camera.hflip`).
+- [ ] In DIVE, a target **below** frame centre must command **nose-down** (pitch toward the
+      target), not nose-up. Reversed → flip `guidance.pitch_sign` (or fix `camera.vflip`).
 - [ ] Re-confirm after ANY change to camera mounting, lens, or hflip/vflip.
 
 ## 5. Wrong-target / track-quality (audit §5)
