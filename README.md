@@ -105,7 +105,7 @@ than tail-chase.
 
 | Backend    | Protocol  | Control surface                                  | Switch read   |
 |------------|-----------|--------------------------------------------------|---------------|
-| ArduPilot  | MAVLink   | `RC_CHANNELS_OVERRIDE` AETR sticks in **STABILIZE** (default; roll/pitch = lean angle, yaw = rate, throttle = direct; `control_mode: althold` for baro alt-hold). Releases to the pilot when disengaged. | `RC_CHANNELS` |
+| ArduPilot  | MAVLink   | **`SET_ATTITUDE_TARGET` body rates + thrust in GUIDED_NOGPS** (`control_mode: guided_nogps`, the flight path). `stabilize`/`althold` RC-override (AETR sticks) are fallbacks. Handover/failsafe per `docs/deployment-safety.md`. | `RC_CHANNELS` |
 | Betaflight | MSP       | `MSP_SET_RAW_RC` stick override in ANGLE mode (**demo only** — BF failsafe keys off RX, not MSP) | `MSP_RC`      |
 
 The guidance layer emits one backend-agnostic intent —
@@ -124,36 +124,43 @@ sight regardless of target altitude. FOV-retention and dive geometry are verifie
 by a closed-loop simulator (`tests/closed_loop_sim.py`, `scripts/sim_track_dive.py`)
 and SITL. See `docs/dive-guidance.md`.
 
-**Why RC override into STABILIZE (GPS-denied):** velocity setpoints
+**GPS-denied control (why body rates):** velocity setpoints
 (`SET_POSITION_TARGET_LOCAL_NED`) need an EKF position solution a GPS-denied quad
-lacks. GUIDED_NOGPS + `SET_ATTITUDE_TARGET` (also GPS-free) was the first design;
-it was replaced by injecting AETR sticks into a self-levelling **pilot** mode so
-releasing the override hands control straight back (a dead Pi fail-safes via the
-FC's RC-override timeout). **STABILIZE** is the default over ALT_HOLD because it
-allows a real dive (SITL 4.6: ~16 m/s / 77° vs ALT_HOLD's ~1–5 m/s); the cost is
-no baro altitude floor (the companion owns altitude). See `docs/gps-denied-modes.md`
+lacks. Both GPS-free alternatives are supported: **GUIDED_NOGPS + `SET_ATTITUDE_TARGET`
+body rates** (the flight path — smooth, dive-capable, see below), and **RC-override
+into a self-levelling pilot mode** (`stabilize`/`althold` fallbacks, where releasing
+the override hands control straight back). STABILIZE allows a real dive (SITL 4.6:
+~16 m/s / 77° vs ALT_HOLD's ~1–5 m/s) with no baro altitude floor (the companion
+owns altitude). See `docs/gps-denied-modes.md`
 
-**`control_mode: guided_nogps` (body-rate, selectable):** GUIDED_NOGPS with
+**`control_mode: guided_nogps` (body-rate — THE FLIGHT PATH):** GUIDED_NOGPS with
 `SET_ATTITUDE_TARGET` **body rates** + real thrust (`guidance/rate_control.py`,
 `backend.send_body_rates`). Rates are integrated by the airframe so the motion is
 smooth; the descent uses pursuit guidance (velocity vector onto the line of sight).
 It **requires** `GUID_OPTIONS` bit 3 (ThrustAsThrust) — the preflight param check
 sets+verifies it, otherwise the FC reads the thrust field as a climb-rate and the
-dive planes. Validated in SITL (controlled 25–30° strikes, incl. a moving target);
-not yet hardware-validated, so STABILIZE remains the default. See
-`docs/gps-denied-modes.md`.
-and `docs/architecture-audit.md` §1.
+dive planes. The pilot's FC-mode channel selects GUIDED_NOGPS; ch7 is the
+STANDBY/TRACK/DIVE engage; ch9 cycles the locked target. Validated in SITL +
+Gazebo camera-in-the-loop (clean TRACK→DIVE→impact at 25/40/55 m, a moving target,
+STANDBY safe-hold, Pi-death hold) — **not yet hardware-validated**. `stabilize` /
+`althold` (RC-override) remain as fallbacks. See `docs/gps-denied-modes.md` and
+`docs/architecture-audit.md` §1.
 
 ## Failsafe principles
 
 1. **Pi is muted unless the switch is active.** No commands flow until the
    pilot deliberately engages the RC channel.
-2. **Engage releases to the pilot, not a mode lockout.** The pilot keeps the FC
-   in a self-levelling mode (STABILIZE by default); the Pi overrides the AETR
-   sticks only while engaged and releases them in STANDBY. Disengage → the radio
-   sticks resume immediately; a dead Pi →
-   ArduPilot's RC-override timeout reverts to the radio. Either way the pilot has
-   instant manual recovery, independent of the Pi.
+2. **The pilot always has instant manual recovery, independent of the Pi.** On the
+   guided_nogps flight path the pilot's FC-mode channel selects GUIDED_NOGPS to let
+   the companion command; flipping it to any pilot mode (STABILIZE) takes control
+   back at once — the companion sees the FC is no longer in GUIDED_NOGPS
+   (`control_ready()` false) and commands nothing. Disengaging the ch7 switch to
+   STANDBY (while still in GUIDED_NOGPS) holds a level hover; it never leaves the FC
+   coasting on the last attitude. A dead Pi → the FC holds via its GUIDED command
+   timeout, and the companion's ~1 Hz GCS heartbeat arms FS_GCS as a backstop (set
+   it to LAND for GPS-denied). On the `stabilize`/`althold` fallbacks the model is
+   RC-override instead: the Pi injects AETR only while engaged and releases them in
+   STANDBY, and a dead Pi reverts via ArduPilot's RC-override timeout.
 3. **Pi self-mutes on a bad track.** Off-frame, stale, low confidence, *or* low
    filter quality (implausible jump / class flip → quality decays) → commands
    stop. This is the wrong-target guard.
@@ -163,9 +170,10 @@ and `docs/architecture-audit.md` §1.
    target frame fraction and reverses past it — a collision guard, not a
    ram-the-target gain.
 
-Pre-flight bench procedure (STABILIZE/ALT_HOLD arming + RC override, hover-throttle
-+ sign self-test for a mirrored/rotated camera mount, Betaflight-demo caveat,
-wrong-target tuning) is in `docs/deployment-safety.md`. Do not fly without that.
+Pre-flight bench procedure (GUIDED_NOGPS arming + GUID_OPTIONS, ch7 mode / ch9
+select, STANDBY hover-hold + manual-recovery handover, camera-mount sign self-test,
+wrong-target tuning, GPS-denied FS_GCS) is in `docs/deployment-safety.md`. Do not
+fly without that.
 
 ## Status
 
@@ -173,18 +181,22 @@ Runs end-to-end **on the actual Pi Zero 2W** (service active, live IMX500,
 composite/DRM output) and on the Mac dev host, from one codebase: the same
 `Pipeline` runs with SyntheticCamera + UDP-loopback fake FC + viewer on the Mac,
 and IMX500Camera + real UART + DRM framebuffer on the Pi, by swapping injected
-components. **171 tests green** on both Mac and Pi (aarch64).
+components. **273 tests green** on both Mac and Pi (aarch64).
 
 Validation state, honestly:
 - Pipeline, perf, camera path, safety gating: **measured on real hardware** (see
   tables below).
-- Control surface (STABILIZE/ALT_HOLD + `RC_CHANNELS_OVERRIDE`, GPS-denied):
-  **SITL-validated on ArduCopter 4.6.3** — `validate_sitl.py` 9/9 (RC-override
-  steers yaw/pitch/roll in the correct sense, signs verified), `probe_nogps_modes.py`
-  10/10 (STABILIZE + ALT_HOLD arm+steer with GPS fully disabled), and
-  `measure_dive_sitl.py` quantifies the dive (STABILIZE ~16 m/s vs ALT_HOLD ~1–5).
-  See `docs/gps-denied-modes.md`, `docs/sitl.md`, `docs/architecture-audit.md` §1.
-- Flight-tuning of servo gains and all hardware-in-the-loop bench tests:
+- **Flight path — guided_nogps (`SET_ATTITUDE_TARGET` body rates):** SITL +
+  **Gazebo camera-in-the-loop** validated. Clean TRACK→DIVE→impact at 25/40/55 m
+  and a moving target; `scripts/sitl_gz_validate.py` runs the production `Pipeline`
+  against SITL and confirms the GUID_OPTIONS bit-3 preflight (readback=8), the
+  STANDBY level-hover safe-hold (ΔAGL +0.2 m), and a Pi-death hold (ΔAGL +0.0 m, no
+  tumble). See `docs/gps-denied-modes.md`, `docs/architecture-audit.md` §1.
+- Fallbacks (STABILIZE/ALT_HOLD + `RC_CHANNELS_OVERRIDE`, GPS-denied): SITL-validated
+  on ArduCopter 4.6.3 — `validate_sitl.py` 9/9, `probe_nogps_modes.py` 10/10,
+  `measure_dive_sitl.py` (STABILIZE ~16 m/s vs ALT_HOLD ~1–5).
+- **Not yet hardware-validated** in flight: the guidance has never controlled a real
+  aircraft. Flight-tuning of gains + the props-off bench checklist are
   hardware-gated, tracked in `docs/deployment-safety.md`.
 
 Setup (one-shot):
@@ -276,11 +288,14 @@ job is passthrough, IoU association, filter, overlay, and MAVLink — measured a
 
 ## Next
 
-1. ~~ArduPilot SITL validation of the GPS-denied control surface~~ — **done on
-   ArduCopter 4.6.3**: RC override 9/9 control sense, probe 10/10 (STABILIZE +
-   ALT_HOLD GPS-off), dive quantified (STABILIZE ~16 m/s). STABILIZE is the default.
-2. Hardware-in-the-loop bench tests per `docs/deployment-safety.md` (FC in
-   ALT_HOLD, RC-override handback, sign self-test, failsafe verification) — **next gate**.
+1. ~~SITL + Gazebo validation of the GPS-denied control surface~~ — **done**:
+   guided_nogps (the flight path) flies clean TRACK→DIVE→impact in Gazebo
+   camera-in-the-loop with GUID_OPTIONS preflight, STANDBY safe-hold, and Pi-death
+   hold confirmed against SITL (`scripts/sitl_gz_validate.py`); RC-override fallbacks
+   SITL-validated on 4.6.3.
+2. Hardware-in-the-loop bench tests per `docs/deployment-safety.md` (GUIDED_NOGPS
+   arming + GUID_OPTIONS, ch7/ch9, STANDBY hover-hold + FC-mode manual recovery,
+   camera-sign self-test, GPS-denied FS_GCS) — **next gate**.
 3. Re-run `validate_sitl.py` against the exact flight firmware (4.0.3 is older
    than a likely flight build; EKF3 defaults / minor `SET_ATTITUDE_TARGET`
    handling differ on Copter 4.5/4.6).
