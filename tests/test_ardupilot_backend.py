@@ -57,6 +57,35 @@ def test_backend_reflects_fc_armed_state(ap_pair):
     assert not backend.is_armed()
 
 
+def test_agl_captures_ground_home_while_disarmed_and_freezes_at_arm(ap_pair):
+    # AGL = alt - ground-home. Home must be captured while DISARMED (and refreshed to the
+    # ground), then frozen at arming, so AGL reads true height above the takeoff point.
+    backend, fake = ap_pair
+    fake.armed = False
+    fake.alt = 100.0                         # on the ground at 100 m AMSL
+    time.sleep(0.3)
+    backend.is_armed()                       # pump the drain (as the pipeline does each tick)
+    assert abs(backend.agl_m()) < 1.0        # ~0 AGL on the ground
+
+    fake.armed = True                        # take off...
+    fake.alt = 140.0                         # ...climb 40 m; home stays frozen at 100
+    time.sleep(0.3)
+    backend.is_armed()
+    assert abs(backend.agl_m() - 40.0) < 1.0
+
+
+def test_agl_never_homes_when_started_mid_flight_armed(ap_pair):
+    # Mid-flight process restart: the backend only ever sees the craft ARMED, so it must NOT
+    # capture a ground home at altitude (which would make AGL ~0 and false-latch the impact
+    # STOP). agl_m() stays large until a real ground reference exists.
+    backend, fake = ap_pair
+    fake.armed = True
+    fake.alt = 140.0
+    time.sleep(0.3)
+    backend.is_armed()                       # pump the drain
+    assert backend.agl_m() > 1e6
+
+
 def test_backend_reads_switch_channel_pwm(ap_pair):
     backend, fake = ap_pair
 

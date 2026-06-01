@@ -39,6 +39,17 @@ def test_dive_low_target_noses_down():
     assert out.phase == "DIVE"
 
 
+def test_dive_terminal_commit_freezes_all_rates():
+    # DIVE inside the impact radius (agl < impact) with an off-axis, frame-filling target:
+    # normally pitch would nose-over and yaw/roll would slam to chase the frame-edge box.
+    # Terminal commit -> all rates frozen (ballistic) so the airframe doesn't whip at impact.
+    out, _ = _run([_ft(0.85, 0.10, h=120, ts=i) for i in range(8)], mode=GuidanceMode.DIVE, agl=5.0)
+    assert abs(out.pitch_rate) < 1e-6
+    assert abs(out.yaw_rate) < 1e-6
+    assert abs(out.roll_rate) < 1e-6
+    assert out.phase == "DIVE"
+
+
 def test_track_holds_altitude_at_hover():
     # TRACK follows but does NOT descend: thrust stays at the learned hover (no commit).
     out, _ = _run([_ft(0.5, 0.55, ts=i) for i in range(8)], mode=GuidanceMode.TRACK)
@@ -90,14 +101,23 @@ def test_search_noses_down_at_hover_when_no_target_and_high():
 
 
 def test_impact_latches_stop_near_ground():
-    # Target lost near the ground = impact -> STOP (cut throttle) and LATCH: a later target
-    # does not re-engage (the persistent ground target must not be re-acquired post-impact).
-    out, st = _run([None for _ in range(8)], agl=5.0)
+    # Had a lock, then target lost near the ground = impact -> STOP (cut throttle) and LATCH:
+    # a later target does not re-engage (the persistent ground target must not be re-acquired).
+    seq = [_ft(0.5, 0.5, ts=0), _ft(0.5, 0.5, ts=1)] + [None for _ in range(8)]
+    out, st = _run(seq, agl=5.0)
     assert out.phase == "STOP"
     assert out.thrust < 0.05             # throttle smoothly cut to ~0
     assert st.impacted is True
     out2, _ = _run([_ft(0.5, 0.5, ts=8)], agl=5.0, st=st, n_from=8)
     assert out2.phase == "STOP"          # stays stopped despite a fresh detection
+
+
+def test_low_dive_without_prior_lock_does_not_latch():
+    # DIVE selected low (agl<impact) with NO target ever acquired -> must NOT false-latch STOP;
+    # it searches (noses down) for a target instead. Guards against an instant ground-STOP.
+    out, st = _run([None for _ in range(6)], mode=GuidanceMode.DIVE, agl=5.0)
+    assert out.phase == "SEARCH"
+    assert st.impacted is False
 
 
 def test_roll_returns_toward_level():
