@@ -188,6 +188,7 @@ class ArduPilotBackend:
         self._pos_t: float = 0.0             # when _x_m / _y_m was last updated
         self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
+        self._last_hb: float = 0.0           # last GCS heartbeat we sent (for FS_GCS backstop)
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
         self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
         self._interlock_warned: bool = False        # warned once that FC mode != expected
@@ -342,6 +343,17 @@ class ArduPilotBackend:
         if now - self._last_stream_req > _STREAM_REREQUEST_S:
             self._request_streams()
             self._last_stream_req = now
+        # Announce as a GCS at ~1 Hz so ArduCopter's GCS failsafe (FS_GCS) is armed: if the
+        # companion dies, heartbeats stop and the FC fails safe. Belt-and-suspenders alongside
+        # the GUIDED command timeout (which already holds/levels when SET_ATTITUDE_TARGET stops).
+        if now - self._last_hb > 1.0:
+            try:
+                m = self._mavutil.mavlink
+                self._mav.mav.heartbeat_send(m.MAV_TYPE_GCS, m.MAV_AUTOPILOT_INVALID, 0, 0,
+                                             m.MAV_STATE_ACTIVE)
+            except Exception:
+                pass
+            self._last_hb = now
         while True:
             msg = self._mav.recv_match(blocking=False)
             if msg is None:

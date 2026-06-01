@@ -48,6 +48,20 @@ Severity legend: **FOUNDATIONAL** (design doesn't work on target hardware) /
 > FC's RC-override timeout), avoiding GUIDED's "ignore pilot + hover on timeout"
 > lockout. The velocity-vs-attitude analysis below still holds; we now command
 > attitude as *sticks*, not `SET_ATTITUDE_TARGET`. See `docs/gps-denied-modes.md`.
+>
+> **UPDATE (2026-06-01): GUIDED_NOGPS is the flight path again** — but as body
+> **rates** + real thrust via `SET_ATTITUDE_TARGET` (`backend.send_body_rates`,
+> `guidance/rate_control.py`), not the old per-frame attitude quaternion. The dive
+> *planing* that drove the 05-23 retreat was a missing FC param, not a mode limit:
+> ArduCopter reads the thrust field as a climb-rate unless **`GUID_OPTIONS` bit 3
+> (ThrustAsThrust)** is set, so the preflight check now sets+verifies it (SITL
+> readback=8). The handover model is now GUIDED_NOGPS-specific: STANDBY = the
+> companion holds a level hover; manual recovery = the pilot flips the FC-mode
+> channel out of GUIDED_NOGPS (`control_ready()` false); on Pi death the FC holds
+> via the GUIDED command timeout while the companion emits a ~1 Hz GCS heartbeat
+> (set the GCS failsafe to LAND for GPS-denied). STABILIZE / ALT_HOLD + RC override
+> remain as fallbacks. Validated in SITL + Gazebo (camera-in-the-loop); not yet
+> hardware-validated. See `docs/gps-denied-modes.md`.
 
 The entire ArduPilot backend sends `SET_POSITION_TARGET_LOCAL_NED` velocity +
 yaw-rate (`type_mask 0x5C7`). ArduPilot Copter `GUIDED` runs the position/

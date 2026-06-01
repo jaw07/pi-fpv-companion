@@ -41,12 +41,16 @@ fc:
   select_channel: 9
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
-  # GPS-denied path: ch7 engages. On TRACK/DIVE the Pi injects AETR sticks via
-  # RC_CHANNELS_OVERRIDE into a self-levelling pilot mode; STANDBY releases them.
-  # control_mode MUST match the FC's mode. stabilize (DEFAULT) = direct throttle,
-  # 0.5=hover, no alt hold -> true steep dive (~16 m/s); companion owns altitude.
-  # althold = climb-rate throttle (0.5=hold via baro), descent capped (gentle).
-  control_mode: stabilize
+  # GPS-denied flight path. control_mode MUST match the FC's flight mode (the pilot's
+  # ch6 mode switch selects it). guided_nogps (FLIGHT) = the Pi commands BODY RATES +
+  # real thrust via SET_ATTITUDE_TARGET (guidance/rate_control.py); ch7 engages
+  # TRACK/DIVE, STANDBY holds a level hover. REQUIRES GUID_OPTIONS bit 3 (the preflight
+  # check sets+verifies it) else the FC reads thrust as a climb-rate and the dive planes.
+  # Handover/failsafe: the pilot flips ch6 OUT of GUIDED_NOGPS for instant manual control
+  # (the companion stops commanding when the FC isn't in GUIDED_NOGPS); a dead Pi triggers
+  # the FC's GCS failsafe. SITL/Gazebo-validated; not yet hardware-validated.
+  # stabilize / althold remain as RC-override fallbacks (set control_mode to match).
+  control_mode: guided_nogps
   stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
   # Adaptive hover: companion vertical-velocity hold trims throttle from VFR_HUD
   # climb rate so it self-levels (no manual hover tuning). Frozen during a dive.

@@ -457,9 +457,27 @@ def test_guided_nogps_rate_path_sends_body_rates_not_sticks():
     assert fc.sent == [], "the RC-stick (send_intent) path must NOT be used in rate mode"
 
 
-def test_guided_nogps_rate_path_releases_in_standby():
+def test_guided_nogps_standby_holds_level_hover_when_fc_in_guided():
+    # STANDBY while the FC is still in GUIDED_NOGPS -> HOLD a level hover (never leave the FC
+    # coasting on the last attitude). Sends a safe-hold body rate (level, hover thrust) + releases.
     cam = SyntheticCamera(width=720, height=576)
-    fc = RateStubFC(switch_active=False)       # STANDBY
+    fc = RateStubFC(switch_active=False, pitch=10.0)   # STANDBY, nose-up -> should be levelled
+    fc.ready = True                                    # FC IS in GUIDED_NOGPS
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
+                    rate_cfg=RateConfig(720, 576))
+    pipe.tick(cam.render_at(0.0))
+    assert fc.released >= 1
+    assert fc.body_rates, "STANDBY-in-guided must hold a level hover, not abandon the FC"
+    rr, pr, yr, thrust = fc.body_rates[-1]
+    assert pr < 0.0                       # nose-up -> commanded pitch rate drives back to level
+    assert abs(yr) < 1e-6 and 0.05 <= thrust <= 0.6
+
+
+def test_guided_nogps_standby_commands_nothing_when_pilot_takes_manual():
+    # FC NOT in GUIDED_NOGPS (pilot flipped the mode away = manual recovery) -> command NOTHING.
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC(switch_active=False)
+    fc.ready = False                                   # control_ready() False = FC not in guided
     pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
                     rate_cfg=RateConfig(720, 576))
     pipe.tick(cam.render_at(0.0))

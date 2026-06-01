@@ -240,9 +240,26 @@ class Pipeline:
             self._rate_state.reset()
             self._last_rate_mode = switch.mode
         ready = getattr(fc, "control_ready", None)
-        if switch.mode is GuidanceMode.STANDBY or (ready is not None and not ready()):
-            fc.release()
-            gated = GateResult(ZERO_INTENT, True, "standby/not-ready")
+        fc_in_guided = ready is None or ready()   # FC actually in GUIDED_NOGPS (accepts our rates)
+        if switch.mode is GuidanceMode.STANDBY or not fc_in_guided:
+            fc.release()                            # clear any stray RC override (no-op in guided)
+            if fc_in_guided and hasattr(fc, "send_body_rates"):
+                # Disengaged but the FC is STILL in GUIDED_NOGPS (pilot paused at STANDBY, hasn't
+                # taken the mode back) -> HOLD A LEVEL HOVER. Never leave the FC coasting on the
+                # last (possibly dive) attitude with no setpoint. Self-trim the hover toward null
+                # climb so it holds altitude. Manual recovery = pilot flips the FC mode OUT of
+                # GUIDED_NOGPS, at which point fc_in_guided is False and we command nothing.
+                p = _math.radians(fc.pitch_deg()) if hasattr(fc, "pitch_deg") else 0.0
+                r = _math.radians(fc.roll_deg()) if hasattr(fc, "roll_deg") else 0.0
+                if hasattr(fc, "climb_mps"):
+                    self._rate_state.hover = max(0.05, min(0.6, self._rate_state.hover - 0.01 * fc.climb_mps()))
+                fc.send_body_rates(max(-0.6, min(0.6, 2.0 * (0.0 - r))),
+                                   max(-0.6, min(0.6, 2.0 * (0.0 - p))),
+                                   0.0, self._rate_state.hover)
+                reason = "standby-hover-hold"
+            else:
+                reason = "manual (FC not in GUIDED_NOGPS)"
+            gated = GateResult(ZERO_INTENT, True, reason)
             if self._on_status is not None:
                 self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
             return gated
