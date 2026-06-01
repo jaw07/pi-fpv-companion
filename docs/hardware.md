@@ -89,27 +89,19 @@ Project standard: **115200** for both backends. Set ArduPilot's `SERIALn_BAUD = 
 
 ArduPilot's TELEM ports default higher (921600), but 115200 simplifies wiring (no level-shift or ringing concerns over the short Pi-to-FC run), shares a single setting across both firmware backends, and is plenty for HEARTBEAT + RC_CHANNELS at 10 Hz plus our outbound command stream.
 
-## Camera (CSI)
+## Camera
 
-Both camera options use the standard Zero 2W mini CSI connector (22-pin, 0.5 mm pitch). The Pi Zero 2W ribbon is the narrow one — needs the right adapter if the camera came with a 15-pin cable.
-
-### Regular Pi Camera
-
-Use `picamera2`. Bookworm 64-bit Lite ships it via apt:
-
-```
-sudo apt install -y python3-picamera2 python3-libcamera
-```
-
-Pip-install of picamera2 does not work; it is a system package.
+The IMX500 AI Camera uses the Zero 2W mini camera connector (22-pin, 0.5 mm pitch). The Pi Zero 2W ribbon is the narrow one — needs the right adapter if the camera came with a 15-pin cable.
 
 ### IMX500 AI Camera
 
-Same CSI connector, same `picamera2` API. Additional pieces:
+Driven through the `picamera2` API. Bookworm 64-bit Lite ships it via apt, plus the IMX500 firmware/model packages:
 
 ```
-sudo apt install -y imx500-all
+sudo apt install -y python3-picamera2 python3-libcamera imx500-all
 ```
+
+Pip-install of picamera2 does not work; it is a system package.
 
 This pulls in:
 - Firmware blobs for the on-sensor NPU

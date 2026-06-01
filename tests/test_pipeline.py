@@ -1,6 +1,6 @@
 """Pipeline integration tests. Covers:
   - IMX500-style path (camera produces detections, no detector argument)
-  - PiCam-style path (camera yields raw frames, Pipeline runs detector periodically)
+  - dev-camera path (file/webcam yields raw frames, Pipeline runs detector periodically)
   - KCF re-seeding on detection bursts
   - Safety gate mutes intent correctly
 """
@@ -101,7 +101,7 @@ def test_imx500_path_drives_yaw_as_target_drifts():
     assert fc.sent[-1].yaw_rate_dps != 0.0
 
 
-# ---- PiCam-style (Pipeline runs detector periodically) ----
+# ---- dev-camera path: Pipeline runs the detector inline (file/webcam) ----
 
 def test_pipeline_runs_detector_only_on_period_boundary():
     """Pipeline with detect_period_frames=4 should call detector on frames 0, 4, 8, ..."""
@@ -121,7 +121,7 @@ def test_pipeline_runs_detector_only_on_period_boundary():
         def frames(self): return bundles()
 
     pipeline = Pipeline(StubCamera(), tracker, _servo(), _safety(), fc,
-                        detector=detector, detect_period_frames=4, async_detector=False)
+                        detector=detector, detect_period_frames=4)
     for b in bundles():
         pipeline.tick(b)
 
@@ -148,7 +148,7 @@ def test_pipeline_does_not_run_detector_when_camera_provided_detections():
         def frames(self): yield bundle
 
     pipeline = Pipeline(StubCamera(), tracker, _servo(), _safety(), fc,
-                        detector=detector, detect_period_frames=1, async_detector=False)
+                        detector=detector, detect_period_frames=1)
     pipeline.tick(bundle)
     assert detector.call_count == 0
 
@@ -293,7 +293,7 @@ def test_pipeline_kcf_path_reseeds_on_detection_burst():
 
     pipeline = Pipeline(
         StubCamera(), tracker, _servo(width=640, height=480), _safety(), fc,
-        detector=detector, detect_period_frames=3, async_detector=False,
+        detector=detector, detect_period_frames=3,
     )
 
     # Frame 0: detector runs at (200,200), tracker locks
@@ -311,49 +311,6 @@ def test_pipeline_kcf_path_reseeds_on_detection_burst():
 
     # Detector should have run twice (frames 0 and 3)
     assert detector.call_count == 2
-
-
-# ---- async detector path ----
-
-def test_pipeline_async_path_eventually_produces_detections():
-    """With async_detector=True the worker thread runs inference. After a few
-    ticks the tracker should have received at least one detection burst."""
-    import time as _time
-    raw_frame = np.full((480, 640, 3), 64, dtype=np.uint8)
-
-    class SlowCountingDetector:
-        def __init__(self):
-            self.call_count = 0
-        def detect(self, image):
-            _time.sleep(0.005)  # simulate inference cost
-            self.call_count += 1
-            return [Detection(x=300, y=200, w=40, h=40, confidence=0.9, class_id=0, class_name="t")]
-
-    detector = SlowCountingDetector()
-    tracker = IouAssociator(iou_threshold=0.2)
-    fc = StubFC()
-
-    class StubCamera:
-        def open(self): pass
-        def close(self): pass
-        def frames(self): return iter([])
-
-    pipeline = Pipeline(
-        StubCamera(), tracker, _servo(width=640, height=480), _safety(), fc,
-        detector=detector, detect_period_frames=3, async_detector=True,
-    )
-    try:
-        for i in range(30):
-            pipeline.tick(FrameBundle(
-                image=raw_frame, width=640, height=480,
-                timestamp=i * 0.033, detections=[],
-            ))
-            _time.sleep(0.005)  # let worker make progress
-        assert detector.call_count >= 1
-        assert tracker.is_locked()
-    finally:
-        if pipeline._async_worker is not None:
-            pipeline._async_worker.stop()
 
 
 # ---- safety gate ----

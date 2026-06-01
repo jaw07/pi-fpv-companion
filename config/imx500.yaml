@@ -153,8 +153,3 @@ safety:
   watchdog_timeout_ms: 250
   require_armed: true
   min_track_quality: 0.35
-
-cpu:
-  # Core-pinning isolates the CPU detector worker from capture/main loop. The
-  # IMX500 path has no CPU detector, so let the pipeline use all cores.
-  pin: false

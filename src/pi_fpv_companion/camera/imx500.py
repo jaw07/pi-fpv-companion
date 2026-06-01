@@ -2,8 +2,7 @@
 
 The IMX500 runs the neural network on-sensor (Sony AITRIOS NPU). The Pi just
 reads frames + per-frame detection metadata — no CPU inference. This is the
-strategic primary path for Pi Zero 2W; the PiCam+CPU path is a fallback for
-users who don't have the IMX500.
+flight camera and the only real-camera path.
 
 Setup on Pi:
     sudo apt install -y imx500-all
@@ -20,7 +19,7 @@ from typing import Iterator, List, Tuple
 import numpy as np
 
 from pi_fpv_companion.camera.base import FrameBundle
-from pi_fpv_companion.detect.nanodet import COCO_CLASSES
+from pi_fpv_companion.detect.coco import COCO_CLASSES
 from pi_fpv_companion.types import Detection
 
 

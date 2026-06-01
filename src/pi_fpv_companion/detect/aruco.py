@@ -5,7 +5,7 @@ For SITL / Webots bring-up: the ArduPilot Webots worlds place ArUco markers
 detection so the camera→track→servo→FC loop can be exercised against a real
 rendered camera feed without depending on a trained model.
 
-Drop-in replaceable by NanoDet / YOLO / the IMX500 path — same Protocol. Each
+Dev/sim only (the flight camera is the IMX500, on-sensor) — same Protocol. Each
 marker becomes one Detection (centre + corner bounding box; class_id = marker id).
 """
 from __future__ import annotations

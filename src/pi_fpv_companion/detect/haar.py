@@ -1,14 +1,9 @@
 """Haar-cascade face detector using OpenCV's bundled `haarcascade_frontalface_default.xml`.
 
 Real neural-free detection that works out of the box — useful for end-to-end
-pipeline validation on real webcam footage before a proper NCNN model is wired up.
+pipeline validation on real webcam footage (dev only; the flight camera is the IMX500).
 
-Latency reference points:
-    Mac M-series @ 640x480       ~3-6 ms
-    Pi Zero 2W   @ 640x480 (est) ~30-60 ms (10x slower, NEON helps marginally)
-    Pi Zero 2W   @ 320x240 (est) ~8-20 ms (use `downscale=0.5`)
-
-Drop-in replaceable by `NanoDetDetector` / `Yolov8Detector` — same `Detector` Protocol.
+Conforms to the `Detector` Protocol.
 """
 from __future__ import annotations
 from typing import List

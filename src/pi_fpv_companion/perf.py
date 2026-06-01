@@ -4,18 +4,15 @@ The Mac is fast; the Pi Zero 2W is not. We always develop and test against an
 explicit budget so a feature that works on Mac but blows up the Pi gets caught
 before the hardware lands.
 
-Scaling table — workload-dependent, MEASURED on a real Pi Zero 2W A53 1GHz
+Detection runs on the IMX500's on-sensor NPU (~0 host ms), so the host budget is
+just the pipeline scaffold (camera read + tracker + guidance + MAVLink), which is
+cheap. Scaling — workload-dependent, MEASURED on a real Pi Zero 2W A53 1GHz
 (against an M-series Mac running the same code):
 
     Pipeline scaffold (synth + IoU + MAVLink):  Mac 0.18 ms → Pi 0.40 ms  =  2.2×
-    NanoDet-Plus @ 416 input via NCNN:          Mac 10.3 ms → Pi 586 ms   = 57×
-    NanoDet-Plus @ 320 input via NCNN:          Mac  6.7 ms → Pi 347 ms   = 52×
-    NanoDet-Plus @ 256 input via NCNN:                       Pi 221 ms
 
-The default `pi_scale_factor=6.0` is conservative for non-inference workloads
-(real is ~2-3×). For the NCNN detector path, pass `pi_scale_factor=52.0` to
-get an accurate Pi estimate from Mac numbers — or, better, run the profile
-script on the actual Pi.
+The default `pi_scale_factor=6.0` is conservative for the host pipeline (real is
+~2-3×) — or, better, run the profile script on the actual Pi.
 
 Pi Zero 2W resource ceiling:
     RAM       512 MB total, ~350 MB usable after Bookworm Lite + libcamera

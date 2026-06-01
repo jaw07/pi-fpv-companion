@@ -1,8 +1,8 @@
 # pi-fpv-companion
 
 Onboard computer-vision companion for an analog-FPV drone, running on a
-Raspberry Pi Zero 2W mounted on the airframe. **The Pi is the camera.** A CSI
-sensor feeds onboard detection; the Pi draws a target box and pushes that out
+Raspberry Pi Zero 2W mounted on the airframe. **The Pi is the camera.** A Sony
+IMX500 AI camera does detection on-sensor; the Pi draws a target box and pushes that out
 its composite (CVBS) pad into the flight controller's camera-in. The FC overlays
 its own flight OSD and feeds the analog VTX to the goggles. Separately, the Pi
 talks to the FC over UART and — only while the pilot holds an RC switch — sends
@@ -10,8 +10,8 @@ guidance so the drone flies toward the tracked target.
 
 ## What it does
 
-- Reads frames from either a regular Pi Camera (CSI) or a Sony **IMX500 AI
-  camera** (CSI, on-sensor inference).
+- Reads frames from a Sony **IMX500 AI camera** (on-sensor inference); dev/sim
+  hosts use synthetic, file, or webcam sources instead.
 - Detects, filters, and locks onto a target (alpha-beta state filter rejects
   implausible jumps and class flips, and supplies a velocity estimate).
 - Draws a bounding box + minimal state onto the video and pushes it out the
@@ -28,11 +28,8 @@ guidance so the drone flies toward the tracked target.
 
 - Raspberry Pi Zero 2W (BCM2710A1, quad-A53 @ 1 GHz, 512 MB RAM; ~416 MB usable
   under Debian Trixie Lite)
-- Camera, either:
-  - Standard Pi Camera (any CSI module) — inference runs on the Pi CPU (NCNN).
-    **Dev/sim only** — see "camera paths" below.
-  - Sony IMX500 AI Camera — inference runs on the sensor NPU; the Pi receives
-    boxes via picamera2 metadata. **This is the flight detector.**
+- Sony IMX500 AI Camera — inference runs on the sensor NPU; the Pi receives
+  boxes via picamera2 metadata. **This is the flight camera and detector.**
 - Flight controller running ArduPilot **or** Betaflight, with an analog camera
   input that gets forwarded to the analog VTX
 - 5V BEC sized for Pi peaks (>1 A headroom) — separate from the VTX rail if
@@ -46,10 +43,10 @@ DRM KMS), and wiring notes.
 ```
                        Pi Zero 2W
                   +-----------------+
-   Pi Cam ────▶  │  capture        │
-   or IMX500 ─▶  │     │           │
+   IMX500 ─────▶  │  capture        │
+                 │     │           │
                  │     ▼           │
-                 │  detector       │   (CPU-NCNN dev/sim, or IMX500 metadata — flight)
+                 │  detector       │   (IMX500 on-sensor metadata — flight; light dev detectors on the Mac)
                  │     │           │
                  │     ▼           │
                  │  tracker        │   (MOSSE between detector refreshes; default)
@@ -73,20 +70,17 @@ DRM KMS), and wiring notes.
                   Flight Controller
 ```
 
-## Two camera paths
+## Camera
 
-| Path     | Inference site | Pi CPU cost | Detect rate | Role |
-|----------|----------------|-------------|-------------|------|
-| IMX500   | Sensor NPU     | ~0          | Frame rate  | **Flight detector.** IoU/Kalman association across dense detections, keyed to one target ID |
-| Pi Cam   | Pi (NCNN)      | High        | ~4 Hz       | **Dev/sim only.** NanoDet-Plus CPU inference is a slideshow on this SoC; MOSSE bridges between refreshes |
+The IMX500 AI camera runs an on-sensor SSD-MobileNetV2 (COCO-trained) detector
+and emits boxes via picamera2 metadata at ~0 host-CPU cost; the Pi does IoU/Kalman
+association across dense detections, keyed to one target ID. Dev/sim hosts have no
+IMX500, so they use a `SyntheticCamera`, `FileCamera`, or `WebcamCamera` with a
+light detector (`color`, `haar`, ArUco) — the Gazebo SITL sim uses ColorBlob.
 
-Both expose the same `Camera` interface: they yield `(frame, detections)`. The
-detector module is a no-op when the camera already produced detections.
-
-The CPU/NCNN path is not a flight detector — ~4 Hz refresh drifts on fast FPV
-targets, and `main.py` prints a startup WARN whenever a CPU detector is
-selected. It exists for no-hardware development and for higher-RAM SBCs
-(Pi 4/CM4). The IMX500 is what flies. See `docs/architecture-audit.md` §3.
+The `Camera` interface yields `(frame, detections)`. The detector module is a
+no-op when the camera (the IMX500) already produced detections, and runs inline
+on a dev source that did not. The IMX500 is what flies.
 
 ### Tracker choice (MOSSE default)
 
@@ -175,10 +169,10 @@ wrong-target tuning) is in `docs/deployment-safety.md`. Do not fly without that.
 
 ## Status
 
-Runs end-to-end **on the actual Pi Zero 2W** (service active, live PiCam,
+Runs end-to-end **on the actual Pi Zero 2W** (service active, live IMX500,
 composite/DRM output) and on the Mac dev host, from one codebase: the same
 `Pipeline` runs with SyntheticCamera + UDP-loopback fake FC + viewer on the Mac,
-and PiCamCamera + real UART + DRM framebuffer on the Pi, by swapping injected
+and IMX500Camera + real UART + DRM framebuffer on the Pi, by swapping injected
 components. **171 tests green** on both Mac and Pi (aarch64).
 
 Validation state, honestly:
@@ -200,8 +194,8 @@ bash scripts/setup-venv.sh
 ```
 
 Creates `.venv`, installs the package editable, and resolves the
-`ncnn → opencv-python` vs `opencv-contrib-python` conflict (ncnn pulls in the
-non-contrib opencv which silently overrides `cv2.legacy.TrackerMOSSE`; the
+`opencv-python` vs `opencv-contrib-python` conflict (a plain `opencv-python`
+pulled in transitively silently overrides `cv2.legacy.TrackerMOSSE`; the
 script force-reinstalls the contrib package last so its `cv2.so` wins).
 
 Run the production entry point:
@@ -231,9 +225,9 @@ verdict at the end of every demo.
 | Workload                                        | Mac p50  | Pi p50  | Multiplier |
 |-------------------------------------------------|----------|---------|------------|
 | Pipeline scaffold (synth + IoU + MAVLink)       | 0.18 ms  | 0.40 ms | **2.2×**   |
-| NanoDet-Plus-M @ 416 NCNN                       | 10.3 ms  | 586 ms  | **57×**    |
-| NanoDet-Plus-M @ 320 NCNN                       | 6.7 ms   | 347 ms  | **52×**    |
-| NanoDet-Plus-M @ 256 NCNN                       | —        | 221 ms  | —          |
+
+The IMX500 detector runs on the sensor NPU, so it adds ~0 host-CPU cost — the
+Pi's per-tick work is association, filter, overlay, and MAVLink.
 
 Classical tracker benchmark @ 720×576 textured frames on Pi Zero 2W (measured):
 
@@ -244,48 +238,11 @@ Classical tracker benchmark @ 720×576 textured frames on Pi Zero 2W (measured):
 | KCF         | 22.7 ms   | 44 FPS           | ~20× slower than MOSSE for no gain here |
 | CSRT        | 199 ms    | 5 FPS            | Confirmed unusable on this SoC       |
 
-Full end-to-end pipeline on Pi (MOSSE + NanoDet @ 256 + detect every 7 frames,
-real textured 720×576 frames, simulated 30 FPS arrival, sync vs async detector):
-
-| Mode | p50 tick | p95 tick | max | Over-budget (>33 ms) |
-|---|---|---|---|---|
-| Sync (blocks main loop) | 0.1 ms | 217 ms | 230 ms | **14% of frames** |
-| **Async worker thread (default)** | 0.1 ms | 2.3 ms | 2.7 ms | **0% of frames** |
-
-The async detector moves the 221 ms inference off the critical path. Same
-detector refresh rate (~4 Hz), but the main loop never stalls. The worker dying
-is non-fatal — it must never take down the pilot's video.
-
-### Real camera, real hardware (measured on IMX708 / Camera Module 3)
-
-| Stage | Measured |
-|---|---|
-| `PiCamCamera` capture only @ 720×576 | 25.5 FPS |
-| Full pipeline (cam → NanoDet@256 async → MOSSE → servo → safety → FC) | **14 FPS effective** |
-| Main-loop tick p95 (async detector) | 2.7 ms |
-| Peak RSS | 120 MB / 200 MB budget |
-
-The 25→14 FPS drop is CPU contention: NCNN's inference threads compete with
-libcamera's ISP and the main loop for 4 A53 cores. Mitigated by core-pinning
-(`cpu.pin`: detector cores {2,3}, pipeline {0,1}). 14 Hz is fine for FPV — the
-composite output scans at 50 Hz PAL regardless; only the overlay + guidance
-update at 14 Hz. NanoDet produced stable detections on live frames (same object
-±5 px across 80 frames), so tracker lock is clean — but this is still the
-dev/sim path; flight uses the IMX500.
-
 ## Can the Pi handle it?
 
-**Yes on the IMX500 path. The PiCam/NCNN path is dev/sim only (measured).**
-
-- **IMX500 (flight)**: the sensor NPU runs the detector at ~0 ms host cost. The
-  Pi's job is passthrough, IoU association, filter, overlay, MAVLink — measured
-  at 0.4 ms p50 on the Zero 2W. 30 FPS with large headroom.
-- **PiCam + NanoDet (dev/sim)**: NCNN inference is the floor — 221 ms at input
-  256, ~4 Hz refresh with the async detector. Fine for slow follow in
-  development; drifts on adversarial FPV targets, which is why it does not fly.
-- **YOLOv8n is not viable here.** It OOM-reboots the Zero 2W; NanoDet-Plus is
-  the only CPU detector that fits the RAM budget. `Yolov8Detector` exists as a
-  drop-in for higher-RAM boards (Pi 4/CM4), not for the Zero 2W.
+**Yes.** The IMX500 sensor NPU runs the detector at ~0 ms host cost, so the Pi's
+job is passthrough, IoU association, filter, overlay, and MAVLink — measured at
+0.4 ms p50 on the Zero 2W. 30 FPS with large headroom.
 
 ## What's built
 
@@ -303,15 +260,13 @@ dev/sim path; flight uses the IMX500.
     (default) or ALT_HOLD, GPS-denied; SITL-validated on ArduCopter 4.6.3.
   - Betaflight — real MSP v1 I/O (encoder/decoder + state machine), validated
     against a loopback-serial fake. Stick override is demo-only.
-- `Camera` / `Detector` / `Tracker` Protocols with: `SyntheticCamera`,
-  `FileCamera`, `WebcamCamera`, `PiCamCamera` (picamera2), `IMX500Camera`
-  (on-sensor NPU); `ColorBlobDetector`, `HaarFaceDetector`, `NanoDetDetector`
-  (NCNN + GFL decode), `Yolov8Detector` (higher-RAM boards only);
-  `ClassicalCv2Tracker` (MOSSE/KCF/CSRT/MedianFlow), `IouAssociator`.
-- `AsyncDetector` — detector on a pinned worker thread; non-fatal on death.
+- `Camera` / `Detector` / `Tracker` Protocols with: `IMX500Camera`
+  (on-sensor NPU — the flight camera), `SyntheticCamera`, `FileCamera`,
+  `WebcamCamera` (dev/sim); `ColorBlobDetector`, `HaarFaceDetector`, ArUco
+  (light dev detectors); `ClassicalCv2Tracker` (MOSSE/KCF/CSRT/MedianFlow),
+  `IouAssociator`.
 - Video out: `overlay`, `LinuxFramebuffer` (`/dev/fb0`), `DrmFramebuffer`
   (DRM dumb-buffer for Trixie default KMS) — flight is the analog composite / TV out.
-- `cpu_affinity` — pins detector and pipeline to disjoint A53 core sets.
 - `config.py` (typed YAML loader), `main.py` (component factory by config),
   `perf.py` (Pi-budget verdict).
 - systemd unit + `scripts/install-pi.sh` / `scripts/setup-pi-boot.sh`.
