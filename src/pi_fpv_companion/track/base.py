@@ -27,8 +27,8 @@ class Tracker(Protocol):
 
         `detections` is whatever this frame produced — may be empty if the
         camera doesn't do inference and the detector wasn't scheduled this tick,
-        or populated by the camera (IMX500) or by Pipeline's periodic detector
-        call (PiCam path).
+        or populated by the camera (IMX500, on-sensor) or by Pipeline's periodic
+        detector call (file/webcam dev path).
 
         Returns the current target if locked, None if no lock yet or just lost.
         """

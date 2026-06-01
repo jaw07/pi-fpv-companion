@@ -1,11 +1,10 @@
 """Classical OpenCV tracker wrapper. Supports KCF, MOSSE, CSRT, MedianFlow.
 
-MOSSE is the default on Pi Zero 2W because:
-  - 20x faster than KCF on this SoC (1.2 ms vs 22.7 ms at 720x576, measured)
-  - MOSSE's scale/occlusion weaknesses are exactly what the NCNN detector
+This is for the dev file/webcam path (re-seeded by a periodic detector). MOSSE is
+the default because:
+  - 20x faster than KCF on Pi-class SoCs (1.2 ms vs 22.7 ms at 720x576, measured)
+  - MOSSE's scale/occlusion weaknesses are exactly what the periodic detector
     fixes when it re-seeds every N frames
-  - Combined budget at 30 FPS: 6 tracker frames × 1.2 ms + 1 detect frame
-    × 221 ms ≈ 228 ms per 7-frame cycle — fits 30 FPS exactly
 
 Pick a different backend with `cv2_backend`:
   - "mosse"      : 1 ms,  no scale, peak FPS                 [default]

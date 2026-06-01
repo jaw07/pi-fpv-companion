@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Tuple
 
 from pi_fpv_companion.config import AppConfig, load
-from pi_fpv_companion.detect.nanodet import COCO_CLASSES
+from pi_fpv_companion.detect.coco import COCO_CLASSES
 from pi_fpv_companion.perf import PerfMonitor, PiBudget
 from pi_fpv_companion.pipeline import Pipeline
 from pi_fpv_companion.types import GuidanceMode
@@ -51,29 +51,6 @@ def _build_detector(cfg: AppConfig):
     if t == "haar":
         from pi_fpv_companion.detect.haar import HaarFaceDetector
         return HaarFaceDetector(min_size_px=60, downscale=0.5)
-    target_ids = _resolve_class_ids(cfg.detector.classes_of_interest)
-    if t == "nanodet":
-        from pi_fpv_companion.detect.nanodet import NanoDetConfig, NanoDetDetector
-        if not cfg.detector.model_dir:
-            raise SystemExit("config.detector.model_dir is empty — set it to a NanoDet NCNN model dir")
-        return NanoDetDetector(NanoDetConfig(
-            model_dir=Path(cfg.detector.model_dir),
-            input_size=cfg.detector.input_size,
-            conf_threshold=cfg.detector.conf_threshold,
-            nms_threshold=cfg.detector.nms_threshold,
-            target_class_ids=target_ids,
-        ))
-    if t == "yolov8":
-        from pi_fpv_companion.detect.yolov8 import Yolov8Config, Yolov8Detector
-        if not cfg.detector.model_dir:
-            raise SystemExit("config.detector.model_dir is empty — set it to a YOLOv8 NCNN model dir")
-        return Yolov8Detector(Yolov8Config(
-            model_dir=Path(cfg.detector.model_dir),
-            input_size=cfg.detector.input_size,
-            conf_threshold=cfg.detector.conf_threshold,
-            nms_threshold=cfg.detector.nms_threshold,
-            target_class_ids=target_ids,
-        ))
     raise SystemExit(f"unknown detector type: {t}")
 
 
@@ -93,16 +70,6 @@ def _build_camera(cfg: AppConfig):
             device=cfg.camera.webcam_device,
             width=cfg.video.width, height=cfg.video.height,
             fps=cfg.camera.framerate,
-        )
-    if t == "picam":
-        from pi_fpv_companion.camera.picam import PiCamCamera
-        return PiCamCamera(
-            width=cfg.video.width, height=cfg.video.height,
-            framerate=cfg.camera.framerate,
-            exposure_mode=cfg.camera.exposure_mode,
-            noise_reduction=cfg.camera.noise_reduction,
-            hflip=cfg.camera.hflip,
-            vflip=cfg.camera.vflip,
         )
     if t == "imx500":
         from pi_fpv_companion.camera.imx500 import IMX500Camera
@@ -262,22 +229,10 @@ def main(argv=None) -> int:
     print(f"loaded config: {args.config}")
     print(f"  camera   {cfg.camera.type}")
     print(f"  detector {cfg.detector.type}  (period={cfg.detector.detect_period_frames} frames)")
-    if cfg.detector.type in ("nanodet", "yolov8"):
-        print("  WARN: CPU detector is a DEV/SIM path (~4 Hz on Zero 2W — a "
-              "slideshow, not a tracker). Flight detector is IMX500 "
-              "(camera.type: imx500). See docs/architecture-audit.md §3.")
     print(f"  tracker  {cfg.tracker.type}")
     print(f"  fc       {cfg.fc.backend} @ {cfg.fc.uart_device}")
     if cfg.detector.classes_of_interest:
         print(f"  classes  {cfg.detector.classes_of_interest}")
-
-    from pi_fpv_companion.cpu_affinity import compute_split, pin_current_thread
-    pipeline_cores, detector_cores = compute_split(cfg.cpu.pin)
-    if pipeline_cores is not None:
-        # Pin the main process (main loop + camera capture thread + output) to
-        # the pipeline cores; the detector worker re-pins itself to its own set.
-        pin_current_thread(pipeline_cores)
-        print(f"  cpu      pipeline={sorted(pipeline_cores)} detector={sorted(detector_cores)}")
 
     detector = _build_detector(cfg)
     camera = _build_camera(cfg)
@@ -317,7 +272,6 @@ def main(argv=None) -> int:
         camera, tracker, cfg.servo, cfg.safety, fc,
         detector=detector,
         detect_period_frames=cfg.detector.detect_period_frames,
-        detector_cpu_affinity=detector_cores,
         on_status=on_status,
         force_mode=force_mode,
         camera_watchdog_s=5.0,   # restart the process if the camera stalls

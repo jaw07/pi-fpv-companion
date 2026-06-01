@@ -1,11 +1,11 @@
 """Camera abstraction.
 
-Two backends will conform to this Protocol:
+Backends conform to this Protocol:
 
-  PiCamCamera   — standard CSI Pi Camera. Yields frames only; detections come
-                  from a separate on-Pi NCNN detector.
-  IMX500Camera  — Sony AI Camera. Yields frames AND on-sensor detections in
-                  the same FrameBundle (detector module is a no-op).
+  IMX500Camera  — Sony AI Camera (flight). Yields frames AND on-sensor detections
+                  in the same FrameBundle (no CPU detector needed).
+  FileCamera /  — dev/sim sources that yield frames only; a light dev detector
+  WebcamCamera     (color/haar) or the synthetic/Gazebo feed supplies detections.
 
 The pipeline downstream of the camera doesn't care which path is in use.
 """

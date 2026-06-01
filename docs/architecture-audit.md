@@ -100,34 +100,32 @@ not a dead-end.
 What remains true (downgraded DEAD-END -> inherent tradeoff):
 
 - A dumb analog camera adds ~negligible latency; a Pi-as-camera adds sensor
-  capture + libcamera + processing + CVBS encode (tens to >100 ms) plus the
-  ~10-14 FPS CPU-NanoDet content rate. This is the inherent cost of a smart
+  capture + libcamera + processing + CVBS encode (tens to >100 ms). This is the inherent cost of a smart
   camera doing onboard CV, not an architecture error. It degrades the
   *pilot's manual-flight feel* (hard to hand-fly for racing; fine for
   cruise/observe). It does NOT degrade the auto-engagement loop — during
   engagement the Pi closes the loop on its own fresh sensor frames, not the
   goggle feed.
-- This is exactly why the IMX500 path matters (30 FPS, on-sensor detect, much
-  lower added latency) and CPU-NanoDet is inadequate (§3) — but the *video
-  architecture* is sound.
+- This is exactly why the IMX500 is the camera (30 FPS, on-sensor detect, much
+  lower added latency); CPU-side detection was inadequate and was removed (§3) —
+  but the *video architecture* is sound.
 - Clean division of labor to preserve: Pi draws ONLY the detection/track box
   (+ minimal track state); the FC draws flight OSD. `overlay.py` should not
   duplicate battery/attitude/mode HUD — trim it to target marking only.
 
-## 3. DEAD-END — CPU-NanoDet on the Zero 2W is not a flight detector
+## 3. DEAD-END — CPU detection on the Zero 2W is not a flight detector
 
-> **STATUS: ADDRESSED.** `nanodet.py` docstring marks it dev/sim-only;
-> `main.py` prints a startup WARN when a CPU detector is selected; flight
-> detector is documented as IMX500 in `deployment-safety.md` §6. Code kept
-> for no-hardware dev + higher-RAM SBCs; no longer presented as flight.
+> **STATUS: RESOLVED.** The CPU detector stack has been **removed**. The IMX500
+> AI camera is the only flight camera and detector (on-sensor inference, ~0 host
+> CPU). Dev/sim hosts use light detectors (`color`, `haar`, ArUco) on synthetic,
+> file, or webcam sources.
 
-Measured: NanoDet@256 = 221 ms (~4 Hz) on the Zero 2W. 4 Hz detection of a
-maneuvering target is "a slideshow, not a tracking system." The core-pinning
-and detect-period tuning optimized a path that should not ship. The **IMX500
-sensor-offload path is the architecturally correct cheap path** (detection at
-sensor frame rate, ~0 host CPU — the IMX500/Hailo pattern). Deprecate
-CPU-NanoDet to a no-hardware dev/sim stub; stop presenting its frame-skip
-tuning as a viable flight mode.
+History: an earlier CPU detector measured ~221 ms (~4 Hz) on the Zero 2W. 4 Hz
+detection of a maneuvering target is "a slideshow, not a tracking system," and no
+amount of core-pinning or detect-period tuning made that path shippable. The
+**IMX500 sensor-offload path is the architecturally correct cheap path**
+(detection at sensor frame rate, ~0 host CPU — the IMX500/Hailo pattern), so the
+CPU path was dropped entirely.
 
 ## 4. STRUCTURAL — control law deficiencies (fixable on Pi-class compute)
 
@@ -160,7 +158,7 @@ tuning as a viable flight mode.
 The convergent cheap fix for all three: a **2-state alpha-beta (or 4-state
 constant-velocity Kalman) filter on the target centroid** — predicts through
 detector latency, supplies the feedforward term, smooths deadband chatter.
-Trivial cost next to NanoDet. Plus bbox-size closure regulation.
+Trivial cost. Plus bbox-size closure regulation.
 
 ## 5. SAFETY — the "confidently wrong" failure mode is unmitigated
 
@@ -206,7 +204,7 @@ pilot-owned momentary mode switch as the ultimate authority (§1).
 
 `climb = -Kp·dy` and body-frame yaw-rate are correct **only** for a level,
 forward-looking, non-mirrored camera. Any fixed downtilt or gimbal pitch
-silently biases/inverts the vertical loop; a mirrored/flipped CSI image
+silently biases/inverts the vertical loop; a mirrored/flipped camera image
 inverts yaw sign → divergent positive feedback ("drone spins away from
 target"). Need an explicit camera-mount rotation and a sign self-test.
 
@@ -229,7 +227,7 @@ target"). Need an explicit camera-mount rotation and a sign self-test.
 - Arming switch as Pi-side gate → must be the pilot's flight-mode channel (§1).
 - (§2 retracted — Pi-as-camera + CVBS→FC-cam-pad is correct; only trim
   `overlay.py` to target-marking, drop duplicate flight-OSD elements.)
-- CPU-NanoDet presented as a flight mode → deprecate to dev-only (§3).
+- CPU detection presented as a flight mode → removed; IMX500 is the camera (§3).
 - Naive P servo → add alpha-beta target filter + feedforward + closure
   regulation (§4).
 - No wrong-target safety → add track-quality + motion-plausibility gating (§5).
@@ -243,8 +241,9 @@ the work is salvageable:
   backend *concept*, the tracker/pipeline/config/test scaffolding, the
   Betaflight path as explicitly demo-only.
 - CHANGE: control surface (attitude/rate via GUIDED_NOGPS); switch → pilot's
-  flight-mode channel; CPU-NanoDet → dev/sim stub; add target state-estimator
-  + closure + wrong-target gating; trim `overlay.py` to target-marking only.
+  flight-mode channel; CPU detection removed (IMX500 is the camera); add target
+  state-estimator + closure + wrong-target gating; trim `overlay.py` to
+  target-marking only.
 - KEEP (corrected): the CVBS/DRM video subsystem IS the flight video path —
   Pi-as-camera is the design. (The MJPEG-over-HTTP browser preview has since
   been removed — output is IMX500 + analog composite / TV out only.)
