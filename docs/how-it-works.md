@@ -74,15 +74,13 @@ Driven by `main.py` (a factory that builds each component from config) and
 ### 1. Camera → `FrameBundle`
 `camera.frames()` yields a `FrameBundle(image, width, height, timestamp,
 detections)`. Some cameras (IMX500, SyntheticCamera) emit detections **inline**
-(on-sensor NPU). Others (PiCam, file, webcam) yield raw frames and a separate
-detector runs.
+(the IMX500 on its sensor NPU). Others (file, webcam) yield raw frames and a
+separate detector runs.
 
 ### 2. Detector (optional)
 If the camera didn't already produce detections and a detector is configured, it
-runs — **async by default** (`AsyncDetector` on a pinned worker thread) so a slow
-inference call doesn't stall the 30 FPS loop. Detectors: `ColorBlobDetector`,
-`HaarFaceDetector`, `NanoDetDetector` (NCNN), `Yolov8Detector`. Flight uses the
-IMX500's on-sensor model.
+runs inline. Light dev detectors: `ColorBlobDetector`, `HaarFaceDetector`,
+ArUco. Flight uses the IMX500's on-sensor model.
 
 ### 3. Tracker → one `Target`
 `tracker.consume(image, detections, t)` turns a stream of detections into a single
@@ -266,8 +264,8 @@ fc:
   stab_hover_learn_gain: 20.0  # Ki: slow hover trim
 ```
 
-`config/default.yaml` is the base, `config/imx500.yaml` the flight airframe,
-`config/mac-dev.yaml` the laptop simulation.
+`config/imx500.yaml` is the flight airframe config and `config/mac-dev.yaml` the
+laptop simulation.
 
 ---
 
@@ -292,8 +290,8 @@ src/pi_fpv_companion/
   main.py            entry point; builds components from config
   pipeline.py        the per-frame loop (Pipeline.tick)
   types.py           GuidanceMode, GuidanceIntent, SwitchState, ...
-  camera/            Camera Protocol + synthetic/file/webcam/picam/imx500
-  detect/            Detector Protocol + color/haar/nanodet/yolov8 + async wrapper
+  camera/            Camera Protocol + synthetic/file/webcam/imx500
+  detect/            Detector Protocol + color/haar/aruco
   track/             Tracker Protocol + iou_associator/cv2_tracker + alpha-beta filter
   guidance/
     visual_servo.py  pixels -> GuidanceIntent (TRACK vs DIVE)

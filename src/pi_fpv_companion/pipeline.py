@@ -1,17 +1,13 @@
 """Main loop: camera -> [detector] -> tracker -> visual servo -> safety -> FC backend.
 
-The detector is OPTIONAL because some cameras (IMX500, SyntheticCamera) emit
-detections inline in the FrameBundle. When the camera does that, Pipeline
-leaves them alone. When it doesn't (PiCam, File, Webcam) and a detector is
-configured, Pipeline runs it on the configured cadence.
-
-Detector runs ASYNC by default — inference happens on a worker thread, so the
-221 ms NanoDet call on Pi Zero 2W doesn't stall the 30 FPS main loop. Pass
-`async_detector=False` for deterministic in-line execution (used by tests).
+The detector is OPTIONAL because the flight camera (IMX500) and the dev
+SyntheticCamera emit detections inline in the FrameBundle. When the camera does
+that, Pipeline leaves them alone. When it doesn't (File, Webcam) and a detector
+is configured, Pipeline runs it inline on the configured cadence.
 
 Generic over camera/detector/tracker/FC implementations. Same Pipeline runs in
-dev (SyntheticCamera + FakeArduCopter) and production (PiCamCamera + NanoDet
-+ ArduPilotBackend over UART).
+dev (SyntheticCamera + FakeArduCopter) and production (IMX500 + ArduPilotBackend
+over UART).
 """
 from __future__ import annotations
 import time
@@ -19,7 +15,6 @@ from dataclasses import replace
 from typing import Callable, Optional
 
 from pi_fpv_companion.camera.base import Camera, FrameBundle
-from pi_fpv_companion.detect.async_detector import AsyncDetector
 from pi_fpv_companion.detect.base import Detector
 from pi_fpv_companion.guidance.safety import GateResult, SafetyConfig, gate
 from pi_fpv_companion.guidance.visual_servo import ClosureState, DiveState, ServoConfig, compute_intent
@@ -45,8 +40,6 @@ class Pipeline:
         *,
         detector: Optional[Detector] = None,
         detect_period_frames: int = 1,
-        async_detector: bool = True,
-        detector_cpu_affinity=None,
         on_status: Optional[StatusCallback] = None,
         force_mode: Optional[GuidanceMode] = None,
         camera_watchdog_s: float = 0.0,
@@ -87,13 +80,6 @@ class Pipeline:
         from pi_fpv_companion.track.target_filter import AlphaBetaTargetFilter
         self._target_filter = AlphaBetaTargetFilter()
 
-        # Async detector worker — runs inference off the main loop thread.
-        # Disabled for tests that need deterministic single-threaded semantics.
-        self._async_worker: Optional[AsyncDetector] = None
-        if detector is not None and async_detector:
-            self._async_worker = AsyncDetector(detector, cpu_affinity=detector_cpu_affinity)
-            self._async_worker.start()
-
     def stop(self) -> None:
         self._stopping = True
 
@@ -109,8 +95,6 @@ class Pipeline:
                 self._got_frame = True
                 self.tick(bundle)
         finally:
-            if self._async_worker is not None:
-                self._async_worker.stop()
             self._camera.close()
 
     def _start_camera_watchdog(self) -> None:
@@ -146,23 +130,12 @@ class Pipeline:
         self._frame_idx += 1
         now = bundle.timestamp
 
-        # Use the camera's intrinsic detections if it produced any; otherwise
-        # the configured detector runs (async-by-default) on the scheduled cadence.
+        # Use the camera's intrinsic detections if it produced any (IMX500 emits them
+        # inline); otherwise run the configured detector inline on the scheduled cadence.
         detections = list(bundle.detections)
         if not detections and self._detector is not None:
-            if self._async_worker is not None:
-                # Submit a fresh inference job at the cadence; pick up any
-                # completed result this tick (it lands when the worker is done,
-                # which is usually a few frames later than the submission).
-                if self._frame_idx % self._detect_period == 0:
-                    self._async_worker.submit(bundle.image)
-                fresh = self._async_worker.poll()
-                if fresh is not None:
-                    detections = fresh
-            else:
-                # Synchronous fallback — blocks the loop during inference.
-                if self._frame_idx % self._detect_period == 0:
-                    detections = self._detector.detect(bundle.image)
+            if self._frame_idx % self._detect_period == 0:
+                detections = self._detector.detect(bundle.image)
 
         switch = self._fc.read_switch()
         if self._force_mode is not None:

@@ -1,9 +1,9 @@
 """Color-blob detector — HSV threshold + contour finding.
 
-Cheap, runs in ~1-2 ms on Mac (probably ~10 ms on Pi for VGA). Doesn't require
-any model file, which makes it perfect for early Pi-free development.
+Cheap, runs in ~1-2 ms on Mac. Doesn't require any model file, which makes it
+the detector for the Gazebo SITL sim and early Pi-free development.
 
-Drop-in replaceable by `NanoDetDetector` or `Yolov8Detector` — same Detector Protocol.
+Conforms to the Detector Protocol (the flight camera is the IMX500, on-sensor).
 """
 from __future__ import annotations
 from dataclasses import dataclass
