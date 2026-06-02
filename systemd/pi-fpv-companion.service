@@ -14,7 +14,7 @@ Environment=PYTHONUNBUFFERED=1
 # otherwise grab the sensor mid-init and the camera frontend times out ~60s later.
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 40); do rpicam-hello --list-cameras 2>/dev/null | grep -qi imx500 && exit 0; sleep 1; done; echo "imx500 not listed after 40s, starting anyway" >&2; exit 0'
 ExecStart=/opt/pi-fpv-companion/.venv/bin/python -m pi_fpv_companion \
-    --config /opt/pi-fpv-companion/config/default.yaml
+    --config /opt/pi-fpv-companion/config/imx500.yaml
 
 Restart=on-failure
 RestartSec=5
