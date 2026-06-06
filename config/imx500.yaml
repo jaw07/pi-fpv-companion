@@ -13,13 +13,20 @@ video:
 camera:
   type: imx500               # on-sensor inference; detections emitted inline in FrameBundle
   framerate: 30
-  imx500_model: /usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk
+  # NanoDet-Plus 416x416 (higher-res than the SSD-MobileNet 320): ~1.7x the input
+  # pixels -> better small/distant targets, same 4-tensor output + 90 COCO labels as
+  # SSD (decoder unchanged), and actually slightly faster to load (~4.9s). Switched
+  # after the first flight surfaced far-target detection trouble.
+  imx500_model: /usr/share/imx500-models/imx500_network_nanodet_plus_416x416_pp.rpk
+  # zoom: 1.0 = full FOV (digital centre-crop zoom available but left off for now).
 
 detector:
   type: none                 # IMX500 does detection on-sensor — no CPU/ncnn model
   # conf_threshold + classes_of_interest are still read here and applied by
   # IMX500Camera when it decodes the sensor's output tensors.
-  conf_threshold: 0.35
+  # Raised to 0.45 after the first flight: 0.35 let aerial/top-down false positives
+  # through (the COCO model isn't trained on that viewpoint).
+  conf_threshold: 0.45
   classes_of_interest: [person, car, truck, motorcycle, bus, boat]
 
 tracker:
@@ -27,6 +34,12 @@ tracker:
                              # 'iou' = single auto-locked target (no manual select).
   iou_threshold: 0.3
   reacquire_after_lost_frames: 30
+  # Spurious-detection suppression (first-flight fix): a track must be detected in
+  # >= confirm_hits of the last confirm_window frames before it is shown/selectable,
+  # so one/two-frame ghosts never reach the HUD or the lock. Off-frame coasting
+  # tracks are also dropped (no boxes gliding off-screen) — see multi_target.py.
+  confirm_hits: 3
+  confirm_window: 5
 
 fc:
   backend: ardupilot
@@ -39,17 +52,22 @@ fc:
   # channel, ch9 — map a spare TBS input (e.g. the rocker) to ch9 in FreedomTX.
   # 0 = disabled (auto-lock highest confidence; HUD still shows all).
   select_channel: 9
+  # ch7 auto-engage: leaving STANDBY (TRACK/DIVE) commands the FC into GUIDED_NOGPS
+  # (DO_SET_MODE, re-sent until the HEARTBEAT confirms); returning to STANDBY restores
+  # the prior mode. So ch7 alone engages — no separate FC-mode switch needed to enter.
+  auto_guided: true
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
-  # GPS-denied flight path. control_mode MUST match the FC's flight mode (the pilot's
-  # ch6 mode switch selects it). guided_nogps (FLIGHT) = the Pi commands BODY RATES +
-  # real thrust via SET_ATTITUDE_TARGET (guidance/rate_control.py); ch7 engages
-  # TRACK/DIVE, STANDBY holds a level hover. REQUIRES GUID_OPTIONS bit 3 (the preflight
-  # check sets+verifies it) else the FC reads thrust as a climb-rate and the dive planes.
-  # Handover/failsafe: the pilot flips ch6 OUT of GUIDED_NOGPS for instant manual control
-  # (the companion stops commanding when the FC isn't in GUIDED_NOGPS); a dead Pi triggers
-  # the FC's GCS failsafe. SITL/Gazebo-validated; not yet hardware-validated.
-  # stabilize / althold remain as RC-override fallbacks (set control_mode to match).
+  # GPS-denied flight path. control_mode MUST match the FC's flight mode. guided_nogps
+  # (FLIGHT) = the Pi commands BODY RATES + real thrust via SET_ATTITUDE_TARGET
+  # (guidance/rate_control.py); ch7 engages TRACK/DIVE, STANDBY holds a level hover.
+  # REQUIRES GUID_OPTIONS bit 3 (the preflight check sets+verifies it) else the FC reads
+  # thrust as a climb-rate and the dive planes.
+  # Handover/failsafe: KEEP a TX flight-mode switch assigned (e.g. ch6) — flipping it
+  # OUT of GUIDED_NOGPS is instant manual recovery and overrides the auto-engage, AND it
+  # is the backstop if the Pi dies while engaged (the Pi can't restore the mode then; a
+  # dead Pi also triggers the FC's GCS failsafe). SITL/Gazebo-validated; not yet
+  # hardware-validated. stabilize / althold remain as RC-override fallbacks.
   control_mode: guided_nogps
   stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
   # Adaptive hover: companion vertical-velocity hold trims throttle from VFR_HUD

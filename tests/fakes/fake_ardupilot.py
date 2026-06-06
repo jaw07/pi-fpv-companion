@@ -28,6 +28,10 @@ class FakeArduCopter:
         self.climb: float = 0.0              # VFR_HUD.climb to emit (m/s, +up)
         self.params: dict = {}               # FC parameter store (PARAM_REQUEST_READ/SET)
         self.captured_overrides: List = []   # inbound RC_CHANNELS_OVERRIDE messages
+        self.custom_mode: int = 0            # current flight mode emitted in HEARTBEAT
+        self.set_mode_cmds: List[int] = []   # custom_modes requested via DO_SET_MODE
+        self.drop_first_mode_cmds: int = 0   # ignore the first N DO_SET_MODE (UART-drop sim)
+        self.reject_mode: int | None = None  # if set, refuse to enter this mode (stays put)
 
     def start(self) -> None:
         from pymavlink import mavutil
@@ -68,6 +72,14 @@ class FakeArduCopter:
                     name = msg.param_id.strip("\x00")
                     self.params[name] = float(msg.param_value)   # store the write
                     self._emit_param(name)                       # echo back (ack)
+                elif mt == "COMMAND_LONG" and \
+                        msg.command == self._mavutil.mavlink.MAV_CMD_DO_SET_MODE:
+                    requested = int(msg.param2)                  # custom_mode field
+                    self.set_mode_cmds.append(requested)
+                    if self.drop_first_mode_cmds > 0:
+                        self.drop_first_mode_cmds -= 1           # simulate a dropped command
+                    elif requested != self.reject_mode:
+                        self.custom_mode = requested             # mode change takes effect
             time.sleep(0.005)
 
     def _emit_param(self, name: str) -> None:
@@ -85,7 +97,7 @@ class FakeArduCopter:
             self._mavutil.mavlink.MAV_TYPE_QUADROTOR,
             self._mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
             base_mode,
-            0,
+            self.custom_mode,
             self._mavutil.mavlink.MAV_STATE_STANDBY,
         )
 

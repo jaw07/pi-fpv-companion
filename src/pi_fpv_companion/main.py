@@ -80,6 +80,7 @@ def _build_camera(cfg: AppConfig):
             framerate=cfg.camera.framerate,
             conf_threshold=cfg.detector.conf_threshold,
             target_class_ids=_resolve_class_ids(cfg.detector.classes_of_interest),
+            zoom=cfg.camera.zoom,
         )
     raise SystemExit(f"unknown camera type: {t}")
 
@@ -97,6 +98,8 @@ def _build_tracker(cfg: AppConfig):
         return MultiObjectTracker(
             iou_threshold=cfg.tracker.iou_threshold,
             max_lost_frames=cfg.tracker.reacquire_after_lost_frames,
+            confirm_hits=cfg.tracker.confirm_hits,
+            confirm_window=cfg.tracker.confirm_window,
         )
     if t == "classical":
         from pi_fpv_companion.track.cv2_tracker import ClassicalCv2Tracker
@@ -117,6 +120,7 @@ def _build_fc(cfg: AppConfig):
             device=cfg.fc.uart_device, baud=cfg.fc.baud,
             switch_channel=cfg.fc.switch_channel,
             select_channel=cfg.fc.select_channel,
+            auto_guided=cfg.fc.auto_guided,
             track_threshold_us=cfg.fc.track_threshold_us,
             dive_threshold_us=cfg.fc.dive_threshold_us,
             mapping=ArduCopterRcMapping(
@@ -274,7 +278,8 @@ def main(argv=None) -> int:
         detect_period_frames=cfg.detector.detect_period_frames,
         on_status=on_status,
         force_mode=force_mode,
-        camera_watchdog_s=5.0,   # restart the process if the camera stalls
+        camera_watchdog_s=2.0,   # restart the process if the camera stalls (≈50 frames @25fps)
+        first_frame_grace_s=15.0,  # bail+restart if a (re)opened camera gives no frame in 15s
         rate_cfg=rate_cfg,
     )
 

@@ -56,6 +56,15 @@ _STREAM_REREQUEST_S = 5.0
 # LOITER / a GPS mode by mistake. None for control_mode -> no interlock.
 _EXPECTED_MODE = {"stabilize": 0, "althold": 2, "guided_nogps": 20}   # STABILIZE / ALT_HOLD / GUIDED_NOGPS custom_mode
 
+# Auto-engage (auto_guided): when ch7 leaves STANDBY, optionally command the FC into
+# the control_mode's flight mode (GUIDED_NOGPS for the rate path) and restore the
+# prior mode on STANDBY. DO_SET_MODE is re-sent until a HEARTBEAT confirms it (rides
+# through a dropped command or a mode rejected until the EKF is ready); warns if it
+# never confirms. The pilot's TX flight-mode switch still overrides at any time and
+# remains the manual-recovery backstop.
+_MODE_RESEND_INTERVAL_S = 0.5
+_MODE_CONFIRM_TIMEOUT_S = 2.0
+
 # GUID_OPTIONS bit 3 (=8): SetAttitudeTarget interprets the thrust field as THRUST,
 # not a climb-rate. MANDATORY for the guided_nogps rate path — without it ArduCopter
 # reads SET_ATTITUDE_TARGET.thrust as a climb-rate command (0.5 = hold altitude), so
@@ -156,11 +165,13 @@ class ArduPilotBackend:
         dive_threshold_us: int,
         mapping: Optional[ArduCopterRcMapping] = None,
         select_channel: int = 0,
+        auto_guided: bool = False,
     ) -> None:
         self._device = device
         self._baud = baud
         self._switch_channel = switch_channel
         self._select_channel = select_channel    # 0 = disabled
+        self._auto_guided = auto_guided          # ch7 auto-commands the FC flight mode
         self._select_pwm_us = 0
         # 3-position mode switch: pwm >= dive -> DIVE, >= track -> TRACK, else STANDBY.
         self._track_threshold_us = track_threshold_us
@@ -192,6 +203,13 @@ class ArduPilotBackend:
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
         self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
         self._interlock_warned: bool = False        # warned once that FC mode != expected
+        # Auto-engage state (auto_guided): mode we're commanding until confirmed, the
+        # mode to restore on disengage, and resend/warn timers.
+        self._target_mode: Optional[int] = None     # mode being commanded (None = none pending)
+        self._saved_mode: Optional[int] = None       # mode to restore when disengaging
+        self._target_mode_t: float = 0.0             # last DO_SET_MODE send time
+        self._target_mode_since: float = 0.0         # when this command started (warn timeout)
+        self._mode_warned: bool = False              # warned once it hasn't confirmed
 
     def open(self) -> None:
         """Bind / connect the transport. Does NOT block on heartbeat — call
@@ -395,6 +413,8 @@ class ArduPilotBackend:
                 self._x_m = float(msg.x)             # NED north (m from origin)
                 self._y_m = float(msg.y)             # NED east  (m from origin)
                 self._pos_t = time.monotonic()
+        # Service any pending auto-engage mode command now that _current_mode is fresh.
+        self._service_mode()
 
     def select_pwm(self) -> int:
         """Latest PWM on the target-select channel (0 if disabled / not yet seen).
@@ -490,6 +510,66 @@ class ArduPilotBackend:
                          "in that mode.", self._current_mode, expected, self._mapping.control_mode)
             self._interlock_warned = True
         return False
+
+    def set_engaged(self, engaged: bool) -> None:
+        """Auto-engage hook (edge-driven by the pipeline on STANDBY<->engaged). With
+        auto_guided ON: on engage, save the current FC mode and command the
+        control_mode's flight mode (GUIDED_NOGPS for the rate path); on disengage,
+        restore the saved mode. No-op when auto_guided is OFF (pilot owns the mode) or
+        the control_mode has no expected mode. The pilot's TX flight-mode switch can
+        still override at any time — it is the manual-recovery backstop."""
+        if not self._auto_guided:
+            return
+        target = _EXPECTED_MODE.get(self._mapping.control_mode)
+        if target is None:
+            return
+        if engaged:
+            # Remember where to hand back, unless the FC is already in the target mode.
+            if self._current_mode is not None and self._current_mode != target:
+                self._saved_mode = self._current_mode
+            self._command_mode(target)
+        else:
+            if self._saved_mode is not None:
+                self._command_mode(self._saved_mode)
+                self._saved_mode = None
+            else:
+                self._target_mode = None   # nothing to restore; cancel any pending retry
+
+    def _command_mode(self, mode: int) -> None:
+        """Begin commanding the FC into `mode`; _service_mode() re-sends until confirmed."""
+        self._target_mode = mode
+        self._target_mode_since = time.monotonic()
+        self._mode_warned = False
+        self._send_mode(mode)
+        self._target_mode_t = time.monotonic()
+
+    def _send_mode(self, mode: int) -> None:
+        if self._mav is None:
+            return
+        m = self._mavutil.mavlink
+        self._mav.mav.command_long_send(
+            self._mav.target_system, self._mav.target_component,
+            m.MAV_CMD_DO_SET_MODE, 0,
+            m.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, mode, 0, 0, 0, 0, 0)
+
+    def _service_mode(self) -> None:
+        """Re-send DO_SET_MODE until HEARTBEAT confirms the target mode. Handles a
+        dropped command on a noisy UART and a mode rejected until the EKF is ready
+        (rides through, warns once). Non-blocking — called every _drain()."""
+        if self._target_mode is None:
+            return
+        if self._current_mode == self._target_mode:
+            self._target_mode = None                      # confirmed
+            return
+        now = time.monotonic()
+        if now - self._target_mode_t >= _MODE_RESEND_INTERVAL_S:
+            self._send_mode(self._target_mode)
+            self._target_mode_t = now
+        if not self._mode_warned and now - self._target_mode_since >= _MODE_CONFIRM_TIMEOUT_S:
+            _log.warning("FC has not confirmed mode %d after %.0fs (still %s) — still "
+                         "retrying; check it isn't rejected (EKF/arming/GPS).",
+                         self._target_mode, _MODE_CONFIRM_TIMEOUT_S, self._current_mode)
+            self._mode_warned = True
 
     def send_body_rates(self, roll_rate: float, pitch_rate: float, yaw_rate: float,
                         thrust: float) -> None:

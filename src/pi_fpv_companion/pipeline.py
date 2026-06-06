@@ -43,13 +43,18 @@ class Pipeline:
         on_status: Optional[StatusCallback] = None,
         force_mode: Optional[GuidanceMode] = None,
         camera_watchdog_s: float = 0.0,
+        first_frame_grace_s: float = 15.0,
         rate_cfg: Optional[RateConfig] = None,
     ) -> None:
         self._force_mode = force_mode
-        # Camera stall watchdog (0 = off; production sets ~5s). The IMX500/
+        # Camera stall watchdog (0 = off; production sets ~2s). The IMX500/
         # libcamera frontend can hang with capture_request() blocking the main
         # loop forever — a separate thread is the only way to recover.
         self._camera_watchdog_s = camera_watchdog_s
+        # How long to wait for the FIRST frame after (re)start before forcing a
+        # restart. Must exceed a clean cold open (~5-6s: rpk upload to the sensor)
+        # but short enough that a hung reopen recovers fast. 15s = ~2.5x margin.
+        self._first_frame_grace_s = first_frame_grace_s
         self._last_frame_ts = 0.0
         self._got_frame = False
         self._camera = camera
@@ -65,6 +70,9 @@ class Pipeline:
         # Operator target selection (multi-target tracker only): a rising edge on
         # the FC's select channel cycles the lock among current detections.
         self._last_select_pwm = 0
+        # ch7 auto-engage: track the STANDBY<->engaged edge so we command the FC's
+        # flight mode (fc.set_engaged) only on the transition, never every frame.
+        self._last_engaged = False
         self._tracks: Optional[list] = None
         self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
         self._closure = ClosureState()                  # TRACK PI closure integrator
@@ -107,7 +115,7 @@ class Pipeline:
         import threading
 
         start = time.monotonic()
-        grace = max(30.0, self._camera_watchdog_s)
+        grace = max(self._first_frame_grace_s, self._camera_watchdog_s)
 
         def _watch() -> None:
             while not self._stopping:
@@ -142,6 +150,17 @@ class Pipeline:
             switch = replace(switch, mode=self._force_mode,
                              active=self._force_mode is not GuidanceMode.STANDBY)
         armed = self._fc.is_armed()
+
+        # ch7 auto-engage: on the STANDBY<->engaged edge, tell the FC to switch into
+        # (or restore from) the control_mode's flight mode. No-op unless the backend
+        # has auto_guided enabled; the control_ready interlock below still gates any
+        # actual command-sending until the FC confirms it is in that mode.
+        engaged = switch.mode is not GuidanceMode.STANDBY
+        if engaged is not self._last_engaged:
+            set_engaged = getattr(self._fc, "set_engaged", None)
+            if callable(set_engaged):
+                set_engaged(engaged)
+            self._last_engaged = engaged
 
         # Operator target selection (multi-target tracker): a rising edge on the FC
         # select channel (ch8) cycles the locked target among the current

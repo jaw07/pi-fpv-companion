@@ -33,6 +33,7 @@ class CameraSection:
     imx500_model: str = ""
     file_path: str = ""
     webcam_device: int = 0
+    zoom: float = 1.0                    # imx500 digital zoom (centre-crop); >1 aids far targets, costs FOV
 
 
 @dataclass
@@ -51,6 +52,10 @@ class TrackerSection:
     cv2_backend: str = "mosse"           # mosse | kcf | csrt | medianflow (classical only)
     reacquire_after_lost_frames: int = 30
     iou_threshold: float = 0.3
+    # multi_iou spurious-detection suppression: a track must be detected in >= confirm_hits
+    # of the last confirm_window frames before it is shown/selectable. 1 = off (back-compat).
+    confirm_hits: int = 1
+    confirm_window: int = 5
 
 
 @dataclass
@@ -62,6 +67,11 @@ class FcSection:
     # Momentary RC channel that cycles the locked target among detections (multi_iou
     # tracker). A rising edge past 1700 µs = "next target". 0 = disabled.
     select_channel: int = 0
+    # ch7 auto-engage: when leaving STANDBY, command the FC into the control_mode's
+    # flight mode (GUIDED_NOGPS for the rate path) and restore the prior mode on
+    # STANDBY. False = pilot owns the flight-mode switch. Keep a TX flight-mode
+    # switch assigned either way — it is the manual-recovery backstop.
+    auto_guided: bool = False
     switch_threshold_us: int = 1700      # betaflight 2-state engage threshold
     # ArduPilot 3-position mode switch on switch_channel:
     #   pwm >= dive_threshold_us  -> DIVE
@@ -136,6 +146,7 @@ def _camera(d: Dict[str, Any]) -> CameraSection:
         imx500_model=d.get("imx500_model", ""),
         file_path=d.get("file_path", ""),
         webcam_device=d.get("webcam_device", 0),
+        zoom=d.get("zoom", 1.0),
     )
 
 
@@ -160,6 +171,8 @@ def _tracker(d: Dict[str, Any]) -> TrackerSection:
         cv2_backend=cv2_backend,
         reacquire_after_lost_frames=d.get("reacquire_after_lost_frames", 30),
         iou_threshold=d.get("iou_threshold", 0.3),
+        confirm_hits=d.get("confirm_hits", 1),
+        confirm_window=d.get("confirm_window", 5),
     )
 
 
@@ -182,6 +195,7 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         baud=d.get("baud", 115200),
         switch_channel=d.get("switch_channel", 7),
         select_channel=d.get("select_channel", 0),
+        auto_guided=d.get("auto_guided", False),
         switch_threshold_us=d.get("switch_threshold_us", 1700),
         track_threshold_us=d.get("track_threshold_us", 1300),
         dive_threshold_us=d.get("dive_threshold_us", 1700),
