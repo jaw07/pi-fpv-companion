@@ -400,6 +400,96 @@ def _bits_backend_with_params(params):
     return backend, fake
 
 
+# ---- ch7 auto-engage (auto_guided): DO_SET_MODE into GUIDED_NOGPS ----
+
+def _guided_backend(auto_guided=True, start_mode=0):
+    """Backend with control_mode=guided_nogps + a fake starting in `start_mode`."""
+    port = _free_udp_port()
+    backend = ArduPilotBackend(
+        device=f"udpin:127.0.0.1:{port}", baud=0, switch_channel=7,
+        track_threshold_us=1300, dive_threshold_us=1700, auto_guided=auto_guided,
+        mapping=ArduCopterRcMapping(control_mode="guided_nogps"))
+    backend.open()
+    fake = FakeArduCopter(target_port=port)
+    fake.custom_mode = start_mode
+    fake.start()
+    backend.wait_ready(timeout=3.0)
+    return backend, fake
+
+
+def _pump(backend, fake, seconds, until=None):
+    """Drive the backend (drains telemetry + services the mode command) for up to
+    `seconds`, stopping early when `until()` is true. Returns whether it stopped early."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < seconds:
+        backend.read_switch()        # _drain -> _service_mode
+        if until is not None and until():
+            return True
+        time.sleep(0.02)
+    return until() if until is not None else False
+
+
+def test_set_engaged_commands_and_confirms_guided_nogps():
+    backend, fake = _guided_backend(start_mode=0)            # FC in STABILIZE
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)                            # ch7 -> TRACK/DIVE
+        ok = _pump(backend, fake, 2.0, lambda: backend._current_mode == 20)
+        assert ok and fake.custom_mode == 20                 # FC now in GUIDED_NOGPS
+        assert 20 in fake.set_mode_cmds
+        assert backend._target_mode is None                  # confirmed -> no pending retry
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_disengage_restores_prior_mode():
+    backend, fake = _guided_backend(start_mode=0)            # prior mode = STABILIZE
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        assert _pump(backend, fake, 2.0, lambda: fake.custom_mode == 20)
+        backend.set_engaged(False)                           # ch7 -> STANDBY
+        assert _pump(backend, fake, 2.0, lambda: fake.custom_mode == 0)  # restored
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_already_guided_engage_saves_nothing_and_disengage_sends_no_restore():
+    backend, fake = _guided_backend(start_mode=20)           # already GUIDED_NOGPS
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 20)
+        backend.set_engaged(True)                            # no prior mode to save
+        assert backend._saved_mode is None
+        backend.set_engaged(False)
+        _pump(backend, fake, 0.5)
+        assert fake.custom_mode == 20                        # never knocked out of guided
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_mode_command_retries_until_confirmed_on_dropped_commands():
+    backend, fake = _guided_backend(start_mode=0)
+    fake.drop_first_mode_cmds = 2                            # UART drops the first two
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        ok = _pump(backend, fake, 3.0, lambda: fake.custom_mode == 20)
+        assert ok and len(fake.set_mode_cmds) >= 3           # re-sent past the drops
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_auto_guided_off_never_commands_mode():
+    backend, fake = _guided_backend(auto_guided=False, start_mode=0)
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        _pump(backend, fake, 1.0)
+        assert fake.set_mode_cmds == [] and fake.custom_mode == 0  # inert
+    finally:
+        backend.close(); fake.stop()
+
+
 def test_ensure_param_bits_sets_bit_preserving_other_bits():
     # GUID_OPTIONS bit 3 (=8, ThrustAsThrust) must be OR-ed in without clobbering other
     # bits already set (e.g. bit 0 =1 AllowArmingFromTX). This is THE guided-throttle check.
