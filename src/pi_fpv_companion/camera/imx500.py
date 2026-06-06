@@ -38,6 +38,7 @@ class IMX500Camera:
         framerate: int = 30,
         conf_threshold: float = 0.35,
         target_class_ids: Tuple[int, ...] = (),
+        zoom: float = 1.0,
     ) -> None:
         # target_class_ids: if empty, accept any class; else filter to these COCO ids
         self._model_path = model_path
@@ -46,6 +47,10 @@ class IMX500Camera:
         self._fps = framerate
         self._conf_threshold = conf_threshold
         self._target_class_set = set(target_class_ids) if target_class_ids else None
+        # Digital zoom: >1.0 centre-crops the sensor (ScalerCrop) so a distant target
+        # fills more of the network input -> better far-target detection, at the cost
+        # of FOV. 1.0 = full frame (off). Applied in open().
+        self._zoom = max(1.0, float(zoom))
         self._imx500 = None
         self._picam = None
         self._intrinsics = None
@@ -80,7 +85,26 @@ class IMX500Camera:
         self._picam.configure(config)
         self._imx500.show_network_fw_progress_bar()
         self._picam.start(config, show_preview=False)
+        self._apply_zoom()
         self._running = True
+
+    def _apply_zoom(self) -> None:
+        """Centre-crop the sensor for digital zoom (no-op when zoom<=1). Uses
+        ScalerCrop relative to the sensor's full active area so the cropped (zoomed)
+        image is what's scaled into the network input as well as the displayed frame."""
+        if self._zoom <= 1.0:
+            return
+        try:
+            full = self._picam.camera_properties.get("ScalerCropMaximum")
+            if not full:
+                return
+            fx, fy, fw, fh = full
+            cw, ch = int(fw / self._zoom), int(fh / self._zoom)
+            cx, cy = fx + (fw - cw) // 2, fy + (fh - ch) // 2
+            self._picam.set_controls({"ScalerCrop": (cx, cy, cw, ch)})
+        except Exception:
+            # Non-fatal: fall back to full FOV if the platform rejects the crop.
+            pass
 
     def close(self) -> None:
         self._running = False

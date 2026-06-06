@@ -8,6 +8,67 @@ def _d(x, y, w=40, h=40, conf=0.9, cid=0):
     return Detection(x=x, y=y, w=w, h=h, confidence=conf, class_id=cid)
 
 
+class _Frame:
+    """Minimal stand-in for a camera frame (the tracker only reads .shape)."""
+    def __init__(self, w, h):
+        self.shape = (h, w, 3)
+
+
+def test_default_confirmation_off_shows_tracks_immediately():
+    # Back-compat: confirm_hits=1 (default) -> a detection is shown on the first frame.
+    t = MultiObjectTracker()
+    t.consume(None, [_d(100, 100), _d(400, 300)], 0.0)
+    assert len(t.tracks) == 2
+
+
+def test_one_frame_ghost_never_confirmed_so_never_shown():
+    # A spurious detection that appears for a single frame must never reach the HUD
+    # (tracks) nor be selectable — the first-flight "spurious detection" fix.
+    t = MultiObjectTracker(confirm_hits=3, confirm_window=5)
+    t.consume(None, [_d(300, 300)], 0.0)
+    assert t.tracks == [] and t.selected_id is None   # 1 hit, not confirmed -> hidden
+    for i in range(1, 6):
+        t.consume(None, [], i * 0.033)                # never seen again
+    assert t.tracks == []
+
+
+def test_track_confirms_only_after_m_of_n_detections():
+    t = MultiObjectTracker(confirm_hits=3, confirm_window=5)
+    for i in range(2):
+        t.consume(None, [_d(300, 300)], i * 0.033)
+        assert t.tracks == []                         # 1-2 hits: not yet confirmed
+    t.consume(None, [_d(300, 300)], 2 * 0.033)        # 3rd detection -> confirmed
+    assert len(t.tracks) == 1 and t.tracks[0].detection.x == 300
+
+
+def test_coasting_track_that_leaves_the_frame_is_dropped():
+    # A track coasting on its velocity must be dropped when its predicted centre
+    # exits the frame, not glide off-screen (the "runs off camera" fix).
+    fr = _Frame(720, 576)
+    t = MultiObjectTracker(confirm_hits=1, max_lost_frames=100)
+    # Move in <=60px steps (within the match distance) so identity holds and a
+    # rightward velocity (~500 px/s) builds on a single track.
+    for i, x in enumerate((500, 550, 600, 650)):
+        t.consume(fr, [_d(x, 300)], i * 0.1)
+    assert len(t.tracks) == 1
+    dropped = False
+    tt = 0.4
+    for _ in range(10):                               # withhold detections -> coast right
+        t.consume(fr, [], tt)
+        tt += 0.1
+        if t.tracks == []:
+            dropped = True
+            break
+    assert dropped                                    # gone well before max_lost_frames=100
+
+
+def test_off_frame_detection_does_not_spawn_a_track():
+    fr = _Frame(720, 576)
+    t = MultiObjectTracker(confirm_hits=1)
+    t.consume(fr, [_d(900, 300)], 0.0)                # centre past the right edge
+    assert t.tracks == []
+
+
 def test_tracks_all_detections_with_stable_ids():
     t = MultiObjectTracker()
     t.consume(None, [_d(100, 100), _d(400, 300), _d(600, 200)], now=0.0)
@@ -83,15 +144,49 @@ def test_selected_track_coasts_through_a_brief_miss_then_keeps_lock():
     assert sel is not None and sel.lost_frames >= 1   # coasting, not dropped
 
 
-def test_dropped_selection_reacquires_highest_confidence():
+def test_manual_pick_that_vanishes_holds_not_swaps_to_highest():
+    # A deliberately-selected target that vanishes for good must NOT be replaced by a
+    # different (higher-confidence) target — even in STANDBY (auto_acquire on). The
+    # operator's pick is sticky; consume holds (None) until they pick again or the
+    # same target re-appears. (Before the stickiness fix this snapped to the x=400
+    # target — the "it switches back to the original" bug.)
     t = MultiObjectTracker(max_lost_frames=2)
     t.consume(None, [_d(100, 100, conf=0.6), _d(400, 300, conf=0.9)], 0.0)
-    t.select(t.tracks[0].track_id)           # lock the low-confidence one (x=100)
-    # it vanishes for good; the other remains
-    for i in range(4):
+    t.select(t.tracks[0].track_id)           # manually lock the low-confidence one (x=100)
+    sel = "unset"
+    for i in range(5):                       # x=100 vanishes for good; only x=400 remains
         sel = t.consume(None, [_d(400, 300, conf=0.9)], (i + 1) * 0.033)
-    # the dropped selection re-acquires the surviving (highest-conf) track
-    assert sel is not None and sel.detection.x == 400
+    assert sel is None                       # HELD — did not swap to the x=400 target
+
+
+def test_manual_pick_rebinds_to_same_target_through_id_churn():
+    # The bench failure: cycle to a weaker target whose flickery detection drops and
+    # re-appears under a NEW track id. The selection must re-bind to that SAME target
+    # (by proximity), never snap back to the stronger "original".
+    t = MultiObjectTracker(max_lost_frames=2)
+    t.consume(None, [_d(150, 300, conf=0.6), _d(560, 300, conf=0.95)], 0.0)
+    t.cycle()                                            # pick a specific target...
+    while t._tracks[t.selected_id].detection.x != 150:   # ...force it onto the weak one
+        t.cycle()
+    # the weak target drops out long enough to lose its id (only the strong one shows)
+    gap_sel = "unset"
+    for i in range(4):
+        gap_sel = t.consume(None, [_d(560, 300, conf=0.95)], (i + 1) * 0.033)
+    assert gap_sel is None                               # held through the gap, no swap
+    # it re-appears near its last position under a fresh id -> selection re-binds to it
+    sel = t.consume(None, [_d(152, 302, conf=0.6), _d(560, 300, conf=0.95)], 0.2)
+    assert sel is not None and abs(sel.detection.x - 150) < 90
+    assert sel.detection.x != 560                        # did NOT jump to the strong target
+
+
+def test_auto_acquire_picks_highest_only_before_a_manual_pick():
+    # Initial acquisition (no manual pick yet) still auto-locks the highest-confidence
+    # target so guidance has a sane default; a manual pick then disables that override.
+    t = MultiObjectTracker()
+    sel = t.consume(None, [_d(100, 100, conf=0.5), _d(400, 300, conf=0.95)], 0.0)
+    assert sel is not None and sel.detection.x == 400   # auto-acquired the strong one
+    t.cycle()                                            # operator takes over (manual)
+    assert t._manual is True
 
 
 def test_auto_acquire_off_holds_instead_of_swapping_on_drop():

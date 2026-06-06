@@ -28,9 +28,13 @@ class StubFC:
         self.mode = None                       # if set, overrides switch_active
         self.ready = True                      # control_ready interlock value
         self.select = 1000                     # select-channel pwm (multi-target cycle)
+        self.engaged_calls: List[bool] = []    # set_engaged(bool) history (auto-engage edge)
 
     def select_pwm(self) -> int:
         return self.select
+
+    def set_engaged(self, engaged: bool) -> None:
+        self.engaged_calls.append(engaged)
 
     def open(self) -> None: ...
     def close(self) -> None: ...
@@ -233,6 +237,30 @@ def test_multi_target_select_cycles_and_lock_persists_through_modes():
         pipe.tick(bundle)
         assert pipe._tracker.selected_id == id_a                  # ignored — still locked on A
     assert locked[-1] == id_a                                     # guidance followed the selection
+
+
+def test_auto_engage_fires_set_engaged_only_on_standby_engaged_edges():
+    """ch7 auto-engage: set_engaged(True) on STANDBY->engaged, set_engaged(False) on
+    the way back — once per transition, never every frame (TRACK<->DIVE doesn't re-fire)."""
+    from pi_fpv_companion.track.multi_target import MultiObjectTracker
+    dets = [Detection(x=360, y=300, w=40, h=40, confidence=0.9, class_id=0)]
+    bundle = FrameBundle(image=np.full((576, 720, 3), 64, dtype=np.uint8),
+                         width=720, height=576, timestamp=0.0, detections=dets)
+
+    class StubCamera:
+        def open(self): pass
+        def close(self): pass
+        def frames(self): yield bundle
+
+    fc = StubFC()
+    pipe = Pipeline(StubCamera(), MultiObjectTracker(iou_threshold=0.2), _servo(), _safety(), fc)
+    for mode in (GuidanceMode.STANDBY,            # no edge (starts disengaged)
+                 GuidanceMode.TRACK,              # -> engaged  => set_engaged(True)
+                 GuidanceMode.DIVE,               # still engaged => no call
+                 GuidanceMode.STANDBY):           # -> disengaged => set_engaged(False)
+        fc.mode = mode
+        pipe.tick(bundle)
+    assert fc.engaged_calls == [True, False]
 
 
 def test_engaged_dive_holds_when_committed_target_drops_not_swaps():
