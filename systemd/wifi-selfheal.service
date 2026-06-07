@@ -1,0 +1,9 @@
+[Unit]
+Description=pi-fpv-companion WiFi self-heal (re-associate wlan0 if NM-disconnected)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+# Runs as root (no User=) — nmcli device connect / NetworkManager restart need it.
+ExecStart=/opt/pi-fpv-companion/scripts/wifi-selfheal.sh
