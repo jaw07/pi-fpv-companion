@@ -3,13 +3,13 @@ Description=pi-fpv-companion drone visual tracker
 After=multi-user.target network.target
 # Recovery ladder (StartLimit* MUST live in [Unit] — ignored in [Service]).
 # Rung 1: the frame-watchdog os._exit()s on a stall (~2s) / no-first-frame (~15s).
-# Rung 2: systemd restarts the process (RestartSec=1) — clears the libcamera/IMX500
-#         capture hang in ~3-5s (bench: 10/10 reopens, no hang).
-# Rung 3: if process restarts DON'T clear it — 8 failures in 180s — reboot the host.
-#         A reboot fully resets the CSI/sensor subsystem (which a process restart may
-#         not, e.g. a vibration/brownout-wedged sensor in flight). Last resort: the
-#         companion runs STANDBY-only, the pilot keeps the FPV cam, and a reboot is
-#         ~48s (WiFi self-heal brings it back). Set StartLimitAction=none to disable.
+# Rung 2: systemd restarts the process (RestartSec=1) — clears a libcamera/IMX500
+#         capture hang in ~3-5s by reopening the camera (bench: 10/10, no hang).
+# Rung 3: ExecStartPre (camera-ready.sh) — if the sensor fell off the bus (not just a
+#         capture hang), reset the camera subsystem via driver unbind/rebind, NO reboot.
+# Rung 4: StartLimitAction=reboot if rung 3 keeps failing — full Pi reboot, last resort.
+#         A reboot fully re-inits the CSI/sensor. The companion runs STANDBY-only and
+#         the pilot keeps the FPV cam, so a ~48s outage is tolerable. =none to disable.
 StartLimitIntervalSec=180
 StartLimitBurst=8
 StartLimitAction=reboot
@@ -22,9 +22,10 @@ SupplementaryGroups=dialout
 
 WorkingDirectory=/opt/pi-fpv-companion
 Environment=PYTHONUNBUFFERED=1
-# Wait for the IMX500 to be enumerable before launching. At boot the service can
-# otherwise grab the sensor mid-init and the camera frontend times out ~60s later.
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do rpicam-hello --list-cameras 2>/dev/null | grep -qi imx500 && exit 0; sleep 1; done; echo "imx500 not listed after 20s, starting anyway" >&2; exit 0'
+# Wait for the IMX500 to be enumerable before launching; if it isn't, reset the camera
+# subsystem (driver rebind, no reboot) — recovery rung 3. The '+' runs it as root
+# (sysfs unbind/rebind needs root) regardless of User=. See scripts/camera-ready.sh.
+ExecStartPre=+/opt/pi-fpv-companion/scripts/camera-ready.sh
 ExecStart=/opt/pi-fpv-companion/.venv/bin/python -m pi_fpv_companion \
     --config /opt/pi-fpv-companion/config/imx500.yaml
 
