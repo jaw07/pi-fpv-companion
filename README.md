@@ -222,6 +222,57 @@ Run the production entry point:
 Dev verification is the test suite (no on-screen viewer): `.venv/bin/python -m pytest`.
 For SITL, see `docs/sitl.md` (`scripts/validate_sitl.py`, `scripts/fly_sitl.py`).
 
+## Deploying to the Pi
+
+`scripts/deploy.py` pushes the working tree to the Pi over SSH and restarts the
+systemd service. It's cross-platform (Windows / macOS / Linux, uses the system
+`ssh`), uses `rsync` when available and falls back to tar-over-ssh otherwise, and
+**never deletes Pi-only files** (`.venv` / `models` / `var` are excluded).
+
+```bash
+# First time on a fresh Pi:
+python scripts/deploy.py keys      # install your SSH key (passwordless deploys)
+python scripts/deploy.py setup     # sync + run install-pi.sh on the Pi (interactive)
+#   then on the Pi: edit config/imx500.yaml, sudo systemctl start pi-fpv-companion
+
+# Every iteration after:
+python scripts/deploy.py           # snapshot → sync → smoke-gate → restart → verify
+python scripts/deploy.py --venv    # also reinstall the venv (after dependency changes)
+python scripts/deploy.py --no-restart   # sync + smoke-gate only, leave service running
+python scripts/deploy.py --dry-run      # show what would sync, change nothing
+
+# Ops:
+python scripts/deploy.py status|logs|restart|stop
+```
+
+Config via env: `PI_HOST` (default `vidtest@192.168.8.160`), `PI_DIR`
+(`/opt/pi-fpv-companion`), `SERVICE` (`pi-fpv-companion`), `PI_PASS` (optional —
+keys are preferred; with `PI_PASS` set, `sshpass` is used if installed, else `ssh`
+prompts). Auth precedence: SSH keys → `PI_PASS` → interactive prompt.
+
+**A failed deploy is a no-op — it cannot boot-loop the Pi.** The systemd unit
+escalates a startup crash-loop to a full reboot (`StartLimitAction=reboot`), so
+shipping code that crashes on launch would otherwise risk a reboot loop. `deploy.py`
+guards against this in three stages:
+
+1. **Snapshot** — before syncing, the current source tree is tar'd to a rollback
+   point on the Pi (`var/_predeploy.tgz`; `var` is never synced, so it's safe).
+2. **Smoke gate** — after syncing but **before restart**, the synced code must
+   compile (`compileall`) *and* its import graph must load (`import
+   pi_fpv_companion.main`, which exercises the camera/FC/guidance factories without
+   touching hardware). If either fails, the snapshot is restored and the running
+   service is left **untouched** — it never sees the bad code.
+3. **Verify** — after restart, the service must report `active`. If it doesn't, the
+   snapshot is restored and the service is restarted on the previous version.
+
+Either failure rolls back automatically and exits non-zero, so the live aircraft
+software always ends on a known-good tree.
+
+> Note: sync does not use `--delete` (to protect Pi-only `.venv`/`models`/`var`),
+> so a source file deleted in the repo is **not** removed from the Pi. After
+> deleting/renaming modules, clear stale files manually or re-run
+> `python scripts/deploy.py setup`.
+
 ## Pi resource budget
 
 Every tick is tracked against the Zero 2W's actual ceiling, not the Mac's:

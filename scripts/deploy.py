@@ -7,6 +7,19 @@ File transfer uses `rsync` when available (fast, incremental — macOS/Linux/WSL
 otherwise falls back to tar-over-ssh, which works on native Windows too (Win10+
 ships `tar`). Neither path deletes Pi-only files (.venv / models / var).
 
+Safe by default — a bad deploy can't boot-loop the Pi:
+  1. Snapshot   — before syncing, the current source tree is tar'd to a rollback
+                  point on the Pi (var/_predeploy.tgz; var is never synced).
+  2. Smoke gate — after syncing, BEFORE restart, the remote code is compiled
+                  (compileall) and the import graph is loaded (import
+                  pi_fpv_companion.main). If either fails the snapshot is restored
+                  and the running service is left untouched — it never sees bad code.
+  3. Verify     — after restart, the service must report active. If it doesn't, the
+                  snapshot is restored and the service restarted on the old code.
+This matters because the systemd unit escalates a crash-loop to a full reboot
+(StartLimitAction=reboot) — deploying code that crashes on startup without this
+guard could put the Pi in a reboot loop. The guard keeps a failed deploy a no-op.
+
 Auth (in order of preference):
   1. SSH keys — works on every platform. Run `deploy.py keys` once to set up.
   2. PI_PASS env — on macOS/Linux uses `sshpass` if installed; the sudo password is
@@ -124,21 +137,68 @@ def sync(dry=False):
         die("tar-over-ssh transfer failed")
 
 
-def verify():
+BACKUP = "var/_predeploy.tgz"   # relative to PI_DIR; var is excluded from sync
+
+
+def snapshot():
+    """Tar the current source tree to a rollback point on the Pi (var/_predeploy.tgz).
+    Excludes the heavy Pi-only dirs (.venv/var/models) so it's small and fast. Best
+    effort: on a first-ever deploy there may be nothing to snapshot — we warn and
+    continue rather than fail."""
+    info("Snapshot current install (rollback point)")
+    r = rsh(f"test -d {PI_DIR}/src && cd {PI_DIR} && tar czf {BACKUP} "
+            f"--exclude=.venv --exclude=./var --exclude=models --exclude=__pycache__ "
+            f"--exclude='*.pyc' . && echo ok", check=False, capture=True)
+    if r.returncode == 0:
+        good("snapshot saved")
+    else:
+        info("no existing install to snapshot — rollback unavailable for this deploy")
+
+
+def rollback():
+    """Restore the source tree from the pre-deploy snapshot and restart the service."""
+    if rsh(f"test -f {PI_DIR}/{BACKUP}", check=False).returncode != 0:
+        die("no snapshot to roll back to — manual recovery needed (check `deploy.py logs`)")
+    info("Rolling back to pre-deploy snapshot")
+    rsh(f"cd {PI_DIR} && tar xzf {BACKUP}")
+    rsu(f"systemctl restart {SERVICE}", check=False)
+    good("rolled back to previous version")
+
+
+def precheck() -> bool:
+    """Smoke gate, run AFTER sync but BEFORE restart: the synced code must compile and
+    its import graph must load. Importing pi_fpv_companion.main exercises the real
+    module graph (camera/fc/guidance factories) without starting any hardware, so it
+    catches bad imports and top-level errors that compileall alone misses."""
+    info("Smoke gate (compile + import, pre-restart)")
+    if rsh(f"cd {PI_DIR} && .venv/bin/python -m compileall -q src", check=False).returncode != 0:
+        print("  remote code does not compile")
+        return False
+    imp = rsh(f"cd {PI_DIR} && .venv/bin/python -c 'import pi_fpv_companion.main'",
+              check=False, capture=True)
+    if imp.returncode != 0:
+        print("  import pi_fpv_companion.main failed:")
+        print("    " + ((imp.stderr or "").strip().replace("\n", "\n    ")[-800:]))
+        return False
+    good("compiles + imports clean")
+    return True
+
+
+def verify() -> bool:
+    """Post-restart health check. Returns True if the service is active. Prints the
+    restart count and a recent-error tally as informational signal."""
     info("Verify service")
     active = rsh(f"systemctl is-active {SERVICE}", check=False, capture=True).stdout.strip()
     nr = rsh(f"systemctl show -p NRestarts --value {SERVICE}", check=False, capture=True).stdout.strip()
     print(f"  service: active={active} NRestarts={nr}")
-    if rsh(f"cd {PI_DIR} && .venv/bin/python -m compileall -q src", check=False).returncode == 0:
-        good("remote code compiles")
-    else:
-        die("remote code does not compile")
     logs = rsu(f"journalctl -u {SERVICE} --since '-90 sec' --no-pager", check=False, capture=True).stdout
     errs = sum(1 for ln in logs.splitlines() if any(k in ln.lower() for k in ("error", "traceback", "exception")))
     print(f"  recent error lines (90s): {errs}")
     if active != "active":
-        die("service is not active")
+        print("  service is not active")
+        return False
     good("deploy healthy")
+    return True
 
 
 def main():
@@ -158,14 +218,24 @@ def main():
         die(f"cannot reach {PI_HOST} (is the Pi on the network? wrong PI_HOST? auth?)")
 
     if args.action == "deploy":
-        sync(dry=args.dry_run)
         if args.dry_run:
+            sync(dry=True)
             return info("dry-run only — nothing changed")
+        snapshot()
+        sync()
         if args.venv:
             info("Update venv"); rsh(f"cd {PI_DIR} && .venv/bin/pip install -q -e ."); good("venv updated")
-        if not args.no_restart:
-            info(f"Restart {SERVICE}"); rsu(f"systemctl restart {SERVICE}"); good("restarted")
-        verify()
+        # Smoke gate before we let systemd run the new code. If it fails, restore the
+        # snapshot and leave the running service untouched — it never sees bad code.
+        if not precheck():
+            rollback()
+            die("smoke gate failed — rolled back, running service left on previous code")
+        if args.no_restart:
+            return good("synced + smoke-checked (no restart requested)")
+        info(f"Restart {SERVICE}"); rsu(f"systemctl restart {SERVICE}"); good("restarted")
+        if not verify():
+            rollback()
+            die("service unhealthy after restart — rolled back to previous version")
     elif args.action == "setup":
         sync()
         info("Running install-pi.sh on the Pi (interactive)")
@@ -176,7 +246,9 @@ def main():
     elif args.action == "logs":
         rsu(f"journalctl -u {SERVICE} -n 60 -f --no-pager", check=False)
     elif args.action == "restart":
-        info(f"Restart {SERVICE}"); rsu(f"systemctl restart {SERVICE}"); good("restarted"); verify()
+        info(f"Restart {SERVICE}"); rsu(f"systemctl restart {SERVICE}"); good("restarted")
+        if not verify():
+            die("service is not active after restart")
     elif args.action == "stop":
         info(f"Stop {SERVICE}"); rsu(f"systemctl stop {SERVICE}"); good("stopped")
 
