@@ -64,8 +64,8 @@ fc:
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied flight path. control_mode MUST match the FC's flight mode. guided_nogps
   # (FLIGHT) = the Pi commands BODY RATES + real thrust via SET_ATTITUDE_TARGET
-  # (guidance/rate_control.py); ch7 engages TRACK/DIVE. STANDBY = a ~2 s levelling
-  # bridge on disengage, then SILENT (the FC's GUID_TIMEOUT hold takes over).
+  # (guidance/rate_control.py); ch7 engages TRACK/DIVE. STANDBY injects NOTHING, in
+  # any FC mode — the FC's GUID_TIMEOUT hold catches the craft after disengage.
   # REQUIRES GUID_OPTIONS bit 3 (the preflight check sets+verifies it) else the FC reads
   # thrust as a climb-rate and the dive planes.
   # Handover/failsafe: KEEP a TX flight-mode switch assigned (e.g. ch6) — flipping it
@@ -82,9 +82,9 @@ fc:
   # dead Pi stays with the GUIDED command timeout (levels in ~3 s), not this.
   enforce_params:
     FS_GCS_TIMEOUT: 20
-    # GUID_TIMEOUT backs the STANDBY design: after the companion's ~2 s levelling
-    # bridge on disengage it goes SILENT, and the FC's guided timeout (this many
-    # seconds after our last setpoint) levels + holds zero climb natively.
+    # GUID_TIMEOUT backs the STANDBY design: the companion injects NOTHING in
+    # STANDBY, so the FC's guided timeout (this many seconds after our last
+    # engaged setpoint) is what levels + holds zero climb after a disengage.
     GUID_TIMEOUT: 3
   stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
   # Adaptive hover: companion vertical-velocity hold trims throttle from VFR_HUD

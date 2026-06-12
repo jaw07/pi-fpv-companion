@@ -210,8 +210,9 @@ pi-fpv-companion`). One change at a time.
 ## Part 5 — When something's off
 
 **Abort, always:** change your flight-mode switch out of GUIDED_NOGPS — that gives
-you full manual control immediately. (ch7 STANDBY levels the craft for ~2 s then goes
-silent; the FC's own guided-timeout hold parks it until you take the mode back.)
+you full manual control immediately. ch7 STANDBY merely stops the companion (it injects
+nothing in STANDBY, ever); the FC keeps the last attitude for up to ~3 s before its own
+guided-timeout hold levels it — so mid-dive, abort with the MODE switch, not ch7.
 
 - **Watch it live:** the composited feed (bbox + HUD) is on the analog composite / TV out.
 - **Read the logs:** `journalctl -u pi-fpv-companion -f` — persistent across reboots/battery
