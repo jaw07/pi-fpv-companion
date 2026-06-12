@@ -485,38 +485,20 @@ def test_guided_nogps_rate_path_sends_body_rates_not_sticks():
     assert fc.sent == [], "the RC-stick (send_intent) path must NOT be used in rate mode"
 
 
-def test_guided_nogps_standby_levels_during_bridge_when_fc_in_guided():
-    # STANDBY while the FC is still in GUIDED_NOGPS -> LEVEL it during the short bridge
-    # window (never leave the FC coasting on a dive attitude with no setpoint).
+def test_guided_nogps_standby_injects_nothing_even_in_guided():
+    # Operator requirement (flight-2 hardening): STANDBY injects NOTHING, regardless
+    # of the FC's flight mode. Even armed with the FC left in GUIDED_NOGPS, the
+    # companion is silent — ArduCopter's GUID_TIMEOUT hold (auto-enforced to 3 s)
+    # catches the craft after the last engaged setpoint.
     cam = SyntheticCamera(width=720, height=576)
-    fc = RateStubFC(switch_active=False, pitch=10.0)   # STANDBY, nose-up -> should be levelled
-    fc.ready = True                                    # FC IS in GUIDED_NOGPS
-    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
-                    rate_cfg=RateConfig(720, 576))
-    pipe.tick(cam.render_at(0.0))                      # within the bridge window
-    assert fc.released >= 1
-    assert fc.body_rates, "the bridge must level the FC, not abandon it mid-attitude"
-    rr, pr, yr, thrust = fc.body_rates[-1]
-    assert pr < 0.0                       # nose-up -> commanded pitch rate drives back to level
-    assert abs(yr) < 1e-6 and 0.05 <= thrust <= 0.6
-
-
-def test_guided_nogps_standby_goes_silent_after_the_bridge():
-    # After the levelling bridge expires, STANDBY injects NOTHING even with the FC
-    # left in GUIDED_NOGPS — the FC's own GUID_TIMEOUT hold takes over.
-    cam = SyntheticCamera(width=720, height=576)
-    fc = RateStubFC(switch_active=False, pitch=10.0)
+    fc = RateStubFC(switch_active=False, pitch=10.0)   # STANDBY, armed, FC in GUIDED_NOGPS
     fc.ready = True
     pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
                     rate_cfg=RateConfig(720, 576))
-    pipe.tick(cam.render_at(0.0))                      # bridge: levels
-    assert fc.body_rates
-    sent_during_bridge = len(fc.body_rates)
-    for t in (3.0, 4.0, 30.0):                         # well past _STANDBY_GUIDED_BRIDGE_S
+    for t in (0.0, 0.5, 3.0, 30.0):
         pipe.tick(cam.render_at(t))
-    assert len(fc.body_rates) == sent_during_bridge, \
-        "steady-state STANDBY must be silent, even in GUIDED_NOGPS"
-    assert fc.released >= 4                            # still releasing (backend makes it quiet)
+    assert fc.body_rates == [], "STANDBY must NEVER inject commands, in any FC mode"
+    assert fc.released >= 4                            # hands-off is the only transmission
 
 
 def test_guided_nogps_standby_hover_hold_never_sent_while_disarmed():

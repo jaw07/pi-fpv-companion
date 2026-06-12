@@ -28,14 +28,6 @@ StatusCallback = Callable[
      Optional[List[Target]]], None
 ]
 
-# STANDBY-in-GUIDED_NOGPS levelling bridge: on the engaged->STANDBY edge the FC may be
-# coasting on a committed dive attitude with the pilot's sticks dead (guided ignores
-# them), so the companion levels it for this long — then goes COMPLETELY SILENT.
-# After our last setpoint, ArduCopter's own guided timeout (GUID_TIMEOUT, default 3 s,
-# enforced from imx500.yaml) zeroes the lean angles and holds zero climb rate natively.
-# Net: ~2 s of our levelling + the FC's own hold, and steady-state STANDBY injects
-# nothing — even with the FC left in GUIDED_NOGPS.
-_STANDBY_GUIDED_BRIDGE_S = 2.0
 
 
 class Pipeline:
@@ -82,8 +74,6 @@ class Pipeline:
         # ch7 auto-engage: track the STANDBY<->engaged edge so we command the FC's
         # flight mode (fc.set_engaged) only on the transition, never every frame.
         self._last_engaged = False
-        # STANDBY-in-guided levelling bridge deadline (see _STANDBY_GUIDED_BRIDGE_S).
-        self._standby_bridge_until = 0.0
         self._tracks: Optional[list] = None
         self._dive_entered_t: Optional[float] = None   # for the DIVE lean soft-start
         self._closure = ClosureState()                  # TRACK PI closure integrator
@@ -276,9 +266,6 @@ class Pipeline:
         if switch.mode is not self._last_rate_mode:
             self._rate_state.reset()
             self._last_rate_mode = switch.mode
-            if switch.mode is GuidanceMode.STANDBY:
-                # Entering STANDBY: arm the levelling bridge (see _STANDBY_GUIDED_BRIDGE_S).
-                self._standby_bridge_until = now + _STANDBY_GUIDED_BRIDGE_S
         ready = getattr(fc, "control_ready", None)
         fc_in_guided = ready is None or ready()   # FC actually in GUIDED_NOGPS (accepts our rates)
         # NEVER command body rates while disarmed (unless the config waives the armed
@@ -288,29 +275,22 @@ class Pipeline:
         # but the STANDBY hover-hold branch bypasses gate(), so check it explicitly.
         can_command = armed or not self._safety_cfg.require_armed
         if switch.mode is GuidanceMode.STANDBY or not fc_in_guided:
-            fc.release()                            # clear any stray RC override (no-op in guided)
-            if (fc_in_guided and can_command and hasattr(fc, "send_body_rates")
-                    and now < self._standby_bridge_until):
-                # Engaged->STANDBY with the FC STILL in GUIDED_NOGPS (sticks dead there by
-                # ArduPilot design): the FC may be coasting on a committed dive attitude, so
-                # LEVEL it for the short bridge window — then go silent and let the FC's own
-                # GUID_TIMEOUT hold (level + zero climb) take over. STANDBY must not inject
-                # commands at steady state, even in the flight mode. Manual recovery is
-                # unchanged: the pilot flips the FC mode OUT of GUIDED_NOGPS at any time.
-                p = _math.radians(fc.pitch_deg()) if hasattr(fc, "pitch_deg") else 0.0
-                r = _math.radians(fc.roll_deg()) if hasattr(fc, "roll_deg") else 0.0
-                if hasattr(fc, "climb_mps"):
-                    self._rate_state.hover = max(0.05, min(0.6, self._rate_state.hover - 0.01 * fc.climb_mps()))
-                fc.send_body_rates(max(-0.6, min(0.6, 2.0 * (0.0 - r))),
-                                   max(-0.6, min(0.6, 2.0 * (0.0 - p))),
-                                   0.0, self._rate_state.hover)
-                reason = "standby-bridge (levelling, then silent)"
-            elif fc_in_guided and can_command:
-                reason = "standby (silent; FC guided-timeout holds)"
-            elif fc_in_guided:
-                reason = "standby (disarmed; no commands)"
-            else:
+            # STANDBY injects NOTHING, regardless of the FC's flight mode (operator
+            # requirement, flight-2 hardening). release() is the only transmission and
+            # it is a hands-off instruction (zero-override burst, then quiet — see the
+            # backend). Even with the FC left in GUIDED_NOGPS the companion stays
+            # silent: ArduCopter's GUID_TIMEOUT (3 s, auto-enforced) levels and holds
+            # zero climb natively after our last engaged setpoint. Consequence, by
+            # explicit operator choice: disengaging mid-dive leaves the FC on the dive
+            # attitude for up to that timeout — the pilot's ch6 mode flip out of
+            # GUIDED_NOGPS is the instant recovery, as always.
+            fc.release()
+            if not fc_in_guided:
                 reason = "manual (FC not in GUIDED_NOGPS)"
+            elif can_command:
+                reason = "standby (silent; FC guided-timeout holds)"
+            else:
+                reason = "standby (disarmed; no commands)"
             gated = GateResult(ZERO_INTENT, True, reason)
             if self._on_status is not None:
                 self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
