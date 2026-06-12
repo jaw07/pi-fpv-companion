@@ -18,10 +18,17 @@ camera:
   type: imx500               # on-sensor inference; detections emitted inline
   framerate: 30
   imx500_model: /usr/share/imx500-models/imx500_network_nanodet_plus_416x416_pp.rpk
+  # This bench Pi uploads the network firmware at ~65 kB/s (~55 s for NanoDet) —
+  # the 15 s flight default would watchdog-kill the process mid-upload.
+  first_frame_grace_s: 120
 
 detector:
   type: none                 # IMX500 does detection on-sensor
-  conf_threshold: 0.45
+  # Bench: LOWER than the flight 0.45. Small INT8 COCO models score "obvious"
+  # objects around 0.4-0.6 by nature — absolute confidence is poorly calibrated.
+  # Temporal filtering (confirm_hits M-of-N + the coast-decay fix) is the real
+  # ghost filter, so on the bench we accept more candidates and let it work.
+  conf_threshold: 0.30
   classes_of_interest: [person, car, truck, motorcycle, bus, boat]
 
 tracker:

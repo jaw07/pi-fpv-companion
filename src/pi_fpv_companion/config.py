@@ -39,6 +39,11 @@ class CameraSection:
     file_path: str = ""
     webcam_device: int = 0
     zoom: float = 1.0                    # imx500 digital zoom (centre-crop); >1 aids far targets, costs FOV
+    # First-frame watchdog grace: must exceed the worst cold camera open INCLUDING the
+    # IMX500 network-firmware upload, which varies wildly per Pi (~6 s on the flight
+    # rig, ~55 s observed on a fresh bench Pi at ~65 kB/s SPI). Too short -> the
+    # watchdog kills the process mid-upload, forever.
+    first_frame_grace_s: float = 15.0
 
 
 @dataclass
@@ -161,6 +166,7 @@ def _video(d: Dict[str, Any]) -> VideoSection:
 
 def _camera(d: Dict[str, Any]) -> CameraSection:
     return CameraSection(
+        first_frame_grace_s=float(d.get("first_frame_grace_s", 15.0)),
         type=d.get("type", "imx500"),
         framerate=d.get("framerate", 30),
         imx500_model=d.get("imx500_model", ""),
