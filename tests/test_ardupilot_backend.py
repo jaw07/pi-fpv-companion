@@ -479,6 +479,85 @@ def test_mode_command_retries_until_confirmed_on_dropped_commands():
         backend.close(); fake.stop()
 
 
+def _offline_guided_backend():
+    """Backend with NO transport (never opened): _send_mode/_drain no-op, so the
+    mode-command and switch-debounce state machines can be unit-driven directly."""
+    return ArduPilotBackend(
+        device="udpin:127.0.0.1:1", baud=0, switch_channel=7,
+        track_threshold_us=1300, dive_threshold_us=1700, auto_guided=True,
+        mapping=ArduCopterRcMapping(control_mode="guided_nogps"))
+
+
+def test_reengage_race_own_restore_heartbeat_is_not_a_pilot_override():
+    # Quick STANDBY->TRACK re-toggle: the disengage's restore is still unconfirmed when
+    # the re-engage starts. Neither the STALE current_mode (== new target) may false-
+    # confirm the new command, nor may the restore's late-landing HEARTBEAT be read as
+    # a pilot override (it is our own command arriving).
+    b = _offline_guided_backend()
+    b._current_mode = 0; b._hb_count = 1
+    b.set_engaged(True)                              # cmd GUIDED_NOGPS, saved=STABILIZE
+    b._current_mode = 20; b._hb_count = 2
+    b._service_mode()
+    assert b._target_mode is None                    # engage confirmed
+    b.set_engaged(False)                             # restore STABILIZE (pending)
+    b.set_engaged(True)                              # re-engage BEFORE restore confirms
+    b._service_mode()
+    assert b._target_mode == 20, "stale current_mode==target must NOT false-confirm"
+    b._current_mode = 0; b._hb_count = 3             # our restore lands late
+    b._service_mode()
+    assert b._target_mode == 20, "own late restore must not read as pilot override"
+    b._current_mode = 2; b._hb_count = 4             # pilot really flips to ALT_HOLD
+    b._service_mode()
+    assert b._target_mode is None, "a real pilot mode change must cancel"
+
+
+def test_disengage_skips_restore_when_pilot_already_moved_the_fc():
+    # Pilot manual recovery mid-engagement (FC flipped to a third mode), then ch7 ->
+    # STANDBY: the companion must NOT restore the saved mode over the pilot's choice.
+    b = _offline_guided_backend()
+    b._current_mode = 0; b._hb_count = 1
+    b.set_engaged(True)
+    b._current_mode = 20; b._hb_count = 2
+    b._service_mode()                                # engaged + confirmed
+    b._current_mode = 2; b._hb_count = 3             # pilot takes ALT_HOLD
+    b.set_engaged(False)
+    assert b._target_mode is None and b._saved_mode is None
+
+
+def test_switch_escalation_debounced_deescalation_instant():
+    # One glitched RC frame must never engage TRACK/DIVE (flight-2 hardening);
+    # de-escalation toward STANDBY commits immediately (disengage never lags).
+    b = _offline_guided_backend()
+    b._update_switch(1800)
+    assert b._last_switch.mode is GuidanceMode.STANDBY    # single sample: held
+    b._update_switch(1800)
+    assert b._last_switch.mode is GuidanceMode.DIVE       # confirmed on the 2nd
+    b._update_switch(1000)
+    assert b._last_switch.mode is GuidanceMode.STANDBY    # disengage: instant
+    b._update_switch(1500); b._update_switch(1000); b._update_switch(1500)
+    assert b._last_switch.mode is GuidanceMode.STANDBY    # alternating glitches: never engage
+    b._update_switch(1500)
+    assert b._last_switch.mode is GuidanceMode.TRACK      # steady switch: engages
+    b._update_switch(1800)
+    assert b._last_switch.mode is GuidanceMode.TRACK      # TRACK->DIVE also debounced
+    b._update_switch(1800)
+    assert b._last_switch.mode is GuidanceMode.DIVE
+
+
+def test_hb_liveness_gate_withholds_heartbeats_when_loop_wedges():
+    # The GCS heartbeat must report LOOP liveness: startup grace before the first
+    # drain, flow while draining, withhold when the loop wedges (so FS_GCS can fire).
+    b = _offline_guided_backend()
+    now = time.monotonic()
+    assert b._hb_should_send(now)                  # startup grace
+    b._last_drain_t = now - 1.0
+    assert b._hb_should_send(now)                  # loop alive
+    b._last_drain_t = now - 10.0
+    assert not b._hb_should_send(now)              # wedged -> withhold
+    b._last_drain_t = now - 0.1
+    assert b._hb_should_send(now)                  # resumed
+
+
 def test_mode_command_cancelled_when_pilot_changes_mode():
     # Flight-2 fix: the pilot's TX mode switch must always win. While the companion is
     # retrying DO_SET_MODE (FC rejecting it), the FC moving to a THIRD mode (pilot or
@@ -515,6 +594,7 @@ def test_mode_command_gives_up_after_retry_budget(monkeypatch):
         assert ok, "retry must give up after the budget"
         assert fake.set_mode_cmds, "it did try before giving up"
         assert fake.custom_mode == 0                         # FC was never moved
+        assert backend._saved_mode is None                   # no stale restore left armed
     finally:
         backend.close(); fake.stop()
 

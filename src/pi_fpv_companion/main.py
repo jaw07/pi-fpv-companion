@@ -175,11 +175,27 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
     print("  validating FC params ...")
     try:
         status = ensure(desired)
+        # One retry for failures: ensure_params aborts the pass on the first slow
+        # read (a busy FC at boot), which would otherwise silently skip params
+        # later in the list — including safety-critical ones like FS_GCS_TIMEOUT.
+        failed = {n: desired[n] for n, st in status.items()
+                  if st in ("read-fail", "write-fail")}
+        if failed:
+            print(f"  retrying {len(failed)} failed param(s) ...")
+            status.update(ensure(failed))
     except Exception as e:
         print(f"  WARN: FC param validation failed: {e}")
         return
     for name, st in status.items():
         print(f"    {name}: {st}")
+    bad = [n for n, st in status.items() if st not in ("ok", "set")]
+    if bad:
+        # Loud, because flying on FC-side defaults can be unsafe: e.g. an
+        # unenforced FS_GCS_TIMEOUT (5 s default) means the next camera-watchdog
+        # restart trips the GCS failsafe and the FC LANDs itself mid-flight.
+        print(f"  ERROR: FC params NOT enforced: {', '.join(bad)} — the FC is flying "
+              "on its stored values for these. Verify them in Mission Planner "
+              "before flight.")
     # guided_nogps RATE path: the thrust field MUST be real throttle, not a climb-rate,
     # or the dive planes. Enforce GUID_OPTIONS bit 3 (ThrustAsThrust), OR-ing it in so
     # other guided bits are preserved. (Bench finding: a wrong/missing bit silently turns

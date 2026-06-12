@@ -90,7 +90,10 @@ class Validate(Node):
         rgb = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.width, 3)
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         if ph == "B_PIDEATH":
-            # Simulate Pi death: do NOT tick the pipeline -> no SET_ATTITUDE_TARGET, no heartbeat.
+            # Simulate Pi death: do NOT tick the pipeline -> no SET_ATTITUDE_TARGET. The
+            # backend's GCS-heartbeat thread keeps beating at first, but its liveness gate
+            # (_HB_LOOP_STALL_S = 5 s without a _drain) then withholds heartbeats, so the
+            # FC's FS_GCS can fire during this phase too. Heartbeats resume with C_TRACK.
             pass
         else:
             self.pipe._force_mode = {"A_STANDBY": GuidanceMode.STANDBY, "C_TRACK": GuidanceMode.TRACK,
