@@ -1,0 +1,48 @@
+# Camera-only BENCH rig — no FC, no VTX. IMX500 perception runs end-to-end and the
+# composited frame (bbox + HUD, identical to the flight TV-out) is served as a
+# browser MJPEG stream instead of the framebuffer:
+#   run:  python -m pi_fpv_companion --config config/bench-stream.yaml
+#   view: http://<pi-ip>:8080/
+# The switch is permanently STANDBY (NullFC) so nothing is ever commanded anywhere;
+# use --force-mode track / dive to preview engaged guidance on the HUD.
+
+video:
+  tv_mode: PAL
+  width: 720
+  height: 576
+  web_stream_port: 8080      # BENCH ONLY: browser MJPEG at http://<pi>:8080/
+  web_stream_quality: 80
+  web_stream_fps: 15         # stream rate cap; the pipeline still runs at full camera fps
+
+camera:
+  type: imx500               # on-sensor inference; detections emitted inline
+  framerate: 30
+  imx500_model: /usr/share/imx500-models/imx500_network_nanodet_plus_416x416_pp.rpk
+
+detector:
+  type: none                 # IMX500 does detection on-sensor
+  conf_threshold: 0.45
+  classes_of_interest: [person, car, truck, motorcycle, bus, boat]
+
+tracker:
+  type: multi_iou
+  iou_threshold: 0.3
+  reacquire_after_lost_frames: 30
+  confirm_hits: 3
+  confirm_window: 5
+
+fc:
+  backend: none              # NO flight controller on this rig
+  select_channel: 0          # no RC either — auto-lock highest confidence
+  # stabilize selects the ATTITUDE pipeline path, which previews the guidance
+  # intent on the HUD even in STANDBY — that preview is the point of the bench rig.
+  control_mode: stabilize
+
+safety:
+  watchdog_timeout_ms: 250
+  require_armed: true        # never true with NullFC -> guidance preview only
+  min_track_quality: 0.35
+
+# Bench rig: keep the journald logs, skip the flight blackbox.
+flight_log:
+  enabled: false

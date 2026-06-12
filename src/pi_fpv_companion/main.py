@@ -145,6 +145,9 @@ def _build_fc(cfg: AppConfig):
                 yaw_sign=cfg.fc.rc_yaw_sign,
             ),
         )
+    if cfg.fc.backend == "none":
+        from pi_fpv_companion.fc.null import NullFC
+        return NullFC()
     if cfg.fc.backend == "betaflight":
         from pi_fpv_companion.fc.betaflight import BetaflightBackend
         if cfg.fc.betaflight is None:
@@ -240,6 +243,12 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
 def _build_sink(cfg: AppConfig, no_gui: bool):
     if no_gui:
         return None
+    # BENCH: browser MJPEG stream instead of the TV-out (no VTX/composite needed).
+    if cfg.video.web_stream_port:
+        from pi_fpv_companion.video.mjpeg_stream import MjpegStreamSink
+        return MjpegStreamSink(port=cfg.video.web_stream_port,
+                               quality=cfg.video.web_stream_quality,
+                               max_fps=cfg.video.web_stream_fps)
     from pi_fpv_companion.video.framebuffer import FramebufferSink
 
     # Prefer the legacy /dev/fb0 path if available (older Pi OS, or fkms).

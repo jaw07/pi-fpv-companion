@@ -24,6 +24,11 @@ class VideoSection:
     width: int = 720
     height: int = 576
     framebuffer: str = "/dev/fb0"
+    # BENCH ONLY: serve the composited frame as browser MJPEG instead of the
+    # framebuffer/TV-out (video/mjpeg_stream.py). 0 = off (flight default).
+    web_stream_port: int = 0
+    web_stream_quality: int = 80
+    web_stream_fps: float = 15.0
 
 
 @dataclass
@@ -148,6 +153,9 @@ def _video(d: Dict[str, Any]) -> VideoSection:
         width=d.get("width", 720),
         height=d.get("height", 576),
         framebuffer=d.get("framebuffer", "/dev/fb0"),
+        web_stream_port=int(d.get("web_stream_port", 0)),
+        web_stream_quality=int(d.get("web_stream_quality", 80)),
+        web_stream_fps=float(d.get("web_stream_fps", 15.0)),
     )
 
 
