@@ -14,6 +14,12 @@ dist/
 # Model weights — large binaries, do not commit
 *.rpk
 *.ncnn
+# EXCEPT the deployed default model — ships with the code so deploys are self-contained.
+!models/imx500_network_yolo11n_visdrone416_pp.rpk
+# Other export-pipeline build artifacts stay ignored.
+models/*.zip
+models/*best*.pt
+models/*_labels.txt
 *.param
 *.bin
 *.onnx

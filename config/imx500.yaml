@@ -13,32 +13,40 @@ video:
 camera:
   type: imx500               # on-sensor inference; detections emitted inline in FrameBundle
   framerate: 30
-  # NanoDet-Plus 416x416 (higher-res than the SSD-MobileNet 320): ~1.7x the input
-  # pixels -> better small/distant targets, same 4-tensor output + 90 COCO labels as
-  # SSD (decoder unchanged), and actually slightly faster to load (~4.9s). Switched
-  # after the first flight surfaced far-target detection trouble.
-  imx500_model: /usr/share/imx500-models/imx500_network_nanodet_plus_416x416_pp.rpk
+  # DEFAULT: YOLO11n fine-tuned on VisDrone (aerial drone-view) @416 — our own model,
+  # built via the export pipeline (Thor train -> LattePanda export -> Pi package) and
+  # shipped in the repo (models/). ~12.9 Hz on the NPU, well-calibrated (q~0.8 on real
+  # targets), strong on vehicles (car val-mAP50 0.63). The decoder auto-detects the
+  # 10 VisDrone classes from the "visdrone" filename. Path is the deployed repo dir.
+  imx500_model: /opt/pi-fpv-companion/models/imx500_network_yolo11n_visdrone416_pp.rpk
+  # The IMX500 firmware upload varies per rig; generous grace so the first-frame
+  # watchdog never kills the process mid-upload.
+  first_frame_grace_s: 120
   # zoom: 1.0 = full FOV (digital centre-crop zoom available but left off for now).
 
 detector:
   type: none                 # IMX500 does detection on-sensor — no CPU/ncnn model
-  # conf_threshold + classes_of_interest are still read here and applied by
-  # IMX500Camera when it decodes the sensor's output tensors.
-  # Raised to 0.45 after the first flight: 0.35 let aerial/top-down false positives
-  # through (the COCO model isn't trained on that viewpoint).
-  conf_threshold: 0.45
-  classes_of_interest: [person, car, truck, motorcycle, bus, boat]
+  # conf_threshold + classes_of_interest are read here and applied by IMX500Camera
+  # when it decodes the sensor's output tensors. YOLO is well-calibrated (real ~0.8,
+  # junk ~0.1), so a firm 0.50 cleanly separates them — the primary ghost filter at
+  # the YOLO NPU rate (frame-based confirm_hits can't latch when detections arrive
+  # every ~6th frame). Classes are the VisDrone taxonomy (resolved against the model's
+  # own labels, not COCO — see _resolve_class_ids).
+  conf_threshold: 0.50
+  classes_of_interest: [pedestrian, people, car, van, truck, bus, motor]
 
 tracker:
   type: multi_iou            # track ALL detections + operator selection (select_channel).
                              # 'iou' = single auto-locked target (no manual select).
   iou_threshold: 0.3
-  reacquire_after_lost_frames: 30
-  # Spurious-detection suppression (first-flight fix): a track must be detected in
-  # >= confirm_hits of the last confirm_window frames before it is shown/selectable,
-  # so one/two-frame ghosts never reach the HUD or the lock. Off-frame coasting
-  # tracks are also dropped (no boxes gliding off-screen) — see multi_target.py.
-  confirm_hits: 3
+  # Drop coasting tracks fast: at the YOLO NPU rate (~13 Hz) a ghost gets one position
+  # sample and a long coast lets it streak off-screen. 8 frames bridges the detection
+  # gap but kills a runaway in ~0.25s.
+  reacquire_after_lost_frames: 8
+  # confirm_hits 1: the YOLO NPU rate is far below camera fps, so a 3-of-5 frame gate
+  # can't latch — conf_threshold is the ghost filter instead (the quality filter's
+  # time-based staleness + the fast coast-drop handle the rest).
+  confirm_hits: 1
   confirm_window: 5
 
 fc:

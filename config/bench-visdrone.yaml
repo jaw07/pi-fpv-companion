@@ -22,7 +22,7 @@ camera:
   #   nanodet_plus_416x416_pp   — fast (~26 fps NPU), low/poorly-calibrated scores
   #   yolo11n_pp                — better mAP + calibrated scores, slower NPU
   #   yolo26n_pp                — newest (Jan 2026), edge-first; identical tensor fmt
-  imx500_model: /usr/share/imx500-models/imx500_network_yolo11n_visdrone416_pp.rpk
+  imx500_model: /opt/pi-fpv-companion/models/imx500_network_yolo11n_visdrone416_pp.rpk
   # This bench Pi uploads the network firmware at ~65 kB/s (~50 s) — the 15 s flight
   # default would watchdog-kill the process mid-upload.
   first_frame_grace_s: 120

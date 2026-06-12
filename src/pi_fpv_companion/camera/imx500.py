@@ -24,7 +24,9 @@ from pi_fpv_companion.detect.coco import COCO_CLASSES
 from pi_fpv_companion.types import Detection
 
 
-_DEFAULT_MODEL = "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk"
+# Default = our VisDrone-fine-tuned YOLO11n@416 (shipped in the repo models/ dir).
+# Configs normally set camera.imx500_model explicitly; this is the fallback.
+_DEFAULT_MODEL = "/opt/pi-fpv-companion/models/imx500_network_yolo11n_visdrone416_pp.rpk"
 
 # VisDrone-DET class order (Ultralytics VisDrone.yaml) — a model fine-tuned on
 # VisDrone outputs THESE 10 classes, not COCO-80. Aerial/drone-view person +
