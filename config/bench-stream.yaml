@@ -39,10 +39,13 @@ detector:
 tracker:
   type: multi_iou
   iou_threshold: 0.3
-  reacquire_after_lost_frames: 30
-  # Bench: show immediately (confirm_hits 1). YOLO11n's NPU inference rate is far
-  # below the camera fps, so detections arrive sparsely — a 3-of-5 gate may never
-  # latch. The coast-decay fix already tames ghost runaway; for flight, raise this.
+  # Drop coasting tracks fast. At the YOLO NPU rate (~5.5 Hz) a ghost gets one
+  # position sample, the tracker infers a wild velocity, and a long coast lets it
+  # streak off-screen. 8 frames still bridges the ~6-frame gap between real
+  # detections but kills a runaway in ~0.25s. (Flight may want a touch more.)
+  reacquire_after_lost_frames: 8
+  # Show immediately (confirm_hits 1). The YOLO NPU rate is far below camera fps,
+  # so a 3-of-5 frame gate can't latch; conf_threshold is the ghost filter instead.
   confirm_hits: 1
   confirm_window: 5
 
