@@ -187,3 +187,11 @@ safety:
   watchdog_timeout_ms: 250
   require_armed: true
   min_track_quality: 0.35
+
+# Companion flight recorder — the companion-side blackbox (var/flight/*.jsonl).
+# 10 Hz decision trail: switch mode/pwm, armed, gate verdict+reason, intent sent,
+# target box+quality. ~7 MB per 10 flight-hours; rotated and pruned automatically.
+flight_log:
+  enabled: true
+  directory: var/flight
+  rate_hz: 10

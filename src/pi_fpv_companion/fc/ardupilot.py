@@ -80,15 +80,25 @@ _SWITCH_CONFIRM_SAMPLES = 2
 # If the main loop stops draining (camera wedge the watchdog misses, deadlock), STOP
 # sending GCS heartbeats after this long so the FC's FS_GCS can fire — the heartbeat
 # must report companion-LOOP liveness, not mere process liveness. Before the first
-# drain (startup: camera bring-up, param validation) heartbeats always flow; that is
-# the gap the dedicated thread exists to cover.
+# drain (startup: camera bring-up, param validation) heartbeats flow on a BOUNDED
+# grace — that is the gap the dedicated thread exists to cover, but a process that
+# hangs before the loop ever starts must not claim "healthy GCS" forever.
 _HB_LOOP_STALL_S = 5.0
+_HB_STARTUP_GRACE_S = 60.0   # > worst cold start (rpk upload ~5-15s + param validation)
 
 # GUID_OPTIONS bit 3 (=8): SetAttitudeTarget interprets the thrust field as THRUST,
 # not a climb-rate. MANDATORY for the guided_nogps rate path — without it ArduCopter
 # reads SET_ATTITUDE_TARGET.thrust as a climb-rate command (0.5 = hold altitude), so
 # "throttle 0" never descends and the dive planes. Verified in the preflight param check.
 GUID_OPTIONS_THRUST_AS_THRUST = 8
+
+# FS_OPTIONS bit 4 (=16): "continue if in pilot-controlled modes on GCS failsafe".
+# The companion's GCS heartbeat arms FS_GCS, but without this bit a Pi death/restart
+# LANDs a craft the pilot is flying MANUALLY in STABILIZE/ALT_HOLD (a likely flight-2
+# mechanism: every camera-watchdog restart attempted a LAND mid-stick-flight). With it,
+# GCS loss is ignored while the pilot has stick authority and still LANDs in
+# GUIDED_NOGPS — the one mode where losing the companion means nobody is flying.
+FS_OPTIONS_CONTINUE_PILOT_GCS = 16
 
 
 @dataclass(frozen=True)
@@ -250,6 +260,7 @@ class ArduPilotBackend:
         self._pending_switch_mode: Optional[GuidanceMode] = None
         self._pending_switch_count: int = 0
         self._last_drain_t: float = 0.0      # last _drain() — heartbeat liveness gate
+        self._hb_open_t: float = time.monotonic()   # open() time — bounds the startup grace
         self._hb_send_failed: bool = False   # warn-once on heartbeat send failure
         self._hb_stalled: bool = False       # warn-once when withholding heartbeats
 
@@ -264,6 +275,7 @@ class ArduPilotBackend:
         self._mav = mavutil.mavlink_connection(
             self._device, baud=self._baud, autoreconnect=True
         )
+        self._hb_open_t = time.monotonic()
         self._hb_stop.clear()
         self._hb_thread = threading.Thread(
             target=self._heartbeat_loop, daemon=True, name="fc-gcs-heartbeat")
@@ -292,13 +304,15 @@ class ArduPilotBackend:
                     self._hb_send_failed = True
 
     def _hb_should_send(self, now: float) -> bool:
-        """Heartbeat liveness gate: True before the first _drain() (startup grace —
-        camera bring-up / param validation must be covered) and while the main loop
-        has drained within _HB_LOOP_STALL_S. A loop wedged longer than that gets NO
-        heartbeats, so FS_GCS can land the craft instead of it hovering on a dead
-        companion until the battery dies. Warns once per stall, logs recovery."""
+        """Heartbeat liveness gate: True before the first _drain() for a BOUNDED
+        startup grace (camera bring-up / param validation must be covered, but a
+        process that never reaches the loop must not claim healthy forever), then
+        while the main loop has drained within _HB_LOOP_STALL_S. A loop wedged
+        longer than that gets NO heartbeats, so FS_GCS can land the craft instead
+        of it hovering on a dead companion until the battery dies. Warns once per
+        stall, logs recovery."""
         if self._last_drain_t == 0.0:
-            return True
+            return (now - self._hb_open_t) < _HB_STARTUP_GRACE_S
         if now - self._last_drain_t <= _HB_LOOP_STALL_S:
             if self._hb_stalled:
                 _log.warning("main loop resumed — GCS heartbeats restored")

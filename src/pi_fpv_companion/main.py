@@ -15,6 +15,7 @@ implementations. Everything downstream speaks Protocols.
 """
 from __future__ import annotations
 import argparse
+import logging
 import signal
 import sys
 from pathlib import Path
@@ -200,15 +201,24 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
     # or the dive planes. Enforce GUID_OPTIONS bit 3 (ThrustAsThrust), OR-ing it in so
     # other guided bits are preserved. (Bench finding: a wrong/missing bit silently turns
     # "throttle 0" into "hold altitude".)
-    if cfg.fc.control_mode == "guided_nogps":
-        ensure_bits = getattr(fc, "ensure_param_bits", None)
-        if callable(ensure_bits):
-            from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST
-            try:
-                st = ensure_bits("GUID_OPTIONS", GUID_OPTIONS_THRUST_AS_THRUST)
-                print(f"    GUID_OPTIONS(ThrustAsThrust): {st}")
-            except Exception as e:
-                print(f"  WARN: GUID_OPTIONS check failed: {e}")
+    ensure_bits = getattr(fc, "ensure_param_bits", None)
+    if cfg.fc.control_mode == "guided_nogps" and callable(ensure_bits):
+        from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST
+        try:
+            st = ensure_bits("GUID_OPTIONS", GUID_OPTIONS_THRUST_AS_THRUST)
+            print(f"    GUID_OPTIONS(ThrustAsThrust): {st}")
+        except Exception as e:
+            print(f"  WARN: GUID_OPTIONS check failed: {e}")
+    if callable(ensure_bits):
+        # Scope the GCS failsafe to modes where the companion actually has authority:
+        # without FS_OPTIONS bit 4, a Pi death/restart LANDs a craft being flown
+        # manually on the sticks (see FS_OPTIONS_CONTINUE_PILOT_GCS).
+        from pi_fpv_companion.fc.ardupilot import FS_OPTIONS_CONTINUE_PILOT_GCS
+        try:
+            st = ensure_bits("FS_OPTIONS", FS_OPTIONS_CONTINUE_PILOT_GCS)
+            print(f"    FS_OPTIONS(ContinuePilotModesOnGCSLoss): {st}")
+        except Exception as e:
+            print(f"  WARN: FS_OPTIONS check failed: {e}")
 
 
 def _build_sink(cfg: AppConfig, no_gui: bool):
@@ -245,6 +255,12 @@ def main(argv=None) -> int:
                     help="Mac->Pi scaling factor for perf estimates (see perf.py docstring)")
     args = ap.parse_args(argv)
 
+    # Without this, Python logging has NO handler: INFO records (param-ok lines, mode
+    # confirmations — the breadcrumbs that reconstruct a flight) are dropped entirely,
+    # and only WARNING+ reach stderr via the last-resort handler. journald adds its
+    # own timestamps, so the format stays terse.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
     cfg = load(args.config)
     print(f"loaded config: {args.config}")
     print(f"  camera   {cfg.camera.type}")
@@ -269,8 +285,18 @@ def main(argv=None) -> int:
             print(f"WARN: FC didn't return heartbeat within timeout: {e}")
         _enforce_fc_params(cfg, fc)
 
+    recorder = None
+    if cfg.recorder.enabled:
+        from pi_fpv_companion.flight_log import FlightRecorder
+        recorder = FlightRecorder(cfg.recorder.directory, rate_hz=cfg.recorder.rate_hz,
+                                  max_bytes=cfg.recorder.max_bytes,
+                                  keep_files=cfg.recorder.keep_files)
+        print(f"  recorder {cfg.recorder.directory} @ {cfg.recorder.rate_hz:g} Hz")
+
     def on_status(target, intent, gated, switch, armed, frame, tracks=None):
         perf.tick_end(on_status._t0)
+        if recorder is not None:
+            recorder.record(target, intent, gated, switch, armed)
         if sink is not None:
             sink.show(target, intent, gated, switch, armed, frame, tracks)
 
@@ -317,6 +343,8 @@ def main(argv=None) -> int:
         pipeline.run()
     finally:
         fc.close()
+        if recorder is not None:
+            recorder.close()
         if sink is not None:
             sink.close()
 

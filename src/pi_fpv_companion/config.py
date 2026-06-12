@@ -120,6 +120,17 @@ class FcSection:
 
 
 @dataclass
+class RecorderSection:
+    """Companion flight recorder (flight_log.py): JSONL decision trail under var/flight.
+    On by default — it is the companion-side blackbox; disable only for dev runs."""
+    enabled: bool = True
+    directory: str = "var/flight"        # relative to CWD (/opt/pi-fpv-companion under systemd)
+    rate_hz: float = 10.0
+    max_bytes: int = 20_000_000          # rotate file at this size
+    keep_files: int = 10                 # prune oldest beyond this many
+
+
+@dataclass
 class AppConfig:
     video: VideoSection
     camera: CameraSection
@@ -128,6 +139,7 @@ class AppConfig:
     fc: FcSection
     servo: ServoConfig
     safety: SafetyConfig
+    recorder: RecorderSection = field(default_factory=RecorderSection)
 
 
 def _video(d: Dict[str, Any]) -> VideoSection:
@@ -375,6 +387,16 @@ def _validate(cfg: AppConfig) -> None:
         )
 
 
+def _recorder(d: Dict[str, Any]) -> RecorderSection:
+    return RecorderSection(
+        enabled=d.get("enabled", True),
+        directory=d.get("directory", "var/flight"),
+        rate_hz=float(d.get("rate_hz", 10.0)),
+        max_bytes=int(d.get("max_bytes", 20_000_000)),
+        keep_files=int(d.get("keep_files", 10)),
+    )
+
+
 def load(path: str | Path) -> AppConfig:
     raw = yaml.safe_load(Path(path).read_text())
     video = _video(raw.get("video", {}))
@@ -386,6 +408,7 @@ def load(path: str | Path) -> AppConfig:
         fc=_fc(raw.get("fc", {})),
         servo=_servo(raw.get("guidance", {}), video.width, video.height),
         safety=_safety(raw.get("safety", {})),
+        recorder=_recorder(raw.get("flight_log", {})),
     )
     _validate(cfg)
     return cfg
