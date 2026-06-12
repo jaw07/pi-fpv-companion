@@ -1,0 +1,7 @@
+#!/bin/bash
+# Pretend-systemd for the deploy.py test container: report a healthy service.
+case "$*" in
+  *is-active*)  echo active ;;
+  *NRestarts*)  echo 0 ;;
+  *)            echo "[stub systemctl] $*" ;;
+esac

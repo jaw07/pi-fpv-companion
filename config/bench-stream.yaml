@@ -17,9 +17,14 @@ video:
 camera:
   type: imx500               # on-sensor inference; detections emitted inline
   framerate: 30
-  imx500_model: /usr/share/imx500-models/imx500_network_nanodet_plus_416x416_pp.rpk
-  # This bench Pi uploads the network firmware at ~65 kB/s (~55 s for NanoDet) —
-  # the 15 s flight default would watchdog-kill the process mid-upload.
+  # Model bakeoff (bench): swap this line to compare. The decoder auto-profiles by
+  # filename (yolo* -> xyxy/input-px/COCO-80; ssd/nanodet -> yxyx/normalized).
+  #   nanodet_plus_416x416_pp   — fast (~26 fps NPU), low/poorly-calibrated scores
+  #   yolo11n_pp                — better mAP + calibrated scores, slower NPU
+  #   yolo26n_pp                — newest (Jan 2026), edge-first; identical tensor fmt
+  imx500_model: /usr/share/imx500-models/imx500_network_yolo11n_pp.rpk
+  # This bench Pi uploads the network firmware at ~65 kB/s (~50 s) — the 15 s flight
+  # default would watchdog-kill the process mid-upload.
   first_frame_grace_s: 120
 
 detector:
@@ -35,7 +40,10 @@ tracker:
   type: multi_iou
   iou_threshold: 0.3
   reacquire_after_lost_frames: 30
-  confirm_hits: 3
+  # Bench: show immediately (confirm_hits 1). YOLO11n's NPU inference rate is far
+  # below the camera fps, so detections arrive sparsely — a 3-of-5 gate may never
+  # latch. The coast-decay fix already tames ghost runaway; for flight, raise this.
+  confirm_hits: 1
   confirm_window: 5
 
 fc:
