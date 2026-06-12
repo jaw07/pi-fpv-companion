@@ -36,6 +36,7 @@ Stick signs are TX/RCMAP/airframe dependent — bench/SITL-validate them
 from __future__ import annotations
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -61,9 +62,13 @@ _EXPECTED_MODE = {"stabilize": 0, "althold": 2, "guided_nogps": 20}   # STABILIZ
 # prior mode on STANDBY. DO_SET_MODE is re-sent until a HEARTBEAT confirms it (rides
 # through a dropped command or a mode rejected until the EKF is ready); warns if it
 # never confirms. The pilot's TX flight-mode switch still overrides at any time and
-# remains the manual-recovery backstop.
+# remains the manual-recovery backstop — to honour that, the retry loop CANCELS the
+# moment the FC mode changes to anything we didn't command (the pilot/failsafe moved
+# it), and gives up entirely after _MODE_RETRY_BUDGET_S (flight-2 finding: an
+# unbounded retry loop silently fights the pilot's mode switch forever).
 _MODE_RESEND_INTERVAL_S = 0.5
 _MODE_CONFIRM_TIMEOUT_S = 2.0
+_MODE_RETRY_BUDGET_S = 10.0
 
 # GUID_OPTIONS bit 3 (=8): SetAttitudeTarget interprets the thrust field as THRUST,
 # not a climb-rate. MANDATORY for the guided_nogps rate path — without it ArduCopter
@@ -199,7 +204,13 @@ class ArduPilotBackend:
         self._pos_t: float = 0.0             # when _x_m / _y_m was last updated
         self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
-        self._last_hb: float = 0.0           # last GCS heartbeat we sent (for FS_GCS backstop)
+        # GCS heartbeat runs on its OWN thread (see _heartbeat_loop): tying it to the
+        # frame-driven _drain() meant a camera stall / watchdog restart starved it and
+        # tripped the FC's GCS failsafe (FS_GCS -> LAND) mid-flight — flight-2 finding.
+        # All outbound sends share _send_lock so the two threads never interleave bytes.
+        self._send_lock = threading.Lock()
+        self._hb_stop = threading.Event()
+        self._hb_thread: Optional[threading.Thread] = None
         self._vfr_warned: bool = False       # warned once that VFR_HUD isn't arriving
         self._current_mode: Optional[int] = None   # latest HEARTBEAT custom_mode (FC flight mode)
         self._interlock_warned: bool = False        # warned once that FC mode != expected
@@ -210,15 +221,40 @@ class ArduPilotBackend:
         self._target_mode_t: float = 0.0             # last DO_SET_MODE send time
         self._target_mode_since: float = 0.0         # when this command started (warn timeout)
         self._mode_warned: bool = False              # warned once it hasn't confirmed
+        self._mode_from: Optional[int] = None        # FC mode when the command started (pilot-
+                                                     # override detection: any third mode cancels)
 
     def open(self) -> None:
         """Bind / connect the transport. Does NOT block on heartbeat — call
-        `wait_ready()` separately if you need target_system populated first."""
+        `wait_ready()` separately if you need target_system populated first.
+        Starts the GCS-heartbeat thread immediately, so the FC sees us alive
+        through the long camera bring-up (IMX500 rpk upload ~5-15 s) and as early
+        as possible after a watchdog restart — minimising the FS_GCS gap."""
         from pymavlink import mavutil  # lazy
         self._mavutil = mavutil
         self._mav = mavutil.mavlink_connection(
             self._device, baud=self._baud, autoreconnect=True
         )
+        self._hb_stop.clear()
+        self._hb_thread = threading.Thread(
+            target=self._heartbeat_loop, daemon=True, name="fc-gcs-heartbeat")
+        self._hb_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        """Announce as a GCS at ~1 Hz so ArduCopter's GCS failsafe (FS_GCS) is armed:
+        if the companion truly dies, heartbeats stop and the FC fails safe. Runs until
+        close(); independent of frame delivery by design (see _send_lock note)."""
+        while not self._hb_stop.wait(1.0):
+            mav = self._mav
+            if mav is None:
+                continue
+            try:
+                m = self._mavutil.mavlink
+                with self._send_lock:
+                    mav.mav.heartbeat_send(m.MAV_TYPE_GCS, m.MAV_AUTOPILOT_INVALID,
+                                           0, 0, m.MAV_STATE_ACTIVE)
+            except Exception:
+                pass
 
     def wait_ready(self, timeout: float = 10.0) -> None:
         """Block until first HEARTBEAT seen so target_system/component are known,
@@ -232,8 +268,9 @@ class ArduPilotBackend:
         Call at startup (before the main loop drains messages)."""
         if self._mav is None:
             return None
-        self._mav.mav.param_request_read_send(
-            self._mav.target_system, self._mav.target_component, name.encode(), -1)
+        with self._send_lock:
+            self._mav.mav.param_request_read_send(
+                self._mav.target_system, self._mav.target_component, name.encode(), -1)
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             pv = self._mav.recv_match(type="PARAM_VALUE", blocking=True,
@@ -271,8 +308,9 @@ class ArduPilotBackend:
                 result[name] = "ok"
                 continue
             _log.warning("FC param %s = %g, want %g — writing", name, value, want)
-            self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
-                                         name.encode(), float(want), ptype)
+            with self._send_lock:
+                self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
+                                             name.encode(), float(want), ptype)
             check = self.read_param(name)
             if check is not None and abs(check[0] - want) <= tol:
                 _log.warning("FC param %s -> %g (written, verified)", name, want)
@@ -299,8 +337,9 @@ class ArduPilotBackend:
             return "ok"
         want = ivalue | bits
         _log.warning("FC param %s = %d, setting bits 0x%X -> %d", name, ivalue, bits, want)
-        self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
-                                     name.encode(), float(want), ptype)
+        with self._send_lock:
+            self._mav.mav.param_set_send(self._mav.target_system, self._mav.target_component,
+                                         name.encode(), float(want), ptype)
         check = self.read_param(name)
         if check is not None and (int(round(check[0])) & bits) == bits:
             _log.warning("FC param %s -> %d (bits 0x%X set, verified)", name, want, bits)
@@ -322,20 +361,22 @@ class ArduPilotBackend:
         for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD,
                        mav.MAVLINK_MSG_ID_ATTITUDE):
             try:
-                self._mav.mav.command_long_send(
-                    self._mav.target_system, self._mav.target_component,
-                    mav.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
-                    msg_id, int(1_000_000 / rate_hz), 0, 0, 0, 0, 0,
-                )
+                with self._send_lock:
+                    self._mav.mav.command_long_send(
+                        self._mav.target_system, self._mav.target_component,
+                        mav.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+                        msg_id, int(1_000_000 / rate_hz), 0, 0, 0, 0, 0,
+                    )
             except Exception:
                 pass
         for stream in (mav.MAV_DATA_STREAM_RC_CHANNELS, mav.MAV_DATA_STREAM_EXTRA2,
                        mav.MAV_DATA_STREAM_EXTRA1):
             try:
-                self._mav.mav.request_data_stream_send(
-                    self._mav.target_system, self._mav.target_component,
-                    stream, rate_hz, 1,
-                )
+                with self._send_lock:
+                    self._mav.mav.request_data_stream_send(
+                        self._mav.target_system, self._mav.target_component,
+                        stream, rate_hz, 1,
+                    )
             except Exception:
                 pass
 
@@ -347,6 +388,10 @@ class ArduPilotBackend:
         return GuidanceMode.STANDBY
 
     def close(self) -> None:
+        self._hb_stop.set()
+        if self._hb_thread is not None:
+            self._hb_thread.join(timeout=2.0)
+            self._hb_thread = None
         if self._mav is not None:
             self._mav.close()
             self._mav = None
@@ -361,17 +406,7 @@ class ArduPilotBackend:
         if now - self._last_stream_req > _STREAM_REREQUEST_S:
             self._request_streams()
             self._last_stream_req = now
-        # Announce as a GCS at ~1 Hz so ArduCopter's GCS failsafe (FS_GCS) is armed: if the
-        # companion dies, heartbeats stop and the FC fails safe. Belt-and-suspenders alongside
-        # the GUIDED command timeout (which already holds/levels when SET_ATTITUDE_TARGET stops).
-        if now - self._last_hb > 1.0:
-            try:
-                m = self._mavutil.mavlink
-                self._mav.mav.heartbeat_send(m.MAV_TYPE_GCS, m.MAV_AUTOPILOT_INVALID, 0, 0,
-                                             m.MAV_STATE_ACTIVE)
-            except Exception:
-                pass
-            self._last_hb = now
+        # (The ~1 Hz GCS heartbeat lives on its own thread — see _heartbeat_loop.)
         while True:
             msg = self._mav.recv_match(blocking=False)
             if msg is None:
@@ -536,8 +571,10 @@ class ArduPilotBackend:
                 self._target_mode = None   # nothing to restore; cancel any pending retry
 
     def _command_mode(self, mode: int) -> None:
-        """Begin commanding the FC into `mode`; _service_mode() re-sends until confirmed."""
+        """Begin commanding the FC into `mode`; _service_mode() re-sends until confirmed,
+        the pilot moves the FC elsewhere, or the retry budget runs out."""
         self._target_mode = mode
+        self._mode_from = self._current_mode
         self._target_mode_since = time.monotonic()
         self._mode_warned = False
         self._send_mode(mode)
@@ -547,21 +584,42 @@ class ArduPilotBackend:
         if self._mav is None:
             return
         m = self._mavutil.mavlink
-        self._mav.mav.command_long_send(
-            self._mav.target_system, self._mav.target_component,
-            m.MAV_CMD_DO_SET_MODE, 0,
-            m.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, mode, 0, 0, 0, 0, 0)
+        with self._send_lock:
+            self._mav.mav.command_long_send(
+                self._mav.target_system, self._mav.target_component,
+                m.MAV_CMD_DO_SET_MODE, 0,
+                m.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, mode, 0, 0, 0, 0, 0)
 
     def _service_mode(self) -> None:
         """Re-send DO_SET_MODE until HEARTBEAT confirms the target mode. Handles a
         dropped command on a noisy UART and a mode rejected until the EKF is ready
-        (rides through, warns once). Non-blocking — called every _drain()."""
+        (rides through, warns once). Non-blocking — called every _drain().
+
+        Two ways the retry STOPS short of confirmation (the pilot must always win):
+          - the FC mode changes to something we did NOT command and that isn't where
+            it started — the pilot's TX switch (or an FC failsafe) moved it; cancel
+            immediately rather than fight it every resend.
+          - _MODE_RETRY_BUDGET_S elapses — give up and log an error."""
         if self._target_mode is None:
             return
         if self._current_mode == self._target_mode:
             self._target_mode = None                      # confirmed
             return
+        if (self._current_mode is not None and self._mode_from is not None
+                and self._current_mode != self._mode_from):
+            _log.warning("FC mode changed to %d (not our target %d) — pilot/failsafe "
+                         "override; cancelling the mode command.",
+                         self._current_mode, self._target_mode)
+            self._target_mode = None
+            self._saved_mode = None      # their mode choice stands; nothing to restore
+            return
         now = time.monotonic()
+        if now - self._target_mode_since >= _MODE_RETRY_BUDGET_S:
+            _log.error("FC never confirmed mode %d after %.0fs (still %s) — giving up "
+                       "(it is being rejected, or the link is down).",
+                       self._target_mode, _MODE_RETRY_BUDGET_S, self._current_mode)
+            self._target_mode = None
+            return
         if now - self._target_mode_t >= _MODE_RESEND_INTERVAL_S:
             self._send_mode(self._target_mode)
             self._target_mode_t = now
@@ -580,10 +638,11 @@ class ArduPilotBackend:
         throttle 0..1 (REQUIRES GUID_OPTIONS bit 3 — see GUID_OPTIONS_THRUST_AS_THRUST;
         without it the FC treats thrust as a climb-rate and the dive planes)."""
         tb = int(time.time() * 1000) & 0xFFFFFFFF
-        self._mav.mav.set_attitude_target_send(
-            tb, self._mav.target_system, self._mav.target_component, 0b10000000,
-            [1.0, 0.0, 0.0, 0.0], float(roll_rate), float(pitch_rate), float(yaw_rate),
-            float(_clamp(thrust, 0.0, 1.0)))
+        with self._send_lock:
+            self._mav.mav.set_attitude_target_send(
+                tb, self._mav.target_system, self._mav.target_component, 0b10000000,
+                [1.0, 0.0, 0.0, 0.0], float(roll_rate), float(pitch_rate), float(yaw_rate),
+                float(_clamp(thrust, 0.0, 1.0)))
 
     def send_intent(self, intent: GuidanceIntent) -> None:
         """Override the AETR channels from the intent (the rest released to the
@@ -675,6 +734,7 @@ class ArduPilotBackend:
         for ch, pwm in overrides.items():
             if 1 <= ch <= 8:
                 chans[ch - 1] = int(pwm)
-        self._mav.mav.rc_channels_override_send(
-            self._mav.target_system, self._mav.target_component, *chans
-        )
+        with self._send_lock:
+            self._mav.mav.rc_channels_override_send(
+                self._mav.target_system, self._mav.target_component, *chans
+            )

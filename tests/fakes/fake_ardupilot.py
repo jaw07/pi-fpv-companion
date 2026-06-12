@@ -28,6 +28,7 @@ class FakeArduCopter:
         self.climb: float = 0.0              # VFR_HUD.climb to emit (m/s, +up)
         self.params: dict = {}               # FC parameter store (PARAM_REQUEST_READ/SET)
         self.captured_overrides: List = []   # inbound RC_CHANNELS_OVERRIDE messages
+        self.captured_heartbeats: List = []  # inbound GCS heartbeats (FS_GCS liveness)
         self.custom_mode: int = 0            # current flight mode emitted in HEARTBEAT
         self.set_mode_cmds: List[int] = []   # custom_modes requested via DO_SET_MODE
         self.drop_first_mode_cmds: int = 0   # ignore the first N DO_SET_MODE (UART-drop sim)
@@ -66,6 +67,8 @@ class FakeArduCopter:
                 mt = msg.get_type()
                 if mt == "RC_CHANNELS_OVERRIDE":
                     self.captured_overrides.append(msg)
+                elif mt == "HEARTBEAT":
+                    self.captured_heartbeats.append(msg)
                 elif mt == "PARAM_REQUEST_READ":
                     self._emit_param(msg.param_id.strip("\x00"))
                 elif mt == "PARAM_SET":

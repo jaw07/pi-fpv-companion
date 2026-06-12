@@ -260,9 +260,15 @@ class Pipeline:
             self._last_rate_mode = switch.mode
         ready = getattr(fc, "control_ready", None)
         fc_in_guided = ready is None or ready()   # FC actually in GUIDED_NOGPS (accepts our rates)
+        # NEVER command body rates while disarmed (unless the config waives the armed
+        # gate for bench work). A standing SET_ATTITUDE_TARGET with hover thrust while
+        # disarmed on the ground means the craft launches itself the instant the pilot
+        # arms — flight-2 finding. The gate() below also enforces this when engaged,
+        # but the STANDBY hover-hold branch bypasses gate(), so check it explicitly.
+        can_command = armed or not self._safety_cfg.require_armed
         if switch.mode is GuidanceMode.STANDBY or not fc_in_guided:
             fc.release()                            # clear any stray RC override (no-op in guided)
-            if fc_in_guided and hasattr(fc, "send_body_rates"):
+            if fc_in_guided and can_command and hasattr(fc, "send_body_rates"):
                 # Disengaged but the FC is STILL in GUIDED_NOGPS (pilot paused at STANDBY, hasn't
                 # taken the mode back) -> HOLD A LEVEL HOVER. Never leave the FC coasting on the
                 # last (possibly dive) attitude with no setpoint. Self-trim the hover toward null
@@ -276,6 +282,8 @@ class Pipeline:
                                    max(-0.6, min(0.6, 2.0 * (0.0 - p))),
                                    0.0, self._rate_state.hover)
                 reason = "standby-hover-hold"
+            elif fc_in_guided:
+                reason = "standby (disarmed; no commands)"
             else:
                 reason = "manual (FC not in GUIDED_NOGPS)"
             gated = GateResult(ZERO_INTENT, True, reason)
@@ -300,7 +308,10 @@ class Pipeline:
         probe = GuidanceIntent(0.0, 0.0, _math.degrees(ri.yaw_rate), ri.thrust,
                                target.timestamp if target is not None else now)
         gated = gate(probe, target, switch, armed, now, self._safety_cfg)
-        if ri.phase == "STOP" or not gated.muted:
+        if not can_command:
+            # Disarmed: command NOTHING (not even the safe hold) — see can_command above.
+            pass
+        elif ri.phase == "STOP" or not gated.muted:
             fc.send_body_rates(ri.roll_rate, ri.pitch_rate, ri.yaw_rate, ri.thrust)
         else:
             # Muted (no/stale/low-quality target) -> SAFE HOLD: level + hover, never search-dive.

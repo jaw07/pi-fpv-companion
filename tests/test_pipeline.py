@@ -501,6 +501,33 @@ def test_guided_nogps_standby_holds_level_hover_when_fc_in_guided():
     assert abs(yr) < 1e-6 and 0.05 <= thrust <= 0.6
 
 
+def test_guided_nogps_standby_hover_hold_never_sent_while_disarmed():
+    # Flight-2 fix: a standing hover-thrust SET_ATTITUDE_TARGET while DISARMED on the
+    # ground (FC left in GUIDED_NOGPS) means the craft launches itself the instant the
+    # pilot arms. STANDBY + in-guided + disarmed -> release only, NO body rates.
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC(switch_active=False, armed=False)
+    fc.ready = True                                    # FC IS in GUIDED_NOGPS
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
+                    rate_cfg=RateConfig(720, 576))
+    pipe.tick(cam.render_at(0.0))
+    assert fc.released >= 1
+    assert fc.body_rates == [], "disarmed must NEVER receive a thrust setpoint"
+
+
+def test_guided_nogps_engaged_sends_nothing_while_disarmed():
+    # Same guard on the engaged path: the muted SAFE HOLD must not transmit hover
+    # thrust to a disarmed FC either (bench: engaged + props off + disarmed).
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC(armed=False)
+    fc.mode = GuidanceMode.TRACK
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2, max_lost_frames=10),
+                    _servo(), _safety(), fc, rate_cfg=RateConfig(720, 576))
+    for i in range(3):
+        pipe.tick(cam.render_at(i * 0.05))
+    assert fc.body_rates == [], "disarmed must NEVER receive body-rate commands"
+
+
 def test_guided_nogps_standby_commands_nothing_when_pilot_takes_manual():
     # FC NOT in GUIDED_NOGPS (pilot flipped the mode away = manual recovery) -> command NOTHING.
     cam = SyntheticCamera(width=720, height=576)
