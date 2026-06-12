@@ -22,8 +22,11 @@ Handover / failsafe (validated in SITL + Gazebo via `scripts/sitl_gz_validate.py
 - **Manual recovery — always available, independent of the Pi:** the pilot flips the FC-mode
   channel OUT of GUIDED_NOGPS (e.g. to STABILIZE). The companion sees the FC is no longer in
   GUIDED_NOGPS (`control_ready()` false) and commands nothing → instant manual control.
-- **STANDBY (ch7) while still in GUIDED_NOGPS:** the companion HOLDS a level hover (self-trimming
-  to null climb). It never leaves the FC coasting on the last (possibly dive) attitude.
+- **STANDBY (ch7) while still in GUIDED_NOGPS:** the companion LEVELS the craft for a ~2 s
+  bridge (never leaves the FC coasting on the last, possibly dive, attitude) and then goes
+  SILENT — ArduCopter's own `GUID_TIMEOUT` (3 s, auto-enforced) levels + holds zero climb
+  natively after our last setpoint. Steady-state STANDBY injects nothing, even in the
+  flight mode.
 - **Pi death:** with no `SET_ATTITUDE_TARGET`, ArduCopter's GUIDED command timeout holds the
   craft; the companion's ~1 Hz GCS heartbeat also arms FS_GCS (§2). Recovery is the FC-mode flip.
 
@@ -36,7 +39,8 @@ Required wiring / config:
       like STABILIZE (manual recovery). Bench-verify the mode switch reaches both.
 - [ ] Bench-verified: flipping the FC mode OUT of GUIDED_NOGPS returns full manual stick authority.
 - [ ] Bench-verified (props off): ch7 → STANDBY with the FC in GUIDED_NOGPS commands a LEVEL
-      hover (level attitude + hover thrust), not a dive attitude.
+      hover for ~2 s (the bridge), then stops sending entirely (the FC's GUID_TIMEOUT hold
+      takes over ~3 s later).
 - [ ] Bench-verified: killing the Pi (`sudo systemctl stop pi-fpv-companion`) → the craft holds
       (GUIDED timeout / FS_GCS) and the pilot's FC-mode flip recovers it.
 
