@@ -18,6 +18,7 @@ import argparse
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Tuple
 
@@ -168,6 +169,21 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
     ensure = getattr(fc, "ensure_params", None)
     if not callable(ensure):
         return
+    # NEVER touch FC params while ARMED. The pass re-runs on every service start,
+    # including a camera-watchdog restart MID-FLIGHT — param reads/writes then are
+    # pointless traffic at best (values already match from the preflight boot) and a
+    # mid-air EEPROM write at worst. Wait briefly for a HEARTBEAT to learn the armed
+    # state; unknown (FC silent) falls through to the normal enforce, which aborts
+    # fast on its own when the link is down.
+    known = getattr(fc, "armed_known", None)
+    if callable(known):
+        deadline = time.monotonic() + 2.0
+        while not known() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if known() and fc.is_armed():
+            print("  FC is ARMED — skipping param validation (mid-flight restart; "
+                  "params were enforced at the preflight boot)")
+            return
     desired: dict = {"ANGLE_MAX": round(cfg.fc.angle_max_deg * 100.0)}
     desired[f"RC{cfg.fc.switch_channel}_OPTION"] = 0
     if cfg.fc.select_channel:

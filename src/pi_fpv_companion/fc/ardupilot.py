@@ -71,11 +71,23 @@ _MODE_CONFIRM_TIMEOUT_S = 2.0
 _MODE_RETRY_BUDGET_S = 10.0
 
 # Engage-switch glitch guard: a mode ESCALATION (STANDBY->TRACK/DIVE, TRACK->DIVE) must
-# be seen on this many CONSECUTIVE RC_CHANNELS messages before it takes effect, so one
-# corrupted/glitched RC frame can never engage guidance (or commit a dive) on its own.
+# be seen on this many CONSECUTIVE RC_CHANNELS messages before it takes effect, AND the
+# confirming samples must span at least _SWITCH_CONFIRM_SPAN_MS of FC time
+# (RC_CHANNELS.time_boot_ms — FC-stamped, so a burst of queued/duplicated messages
+# delivered in one drain cannot fake a confirmation). One corrupted/glitched RC frame
+# can never engage guidance (or commit a dive) on its own.
 # De-escalation toward STANDBY is committed IMMEDIATELY — disengage must never lag.
 # RC_CHANNELS streams at ~10 Hz, so 2 samples ≈ +100 ms engage latency.
 _SWITCH_CONFIRM_SAMPLES = 2
+_SWITCH_CONFIRM_SPAN_MS = 80
+
+# Release burst: how many all-zero RC_CHANNELS_OVERRIDE ("hand everything back") frames
+# to send after overrides were active (and once at startup, clearing any stale override
+# left by a prior process death). After the burst the override channel goes RADIO-SILENT
+# in STANDBY — steady-state standby puts NOTHING on the wire that touches control
+# inputs (heartbeat + telemetry stream requests only). 8 sends ≈ 0.27 s at 30 Hz;
+# ArduPilot's own RC_OVERRIDE_TIME (3 s) is the backstop if every one is lost.
+_RELEASE_BURST_SENDS = 8
 
 # If the main loop stops draining (camera wedge the watchdog misses, deadlock), STOP
 # sending GCS heartbeats after this long so the FC's FS_GCS can fire — the heartbeat
@@ -256,9 +268,14 @@ class ArduPilotBackend:
                                                      # confirm needs a FRESH heartbeat, else a stale
                                                      # _current_mode == target false-confirms a
                                                      # command issued mid-transition
-        # Switch debounce state (see _SWITCH_CONFIRM_SAMPLES).
+        # Switch debounce state (see _SWITCH_CONFIRM_SAMPLES / _SWITCH_CONFIRM_SPAN_MS).
         self._pending_switch_mode: Optional[GuidanceMode] = None
         self._pending_switch_count: int = 0
+        self._pending_switch_t0_ms: int = 0          # FC time of the first pending sample
+        # Release-burst state (see _RELEASE_BURST_SENDS): start with one burst pending so
+        # a fresh process clears any override a crashed predecessor left on the FC.
+        self._overrides_active: bool = False
+        self._release_sends_left: int = _RELEASE_BURST_SENDS
         self._last_drain_t: float = 0.0      # last _drain() — heartbeat liveness gate
         self._hb_open_t: float = time.monotonic()   # open() time — bounds the startup grace
         self._hb_send_failed: bool = False   # warn-once on heartbeat send failure
@@ -457,25 +474,33 @@ class ArduPilotBackend:
 
     _MODE_RANK = {GuidanceMode.STANDBY: 0, GuidanceMode.TRACK: 1, GuidanceMode.DIVE: 2}
 
-    def _update_switch(self, pwm: int) -> None:
+    def _update_switch(self, pwm: int, t_ms: Optional[int] = None) -> None:
         """Commit the engage-switch state from one RC_CHANNELS sample, debounced:
         an ESCALATION (toward TRACK/DIVE) needs _SWITCH_CONFIRM_SAMPLES consecutive
-        agreeing samples — one glitched RC frame must never engage guidance or
+        agreeing samples spanning >= _SWITCH_CONFIRM_SPAN_MS of FC time (t_ms =
+        RC_CHANNELS.time_boot_ms) — one glitched RC frame, or a burst of queued
+        duplicates delivered in a single drain, must never engage guidance or
         commit a dive. De-escalation (toward STANDBY) commits immediately: the
         pilot's disengage must never be delayed."""
+        if t_ms is None:
+            t_ms = int(time.monotonic() * 1000)
         mode = self._mode_for(pwm)
         held = self._last_switch.mode if self._last_switch is not None else GuidanceMode.STANDBY
         if self._MODE_RANK[mode] > self._MODE_RANK[held]:
             if mode is self._pending_switch_mode:
                 self._pending_switch_count += 1
+                if t_ms < self._pending_switch_t0_ms:      # FC rebooted mid-pending
+                    self._pending_switch_t0_ms = t_ms
             else:
                 self._pending_switch_mode = mode
                 self._pending_switch_count = 1
-            if self._pending_switch_count < _SWITCH_CONFIRM_SAMPLES:
-                mode = held                          # hold until confirmed
-            else:
+                self._pending_switch_t0_ms = t_ms
+            if (self._pending_switch_count >= _SWITCH_CONFIRM_SAMPLES
+                    and t_ms - self._pending_switch_t0_ms >= _SWITCH_CONFIRM_SPAN_MS):
                 self._pending_switch_mode = None
                 self._pending_switch_count = 0
+            else:
+                mode = held                          # hold until confirmed
         else:
             self._pending_switch_mode = None
             self._pending_switch_count = 0
@@ -520,7 +545,7 @@ class ArduPilotBackend:
                 self._hb_count += 1
             elif t == "RC_CHANNELS":
                 pwm = getattr(msg, f"chan{self._switch_channel}_raw")
-                self._update_switch(pwm)
+                self._update_switch(pwm, int(msg.time_boot_ms))
                 if self._select_channel:
                     self._select_pwm_us = getattr(msg, f"chan{self._select_channel}_raw")
             elif t == "VFR_HUD":
@@ -621,6 +646,12 @@ class ArduPilotBackend:
     def is_armed(self) -> bool:
         self._drain()
         return self._armed
+
+    def armed_known(self) -> bool:
+        """True once a HEARTBEAT has told us the armed state (drains opportunistically).
+        Lets startup distinguish 'FC says disarmed' from 'no heartbeat yet'."""
+        self._drain()
+        return self._armed_known
 
     def control_ready(self) -> bool:
         """Interlock: only override the sticks if the FC is actually in the flight
@@ -774,6 +805,7 @@ class ArduPilotBackend:
         if m.control_mode == "stabilize" and m.hover_learn:
             overrides[m.throttle_channel] = self._adaptive_throttle(intent)
         self._send_channels(overrides)
+        self._overrides_active = True    # arms the release burst on the next release()
 
     def _adaptive_throttle(self, intent: GuidanceIntent) -> int:
         """Companion vertical-velocity controller for STABILIZE (PI on climb rate).
@@ -836,12 +868,20 @@ class ArduPilotBackend:
 
     def release(self) -> None:
         """Hand every channel back to the pilot's RC radio (override value 0 =
-        'use the receiver'). Called by the pipeline in STANDBY — instant manual
-        handback, the core safety property of the ALT_HOLD path."""
+        'use the receiver'). Called by the pipeline every STANDBY tick, but only
+        TRANSMITS a short burst (_RELEASE_BURST_SENDS) after overrides were active
+        (plus one burst at startup, clearing anything a crashed predecessor left),
+        then goes RADIO-SILENT: steady-state STANDBY puts nothing on the wire that
+        touches the FC's control inputs. Instant manual handback is preserved —
+        the burst is the first thing sent on the engaged->STANDBY edge."""
         self._vrate_i = 0.0          # clear the rate-loop integral so a later
                                      # STANDBY->DIVE doesn't start with a stale bias
-        if self._mav is None:
+        if self._overrides_active:
+            self._release_sends_left = _RELEASE_BURST_SENDS
+            self._overrides_active = False
+        if self._mav is None or self._release_sends_left <= 0:
             return
+        self._release_sends_left -= 1
         self._send_channels({})
 
     def _send_channels(self, overrides: Dict[int, int]) -> None:
