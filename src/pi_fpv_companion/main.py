@@ -77,9 +77,9 @@ def _build_camera(cfg: AppConfig):
             fps=cfg.camera.framerate,
         )
     if t == "imx500":
-        from pi_fpv_companion.camera.imx500 import IMX500Camera, DecoderProfile
+        from pi_fpv_companion.camera.imx500 import IMX500Camera, DecoderProfile, _DEFAULT_MODEL
         from pi_fpv_companion.detect.coco import COCO_CLASSES as _COCO
-        model = cfg.camera.imx500_model or "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk"
+        model = cfg.camera.imx500_model or _DEFAULT_MODEL
         # Resolve classes_of_interest against the model's OWN label set (VisDrone vs
         # COCO), the same set the decoder uses — see DecoderProfile.for_model.
         labels = DecoderProfile.for_model(model).labels or _COCO
