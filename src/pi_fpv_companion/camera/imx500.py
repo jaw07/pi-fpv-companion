@@ -26,6 +26,14 @@ from pi_fpv_companion.types import Detection
 
 _DEFAULT_MODEL = "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk"
 
+# VisDrone-DET class order (Ultralytics VisDrone.yaml) — a model fine-tuned on
+# VisDrone outputs THESE 10 classes, not COCO-80. Aerial/drone-view person +
+# vehicle taxonomy, which is our actual flight domain.
+VISDRONE_CLASSES: Tuple[str, ...] = (
+    "pedestrian", "people", "bicycle", "car", "van",
+    "truck", "tricycle", "awning-tricycle", "bus", "motor",
+)
+
 
 @dataclass(frozen=True)
 class DecoderProfile:
@@ -48,13 +56,17 @@ class DecoderProfile:
 
     @classmethod
     def for_model(cls, model_path: str) -> "DecoderProfile":
-        """Pick a profile from the .rpk filename. YOLOv8n/YOLO11n share the Ultralytics
-        export convention (xyxy, input-pixel boxes, real count, COCO-80); everything
-        else keeps the original SSD/NanoDet layout (yxyx, normalized, fixed count)."""
+        """Pick a profile from the .rpk filename. All Ultralytics YOLO exports share
+        the same tensor convention (xyxy, input-pixel boxes, real count); only the
+        LABEL SET differs — a 'visdrone' model emits the 10 VisDrone classes, any
+        other yolo model is COCO-80. Everything non-yolo keeps the original
+        SSD/NanoDet layout (yxyx, normalized, fixed count). The real input size
+        (320/416/640) is read from the sensor in open(), not trusted from here."""
         name = Path(model_path).name.lower()
         if "yolo" in name:
+            labels = VISDRONE_CLASSES if "visdrone" in name else tuple(COCO_CLASSES)
             return cls(box_order="xyxy", box_scale="input_px", input_size=640,
-                       count_is_real=True, labels=tuple(COCO_CLASSES))
+                       count_is_real=True, labels=labels)
         return cls()   # SSD / NanoDet default
 
 

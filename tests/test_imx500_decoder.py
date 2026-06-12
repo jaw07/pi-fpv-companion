@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from pi_fpv_companion.camera.imx500 import IMX500Camera, DecoderProfile
+from pi_fpv_companion.camera.imx500 import IMX500Camera, DecoderProfile, VISDRONE_CLASSES
 
 
 def test_profile_selection_by_filename():
@@ -13,6 +13,15 @@ def test_profile_selection_by_filename():
     assert yolo26 == yolo, "YOLO26n shares the YOLO tensor profile exactly"
     ssd = DecoderProfile.for_model("/x/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk")
     assert ssd.box_order == "yxyx" and ssd.box_scale == "normalized" and not ssd.count_is_real
+
+
+def test_visdrone_yolo_uses_visdrone_labels():
+    # A VisDrone-fine-tuned YOLO keeps the YOLO tensor layout but emits the 10
+    # VisDrone classes, not COCO-80 — class 0 is 'pedestrian', not 'person'.
+    p = DecoderProfile.for_model("/x/imx500_network_yolo11n_visdrone416_pp.rpk")
+    assert p.box_order == "xyxy" and p.count_is_real
+    assert p.labels == VISDRONE_CLASSES and len(p.labels) == 10
+    assert p.labels[0] == "pedestrian" and p.labels[3] == "car" and p.labels[9] == "motor"
 
 
 class _FakeIMX500:
