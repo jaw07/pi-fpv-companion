@@ -42,6 +42,21 @@ def test_yolo_xyxy_pixel_decode_maps_to_frame():
     assert d.class_name == "person"
 
 
+def test_yolo_decode_uses_actual_input_size_not_hardcoded():
+    # A 416-input YOLO emits boxes in 0..416 px. The decoder must divide by the
+    # sensor's REAL input size (set in open()), not the 640 profile default —
+    # otherwise boxes collapse to ~65% of frame, top-left (the @416 phantom-box bug).
+    cam = _cam("imx500_network_yolo11n_416_pp.rpk")
+    cam._input_size = (416, 416)                         # what open() reads from the sensor
+    cam._imx500 = _FakeIMX500([
+        np.array([[[0.0, 0.0, 416.0, 416.0]]]),         # full-frame box in 416-space
+        np.array([[0.9]]), np.array([[0.0]]), np.array([[1.0]]),
+    ])
+    d = cam._decode_detections({}, 720, 576)[0]
+    assert abs(d.w - 720.0) < 0.5 and abs(d.h - 576.0) < 0.5   # full frame, not 65%
+    assert abs(d.x - 360.0) < 0.5 and abs(d.y - 288.0) < 0.5
+
+
 def test_yolo_real_count_truncates_candidate_tail():
     # YOLO [3]=count is REAL: a high-score candidate BEYOND the count must be ignored.
     cam = _cam("imx500_network_yolo11n_pp.rpk")
