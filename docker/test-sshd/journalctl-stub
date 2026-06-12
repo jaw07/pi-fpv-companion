@@ -1,0 +1,3 @@
+#!/bin/bash
+# Pretend-journalctl for the deploy.py test container: no log output (no errors).
+echo "[stub journalctl] $*"
