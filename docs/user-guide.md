@@ -50,6 +50,7 @@ What it will **not** touch (set these yourself in Mission Planner, once):
 | `SRn_EXTRA2` | `≥ 5` | streams climb rate / attitude (or add to `enforce_params`) |
 | flight-mode switch | → **GUIDED_NOGPS** | the mode the companion flies in (your modes, not ours) |
 | `FS_GCS_ENABLE` | → **LAND** | GCS-failsafe action if the Pi dies (RTL/SmartRTL need GPS — use LAND) |
+| `FS_GCS_TIMEOUT` | `20` (auto-enforced) | default 5 s LANDs on every camera-watchdog restart — 20 s rides through a process restart, a dead Pi still fails safe |
 | ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
 | ch9 (a spare input, e.g. rocker) | cycle target (tap) | maps in FreedomTX → ch9 |
 

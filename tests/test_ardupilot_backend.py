@@ -479,6 +479,55 @@ def test_mode_command_retries_until_confirmed_on_dropped_commands():
         backend.close(); fake.stop()
 
 
+def test_mode_command_cancelled_when_pilot_changes_mode():
+    # Flight-2 fix: the pilot's TX mode switch must always win. While the companion is
+    # retrying DO_SET_MODE (FC rejecting it), the FC moving to a THIRD mode (pilot or
+    # failsafe) cancels the retry instead of fighting it every 0.5 s forever.
+    backend, fake = _guided_backend(start_mode=0)
+    fake.reject_mode = 20                                    # FC refuses GUIDED_NOGPS
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        _pump(backend, fake, 0.7)                            # retrying against the reject
+        assert backend._target_mode == 20
+        fake.custom_mode = 2                                 # pilot flips to ALT_HOLD
+        ok = _pump(backend, fake, 2.0, lambda: backend._target_mode is None)
+        assert ok, "pilot mode change must cancel the pending mode command"
+        sent_at_cancel = len(fake.set_mode_cmds)
+        _pump(backend, fake, 1.2)                            # > 2 resend intervals
+        assert len(fake.set_mode_cmds) == sent_at_cancel     # no more DO_SET_MODE
+        assert fake.custom_mode == 2                         # pilot's choice stands
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_mode_command_gives_up_after_retry_budget(monkeypatch):
+    # Flight-2 fix: the retry loop is bounded — a permanently rejected mode stops
+    # being re-commanded after _MODE_RETRY_BUDGET_S instead of forever.
+    import pi_fpv_companion.fc.ardupilot as ap_mod
+    monkeypatch.setattr(ap_mod, "_MODE_RETRY_BUDGET_S", 1.0)
+    backend, fake = _guided_backend(start_mode=0)
+    fake.reject_mode = 20                                    # FC refuses GUIDED_NOGPS
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        ok = _pump(backend, fake, 3.0, lambda: backend._target_mode is None)
+        assert ok, "retry must give up after the budget"
+        assert fake.set_mode_cmds, "it did try before giving up"
+        assert fake.custom_mode == 0                         # FC was never moved
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_gcs_heartbeat_flows_without_the_frame_loop(ap_pair):
+    # Flight-2 fix: the ~1 Hz GCS heartbeat (FS_GCS liveness) runs on its own thread —
+    # it must keep flowing even when nothing drives _drain() (camera stalled/booting).
+    backend, fake = ap_pair
+    before = len(fake.captured_heartbeats)
+    time.sleep(2.5)                       # NO read_switch()/_drain() calls at all
+    assert len(fake.captured_heartbeats) - before >= 2
+
+
 def test_auto_guided_off_never_commands_mode():
     backend, fake = _guided_backend(auto_guided=False, start_mode=0)
     try:

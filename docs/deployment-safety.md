@@ -57,6 +57,12 @@ A bare FPV quad has no GPS / EKF position estimate. GUIDED_NOGPS + `SET_ATTITUDE
 - [ ] **GPS-denied GCS failsafe = LAND.** Set `FS_GCS_ENABLE`/`FS_OPTIONS` so a lost GCS lands
       (NOT RTL/SmartRTL — they need GPS). The companion emits a ~1 Hz GCS heartbeat so FS_GCS is
       armed on Pi death; the GUIDED command timeout is the inner backstop. Configure + bench-test.
+- [ ] **`FS_GCS_TIMEOUT` ≥ 20 s** (enforced from `config/imx500.yaml` at startup). The heartbeat
+      runs on its own thread (independent of the camera), but a camera-watchdog **process restart**
+      still gaps it for a few seconds — at the 5 s default that LANDs the craft on every camera
+      hiccup (flight-2 finding, 2026-06-12). 20 s rides through a restart; a truly dead Pi and the
+      systemd rung-4 reboot (~48 s) still fail safe. While ENGAGED, the GUIDED command timeout
+      (~3 s, levels the craft) covers the gap — FS_GCS is the outer backstop, not the first line.
 - [ ] **Arming GPS-denied:** the EKF must allow arming without GPS (e.g. `EK3_SRC1_POSXY`/`VELXY`
       = 0, `POSZ` = Baro; relax `ARMING_CHECK` only on the bench). The craft must reach
       GUIDED_NOGPS armed + airborne (e.g. take off in a pilot mode, then switch to GUIDED_NOGPS).

@@ -55,7 +55,11 @@ fc:
   # ch7 auto-engage: leaving STANDBY (TRACK/DIVE) commands the FC into GUIDED_NOGPS
   # (DO_SET_MODE, re-sent until the HEARTBEAT confirms); returning to STANDBY restores
   # the prior mode. So ch7 alone engages — no separate FC-mode switch needed to enter.
-  auto_guided: true
+  # OFF after flight 2 (2026-06-12): uncommanded mode changes suspected in STANDBY —
+  # with auto_guided on, ANY ch7 reading >= track_threshold flips the FC into
+  # GUIDED_NOGPS and takes the sticks. Keep OFF until ch7 behaviour is validated from
+  # FC dataflash logs (RCIN.C7 + MODE msgs); engage via the TX flight-mode switch instead.
+  auto_guided: false
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied flight path. control_mode MUST match the FC's flight mode. guided_nogps
@@ -69,6 +73,14 @@ fc:
   # dead Pi also triggers the FC's GCS failsafe). SITL/Gazebo-validated; not yet
   # hardware-validated. stabilize / althold remain as RC-override fallbacks.
   control_mode: guided_nogps
+  # FS_GCS_TIMEOUT: a camera-watchdog process restart stops our GCS heartbeat for a few
+  # seconds (RestartSec=1 + python startup); at the ArduPilot default of 5 s that trips
+  # the GCS failsafe (FS_GCS_ENABLE=LAND per docs/deployment-safety.md) and the FC LANDS
+  # itself mid-flight — flight-2 finding. 20 s rides through a process restart while a
+  # truly dead Pi (or the rung-4 reboot, ~48 s) still fails safe. Engaged coverage for a
+  # dead Pi stays with the GUIDED command timeout (levels in ~3 s), not this.
+  enforce_params:
+    FS_GCS_TIMEOUT: 20
   stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
   # Adaptive hover: companion vertical-velocity hold trims throttle from VFR_HUD
   # climb rate so it self-levels (no manual hover tuning). Frozen during a dive.
