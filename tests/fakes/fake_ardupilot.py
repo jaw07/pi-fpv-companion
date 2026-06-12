@@ -106,8 +106,10 @@ class FakeArduCopter:
 
     def _emit_rc_channels(self) -> None:
         ch = self.rc_channels + [0] * (18 - len(self.rc_channels))
+        # Real time_boot_ms: the backend's switch debounce requires the confirming
+        # samples to SPAN real FC time, so a constant timestamp would never engage.
         self._mav.mav.rc_channels_send(
-            0, 18,
+            int(time.monotonic() * 1000) & 0xFFFFFFFF, 18,
             ch[0], ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7],
             ch[8], ch[9], ch[10], ch[11], ch[12], ch[13], ch[14], ch[15],
             ch[16], ch[17],

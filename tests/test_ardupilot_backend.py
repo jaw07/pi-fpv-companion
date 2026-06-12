@@ -527,21 +527,55 @@ def test_disengage_skips_restore_when_pilot_already_moved_the_fc():
 def test_switch_escalation_debounced_deescalation_instant():
     # One glitched RC frame must never engage TRACK/DIVE (flight-2 hardening);
     # de-escalation toward STANDBY commits immediately (disengage never lags).
+    # Timestamps are FC time_boot_ms (10 Hz stream = 100 ms apart).
     b = _offline_guided_backend()
-    b._update_switch(1800)
+    b._update_switch(1800, 0)
     assert b._last_switch.mode is GuidanceMode.STANDBY    # single sample: held
-    b._update_switch(1800)
+    b._update_switch(1800, 100)
     assert b._last_switch.mode is GuidanceMode.DIVE       # confirmed on the 2nd
-    b._update_switch(1000)
+    b._update_switch(1000, 200)
     assert b._last_switch.mode is GuidanceMode.STANDBY    # disengage: instant
-    b._update_switch(1500); b._update_switch(1000); b._update_switch(1500)
+    b._update_switch(1500, 300); b._update_switch(1000, 400); b._update_switch(1500, 500)
     assert b._last_switch.mode is GuidanceMode.STANDBY    # alternating glitches: never engage
-    b._update_switch(1500)
+    b._update_switch(1500, 600)
     assert b._last_switch.mode is GuidanceMode.TRACK      # steady switch: engages
-    b._update_switch(1800)
+    b._update_switch(1800, 700)
     assert b._last_switch.mode is GuidanceMode.TRACK      # TRACK->DIVE also debounced
-    b._update_switch(1800)
+    b._update_switch(1800, 800)
     assert b._last_switch.mode is GuidanceMode.DIVE
+
+
+def test_switch_escalation_requires_real_time_span_not_just_sample_count():
+    # A burst of queued/duplicated RC_CHANNELS delivered in one drain carries the
+    # same (or near-same) FC timestamp — sample COUNT alone must not confirm.
+    b = _offline_guided_backend()
+    b._update_switch(1800, 5000)
+    b._update_switch(1800, 5000)                          # duplicate burst, zero span
+    assert b._last_switch.mode is GuidanceMode.STANDBY
+    b._update_switch(1800, 5010)                          # still < confirm span
+    assert b._last_switch.mode is GuidanceMode.STANDBY
+    b._update_switch(1800, 5100)                          # >= 80 ms of real FC time
+    assert b._last_switch.mode is GuidanceMode.DIVE
+
+
+def test_release_bursts_then_goes_radio_silent():
+    # Steady-state STANDBY must put NOTHING on the wire that touches control inputs:
+    # release() transmits a short zero-override burst (startup, and after overrides
+    # were active), then stops sending entirely.
+    from pi_fpv_companion.types import ZERO_INTENT
+    b = _offline_guided_backend()
+    sent = []
+    b._mav = object()                                    # "open" enough for the send path
+    b._send_channels = lambda overrides: sent.append(dict(overrides))
+    for _ in range(30):
+        b.release()
+    assert len(sent) == 8, "startup burst then silence"
+    b.send_intent(ZERO_INTENT)                           # overrides go active
+    assert sent[-1], "intent sends real overrides"
+    for _ in range(30):
+        b.release()
+    assert len(sent) == 8 + 1 + 8, "fresh burst after overrides, then silent again"
+    assert all(not o for o in sent[-8:]), "burst frames are all-zero (release)"
 
 
 def test_hb_liveness_gate_withholds_heartbeats_when_loop_wedges():
