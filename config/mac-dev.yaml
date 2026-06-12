@@ -41,3 +41,7 @@ safety:
   watchdog_timeout_ms: 500
   require_armed: true
   min_track_quality: 0.35
+
+# Dev machine: no flight recorder (it is the FLIGHT blackbox; keeps the repo var/ clean)
+flight_log:
+  enabled: false

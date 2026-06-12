@@ -550,6 +550,8 @@ def test_hb_liveness_gate_withholds_heartbeats_when_loop_wedges():
     b = _offline_guided_backend()
     now = time.monotonic()
     assert b._hb_should_send(now)                  # startup grace
+    assert not b._hb_should_send(b._hb_open_t + 120.0)   # grace is BOUNDED: a process
+    # that never reaches the main loop must not claim "healthy GCS" forever
     b._last_drain_t = now - 1.0
     assert b._hb_should_send(now)                  # loop alive
     b._last_drain_t = now - 10.0

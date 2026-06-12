@@ -51,6 +51,7 @@ What it will **not** touch (set these yourself in Mission Planner, once):
 | flight-mode switch | → **GUIDED_NOGPS** | the mode the companion flies in (your modes, not ours) |
 | `FS_GCS_ENABLE` | → **LAND** | GCS-failsafe action if the Pi dies (RTL/SmartRTL need GPS — use LAND) |
 | `FS_GCS_TIMEOUT` | `20` (auto-enforced) | default 5 s LANDs on every camera-watchdog restart — 20 s rides through a process restart, a dead Pi still fails safe |
+| `FS_OPTIONS` | bit 16 (auto-enforced) | GCS failsafe ignored in pilot-controlled modes — a Pi death must not LAND a craft you are flying manually; it still LANDs in GUIDED_NOGPS |
 | ch7 (a spare 3-pos switch) | STANDBY/TRACK/DIVE | your steering wheel (above) |
 | ch9 (a spare input, e.g. rocker) | cycle target (tap) | maps in FreedomTX → ch9 |
 
@@ -212,8 +213,15 @@ pi-fpv-companion`). One change at a time.
 you full manual control immediately. (ch7 STANDBY only parks a level hover.)
 
 - **Watch it live:** the composited feed (bbox + HUD) is on the analog composite / TV out.
-- **Read the logs:** `journalctl -u pi-fpv-companion -f`
+- **Read the logs:** `journalctl -u pi-fpv-companion -f` — persistent across reboots/battery
+  pulls (capped at 200 MB; set up by `install-pi.sh`), so post-flight you can read the
+  *previous* boots too: `journalctl -u pi-fpv-companion -b -1`
+- **Flight recorder:** every run writes a 10 Hz JSONL decision trail (switch, target,
+  gate verdict, intent sent) to `/opt/pi-fpv-companion/var/flight/` — the companion-side
+  blackbox. Pair with the FC dataflash to reconstruct any flight.
 - **Restart it:** `sudo systemctl restart pi-fpv-companion`
+- **Field tip:** give both Pis DHCP reservations on the router — after a fly day a lease
+  change looks exactly like "the Pi won't connect to WiFi".
 
 | Problem | Likely fix |
 |---------|-----------|

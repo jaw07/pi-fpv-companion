@@ -10,6 +10,10 @@
 #   2. sync repo to /opt/pi-fpv-companion
 #   3. bootstrap .venv there, install package (-e) + fix opencv conflict
 #   4. install systemd unit, enable but DON'T start (you set config first)
+#   5. install + enable the WiFi self-heal timer
+#   6. make the systemd journal PERSISTENT (capped) — flight logs must survive
+#      battery pulls and the recovery ladder's reboot, or every power cycle
+#      destroys the evidence of what went wrong in the air
 
 set -euo pipefail
 
@@ -53,8 +57,9 @@ rsync -av \
     --exclude='/tmp' \
     "$SRC_DIR/" "$INSTALL_DIR/"
 
-# Writable dir for runtime state (model downloads, log files, etc.)
-mkdir -p "$INSTALL_DIR/var"
+# Writable dir for runtime state (model downloads, log files, etc.) + the
+# companion flight recorder (flight_log.py -> var/flight/*.jsonl)
+mkdir -p "$INSTALL_DIR/var/flight"
 
 # ---- venv ----
 echo "==> venv bootstrap"
@@ -65,8 +70,25 @@ bash scripts/setup-venv.sh
 echo "==> systemd unit"
 sudo sed "s/^User=pi$/User=$SERVICE_USER/" systemd/pi-fpv-companion.service \
     | sudo tee /etc/systemd/system/pi-fpv-companion.service > /dev/null
+sudo cp systemd/wifi-selfheal.service systemd/wifi-selfheal.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable pi-fpv-companion
+sudo systemctl enable --now wifi-selfheal.timer
+
+# ---- persistent journald (capped) ----
+# Raspberry Pi OS defaults to a VOLATILE journal (tmpfs): every battery pull or
+# StartLimitAction reboot erases the logs of the flight that just went wrong.
+# Make it persistent but bounded so SD wear/space stay controlled.
+echo "==> persistent journald (SystemMaxUse=200M)"
+sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/pi-fpv.conf > /dev/null <<'EOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+RuntimeMaxUse=32M
+EOF
+sudo systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+sudo systemctl restart systemd-journald
 
 # ---- UART / Bluetooth ----
 read -r -p "==> apply boot config now (UART + composite via setup-pi-boot.sh)? [y/N] " yn
