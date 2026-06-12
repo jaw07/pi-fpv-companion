@@ -269,9 +269,9 @@ def test_engaged_dive_holds_when_committed_target_drops_not_swaps():
     aircraft never attacks a different target than the one committed to."""
     from pi_fpv_companion.track.multi_target import MultiObjectTracker
 
-    def bundle_with(dets):
+    def bundle_with(dets, t=0.0):
         return FrameBundle(image=np.full((576, 720, 3), 64, dtype=np.uint8),
-                           width=720, height=576, timestamp=0.0, detections=dets)
+                           width=720, height=576, timestamp=t, detections=dets)
 
     A = Detection(x=150, y=300, w=40, h=40, confidence=0.6, class_id=0)
     B = Detection(x=560, y=300, w=40, h=40, confidence=0.9, class_id=0)
@@ -287,11 +287,13 @@ def test_engaged_dive_holds_when_committed_target_drops_not_swaps():
     id_a = tracker.selected_id
 
     # Commit to DIVE, then A vanishes (only B detected) for longer than max_lost.
+    # Time ADVANCES (real frames carry a clock) so the lost target ages out via the
+    # staleness watchdog / time-based quality — the realistic mute mechanism.
     fc.mode = GuidanceMode.DIVE
     fc.armed = True
     gated = None
-    for _ in range(5):
-        gated = pipe.tick(bundle_with([B]))
+    for i in range(5):
+        gated = pipe.tick(bundle_with([B], t=0.5 * (i + 1)))
     assert tracker.selected_id == id_a            # never swapped to B
     assert gated.muted                            # held (no target) instead of attacking B
 
@@ -485,20 +487,66 @@ def test_guided_nogps_rate_path_sends_body_rates_not_sticks():
     assert fc.sent == [], "the RC-stick (send_intent) path must NOT be used in rate mode"
 
 
-def test_guided_nogps_standby_holds_level_hover_when_fc_in_guided():
-    # STANDBY while the FC is still in GUIDED_NOGPS -> HOLD a level hover (never leave the FC
-    # coasting on the last attitude). Sends a safe-hold body rate (level, hover thrust) + releases.
+def test_guided_nogps_standby_injects_nothing_even_in_guided():
+    # Operator requirement (flight-2 hardening): STANDBY injects NOTHING, regardless
+    # of the FC's flight mode. Even armed with the FC left in GUIDED_NOGPS, the
+    # companion is silent — ArduCopter's GUID_TIMEOUT hold (auto-enforced to 3 s)
+    # catches the craft after the last engaged setpoint.
     cam = SyntheticCamera(width=720, height=576)
-    fc = RateStubFC(switch_active=False, pitch=10.0)   # STANDBY, nose-up -> should be levelled
+    fc = RateStubFC(switch_active=False, pitch=10.0)   # STANDBY, armed, FC in GUIDED_NOGPS
+    fc.ready = True
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
+                    rate_cfg=RateConfig(720, 576))
+    for t in (0.0, 0.5, 3.0, 30.0):
+        pipe.tick(cam.render_at(t))
+    assert fc.body_rates == [], "STANDBY must NEVER inject commands, in any FC mode"
+    assert fc.released >= 4                            # hands-off is the only transmission
+
+
+def test_guided_nogps_standby_hover_hold_never_sent_while_disarmed():
+    # Flight-2 fix: a standing hover-thrust SET_ATTITUDE_TARGET while DISARMED on the
+    # ground (FC left in GUIDED_NOGPS) means the craft launches itself the instant the
+    # pilot arms. STANDBY + in-guided + disarmed -> release only, NO body rates.
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC(switch_active=False, armed=False)
     fc.ready = True                                    # FC IS in GUIDED_NOGPS
     pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(), _safety(), fc,
                     rate_cfg=RateConfig(720, 576))
     pipe.tick(cam.render_at(0.0))
     assert fc.released >= 1
-    assert fc.body_rates, "STANDBY-in-guided must hold a level hover, not abandon the FC"
-    rr, pr, yr, thrust = fc.body_rates[-1]
-    assert pr < 0.0                       # nose-up -> commanded pitch rate drives back to level
-    assert abs(yr) < 1e-6 and 0.05 <= thrust <= 0.6
+    assert fc.body_rates == [], "disarmed must NEVER receive a thrust setpoint"
+
+
+def test_guided_nogps_engaged_sends_nothing_while_disarmed():
+    # Same guard on the engaged path: the muted SAFE HOLD must not transmit hover
+    # thrust to a disarmed FC either (bench: engaged + props off + disarmed).
+    cam = SyntheticCamera(width=720, height=576)
+    fc = RateStubFC(armed=False)
+    fc.mode = GuidanceMode.TRACK
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2, max_lost_frames=10),
+                    _servo(), _safety(), fc, rate_cfg=RateConfig(720, 576))
+    for i in range(3):
+        pipe.tick(cam.render_at(i * 0.05))
+    assert fc.body_rates == [], "disarmed must NEVER receive body-rate commands"
+    # And the controller state stays pristine: no integrals/timers wound while
+    # disarmed that would release as a step input on the first armed tick.
+    assert pipe._rate_state.last_t is None and pipe._rate_state.engage_h is None
+    assert abs(pipe._rate_state.hover - 0.30) < 1e-9
+
+
+def test_stabilize_path_releases_instead_of_hover_override_while_disarmed():
+    # ZERO_INTENT's thrust is HOVER (0.5): in stabilize that maps to the hover
+    # throttle PWM, so sending the muted intent to a disarmed FC is a standing
+    # throttle-at-hover override -> self-launch at arm. Engaged + disarmed must
+    # RELEASE the channels, not send the neutral intent.
+    cam = SyntheticCamera(width=720, height=576)
+    tracker = IouAssociator(iou_threshold=0.2, max_lost_frames=10)
+    fc = StubFC(armed=False)               # engaged (TRACK), control_ready, DISARMED
+    pipeline = Pipeline(cam, tracker, _servo(), _safety(), fc)
+    for i in range(3):
+        pipeline.tick(cam.render_at(i * 0.05))
+    assert fc.sent == [], "disarmed must NEVER receive stick overrides"
+    assert fc.released >= 1
 
 
 def test_guided_nogps_standby_commands_nothing_when_pilot_takes_manual():

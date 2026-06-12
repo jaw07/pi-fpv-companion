@@ -24,6 +24,11 @@ class VideoSection:
     width: int = 720
     height: int = 576
     framebuffer: str = "/dev/fb0"
+    # BENCH ONLY: serve the composited frame as browser MJPEG instead of the
+    # framebuffer/TV-out (video/mjpeg_stream.py). 0 = off (flight default).
+    web_stream_port: int = 0
+    web_stream_quality: int = 80
+    web_stream_fps: float = 15.0
 
 
 @dataclass
@@ -34,6 +39,11 @@ class CameraSection:
     file_path: str = ""
     webcam_device: int = 0
     zoom: float = 1.0                    # imx500 digital zoom (centre-crop); >1 aids far targets, costs FOV
+    # First-frame watchdog grace: must exceed the worst cold camera open INCLUDING the
+    # IMX500 network-firmware upload, which varies wildly per Pi (~6 s on the flight
+    # rig, ~55 s observed on a fresh bench Pi at ~65 kB/s SPI). Too short -> the
+    # watchdog kills the process mid-upload, forever.
+    first_frame_grace_s: float = 15.0
 
 
 @dataclass
@@ -120,6 +130,17 @@ class FcSection:
 
 
 @dataclass
+class RecorderSection:
+    """Companion flight recorder (flight_log.py): JSONL decision trail under var/flight.
+    On by default — it is the companion-side blackbox; disable only for dev runs."""
+    enabled: bool = True
+    directory: str = "var/flight"        # relative to CWD (/opt/pi-fpv-companion under systemd)
+    rate_hz: float = 10.0
+    max_bytes: int = 20_000_000          # rotate file at this size
+    keep_files: int = 10                 # prune oldest beyond this many
+
+
+@dataclass
 class AppConfig:
     video: VideoSection
     camera: CameraSection
@@ -128,6 +149,7 @@ class AppConfig:
     fc: FcSection
     servo: ServoConfig
     safety: SafetyConfig
+    recorder: RecorderSection = field(default_factory=RecorderSection)
 
 
 def _video(d: Dict[str, Any]) -> VideoSection:
@@ -136,11 +158,15 @@ def _video(d: Dict[str, Any]) -> VideoSection:
         width=d.get("width", 720),
         height=d.get("height", 576),
         framebuffer=d.get("framebuffer", "/dev/fb0"),
+        web_stream_port=int(d.get("web_stream_port", 0)),
+        web_stream_quality=int(d.get("web_stream_quality", 80)),
+        web_stream_fps=float(d.get("web_stream_fps", 15.0)),
     )
 
 
 def _camera(d: Dict[str, Any]) -> CameraSection:
     return CameraSection(
+        first_frame_grace_s=float(d.get("first_frame_grace_s", 15.0)),
         type=d.get("type", "imx500"),
         framerate=d.get("framerate", 30),
         imx500_model=d.get("imx500_model", ""),
@@ -375,6 +401,16 @@ def _validate(cfg: AppConfig) -> None:
         )
 
 
+def _recorder(d: Dict[str, Any]) -> RecorderSection:
+    return RecorderSection(
+        enabled=d.get("enabled", True),
+        directory=d.get("directory", "var/flight"),
+        rate_hz=float(d.get("rate_hz", 10.0)),
+        max_bytes=int(d.get("max_bytes", 20_000_000)),
+        keep_files=int(d.get("keep_files", 10)),
+    )
+
+
 def load(path: str | Path) -> AppConfig:
     raw = yaml.safe_load(Path(path).read_text())
     video = _video(raw.get("video", {}))
@@ -386,6 +422,7 @@ def load(path: str | Path) -> AppConfig:
         fc=_fc(raw.get("fc", {})),
         servo=_servo(raw.get("guidance", {}), video.width, video.height),
         safety=_safety(raw.get("safety", {})),
+        recorder=_recorder(raw.get("flight_log", {})),
     )
     _validate(cfg)
     return cfg

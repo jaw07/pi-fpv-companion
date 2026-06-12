@@ -13,32 +13,40 @@ video:
 camera:
   type: imx500               # on-sensor inference; detections emitted inline in FrameBundle
   framerate: 30
-  # NanoDet-Plus 416x416 (higher-res than the SSD-MobileNet 320): ~1.7x the input
-  # pixels -> better small/distant targets, same 4-tensor output + 90 COCO labels as
-  # SSD (decoder unchanged), and actually slightly faster to load (~4.9s). Switched
-  # after the first flight surfaced far-target detection trouble.
-  imx500_model: /usr/share/imx500-models/imx500_network_nanodet_plus_416x416_pp.rpk
+  # DEFAULT: YOLO11n fine-tuned on VisDrone (aerial drone-view) @416 — our own model,
+  # built via the export pipeline (Thor train -> LattePanda export -> Pi package) and
+  # shipped in the repo (models/). ~12.9 Hz on the NPU, well-calibrated (q~0.8 on real
+  # targets), strong on vehicles (car val-mAP50 0.63). The decoder auto-detects the
+  # 10 VisDrone classes from the "visdrone" filename. Path is the deployed repo dir.
+  imx500_model: /opt/pi-fpv-companion/models/imx500_network_yolo11n_visdrone416_pp.rpk
+  # The IMX500 firmware upload varies per rig; generous grace so the first-frame
+  # watchdog never kills the process mid-upload.
+  first_frame_grace_s: 120
   # zoom: 1.0 = full FOV (digital centre-crop zoom available but left off for now).
 
 detector:
   type: none                 # IMX500 does detection on-sensor — no CPU/ncnn model
-  # conf_threshold + classes_of_interest are still read here and applied by
-  # IMX500Camera when it decodes the sensor's output tensors.
-  # Raised to 0.45 after the first flight: 0.35 let aerial/top-down false positives
-  # through (the COCO model isn't trained on that viewpoint).
-  conf_threshold: 0.45
-  classes_of_interest: [person, car, truck, motorcycle, bus, boat]
+  # conf_threshold + classes_of_interest are read here and applied by IMX500Camera
+  # when it decodes the sensor's output tensors. YOLO is well-calibrated (real ~0.8,
+  # junk ~0.1), so a firm 0.50 cleanly separates them — the primary ghost filter at
+  # the YOLO NPU rate (frame-based confirm_hits can't latch when detections arrive
+  # every ~6th frame). Classes are the VisDrone taxonomy (resolved against the model's
+  # own labels, not COCO — see _resolve_class_ids).
+  conf_threshold: 0.50
+  classes_of_interest: [pedestrian, people, car, van, truck, bus, motor]
 
 tracker:
   type: multi_iou            # track ALL detections + operator selection (select_channel).
                              # 'iou' = single auto-locked target (no manual select).
   iou_threshold: 0.3
-  reacquire_after_lost_frames: 30
-  # Spurious-detection suppression (first-flight fix): a track must be detected in
-  # >= confirm_hits of the last confirm_window frames before it is shown/selectable,
-  # so one/two-frame ghosts never reach the HUD or the lock. Off-frame coasting
-  # tracks are also dropped (no boxes gliding off-screen) — see multi_target.py.
-  confirm_hits: 3
+  # Drop coasting tracks fast: at the YOLO NPU rate (~13 Hz) a ghost gets one position
+  # sample and a long coast lets it streak off-screen. 8 frames bridges the detection
+  # gap but kills a runaway in ~0.25s.
+  reacquire_after_lost_frames: 8
+  # confirm_hits 1: the YOLO NPU rate is far below camera fps, so a 3-of-5 frame gate
+  # can't latch — conf_threshold is the ghost filter instead (the quality filter's
+  # time-based staleness + the fast coast-drop handle the rest).
+  confirm_hits: 1
   confirm_window: 5
 
 fc:
@@ -55,12 +63,17 @@ fc:
   # ch7 auto-engage: leaving STANDBY (TRACK/DIVE) commands the FC into GUIDED_NOGPS
   # (DO_SET_MODE, re-sent until the HEARTBEAT confirms); returning to STANDBY restores
   # the prior mode. So ch7 alone engages — no separate FC-mode switch needed to enter.
-  auto_guided: true
+  # OFF after flight 2 (2026-06-12): uncommanded mode changes suspected in STANDBY —
+  # with auto_guided on, ANY ch7 reading >= track_threshold flips the FC into
+  # GUIDED_NOGPS and takes the sticks. Keep OFF until ch7 behaviour is validated from
+  # FC dataflash logs (RCIN.C7 + MODE msgs); engage via the TX flight-mode switch instead.
+  auto_guided: false
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied flight path. control_mode MUST match the FC's flight mode. guided_nogps
   # (FLIGHT) = the Pi commands BODY RATES + real thrust via SET_ATTITUDE_TARGET
-  # (guidance/rate_control.py); ch7 engages TRACK/DIVE, STANDBY holds a level hover.
+  # (guidance/rate_control.py); ch7 engages TRACK/DIVE. STANDBY injects NOTHING, in
+  # any FC mode — the FC's GUID_TIMEOUT hold catches the craft after disengage.
   # REQUIRES GUID_OPTIONS bit 3 (the preflight check sets+verifies it) else the FC reads
   # thrust as a climb-rate and the dive planes.
   # Handover/failsafe: KEEP a TX flight-mode switch assigned (e.g. ch6) — flipping it
@@ -69,6 +82,18 @@ fc:
   # dead Pi also triggers the FC's GCS failsafe). SITL/Gazebo-validated; not yet
   # hardware-validated. stabilize / althold remain as RC-override fallbacks.
   control_mode: guided_nogps
+  # FS_GCS_TIMEOUT: a camera-watchdog process restart stops our GCS heartbeat for a few
+  # seconds (RestartSec=1 + python startup); at the ArduPilot default of 5 s that trips
+  # the GCS failsafe (FS_GCS_ENABLE=LAND per docs/deployment-safety.md) and the FC LANDS
+  # itself mid-flight — flight-2 finding. 20 s rides through a process restart while a
+  # truly dead Pi (or the rung-4 reboot, ~48 s) still fails safe. Engaged coverage for a
+  # dead Pi stays with the GUIDED command timeout (levels in ~3 s), not this.
+  enforce_params:
+    FS_GCS_TIMEOUT: 20
+    # GUID_TIMEOUT backs the STANDBY design: the companion injects NOTHING in
+    # STANDBY, so the FC's guided timeout (this many seconds after our last
+    # engaged setpoint) is what levels + holds zero climb after a disengage.
+    GUID_TIMEOUT: 3
   stab_hover_throttle_us: 1450  # stabilize: starting hover guess (learner refines it live)
   # Adaptive hover: companion vertical-velocity hold trims throttle from VFR_HUD
   # climb rate so it self-levels (no manual hover tuning). Frozen during a dive.
@@ -175,3 +200,11 @@ safety:
   watchdog_timeout_ms: 250
   require_armed: true
   min_track_quality: 0.35
+
+# Companion flight recorder — the companion-side blackbox (var/flight/*.jsonl).
+# 10 Hz decision trail: switch mode/pwm, armed, gate verdict+reason, intent sent,
+# target box+quality. ~7 MB per 10 flight-hours; rotated and pruned automatically.
+flight_log:
+  enabled: true
+  directory: var/flight
+  rate_hz: 10

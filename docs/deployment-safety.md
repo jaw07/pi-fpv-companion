@@ -22,8 +22,12 @@ Handover / failsafe (validated in SITL + Gazebo via `scripts/sitl_gz_validate.py
 - **Manual recovery — always available, independent of the Pi:** the pilot flips the FC-mode
   channel OUT of GUIDED_NOGPS (e.g. to STABILIZE). The companion sees the FC is no longer in
   GUIDED_NOGPS (`control_ready()` false) and commands nothing → instant manual control.
-- **STANDBY (ch7) while still in GUIDED_NOGPS:** the companion HOLDS a level hover (self-trimming
-  to null climb). It never leaves the FC coasting on the last (possibly dive) attitude.
+- **STANDBY (ch7) injects NOTHING, in every FC mode** (operator requirement). With the FC
+  still in GUIDED_NOGPS, ArduCopter's own `GUID_TIMEOUT` (3 s, auto-enforced) levels and
+  holds zero climb natively after the last engaged setpoint. **Consequence, by explicit
+  choice:** disengaging mid-dive leaves the FC on the dive attitude for up to that 3 s
+  timeout — flip the FC mode out of GUIDED_NOGPS (ch6) for instant recovery, and prefer
+  ch6 (not ch7) as the mid-dive abort.
 - **Pi death:** with no `SET_ATTITUDE_TARGET`, ArduCopter's GUIDED command timeout holds the
   craft; the companion's ~1 Hz GCS heartbeat also arms FS_GCS (§2). Recovery is the FC-mode flip.
 
@@ -35,8 +39,9 @@ Required wiring / config:
 - [ ] The pilot's flight-MODE channel can select **GUIDED_NOGPS** (engage) *and* a pilot mode
       like STABILIZE (manual recovery). Bench-verify the mode switch reaches both.
 - [ ] Bench-verified: flipping the FC mode OUT of GUIDED_NOGPS returns full manual stick authority.
-- [ ] Bench-verified (props off): ch7 → STANDBY with the FC in GUIDED_NOGPS commands a LEVEL
-      hover (level attitude + hover thrust), not a dive attitude.
+- [ ] Bench-verified (props off): ch7 → STANDBY with the FC in GUIDED_NOGPS sends NOTHING
+      (zero SET_ATTITUDE_TARGET); ~3 s after the last engaged setpoint the FC's GUID_TIMEOUT
+      hold reports level + zero climb on its own.
 - [ ] Bench-verified: killing the Pi (`sudo systemctl stop pi-fpv-companion`) → the craft holds
       (GUIDED timeout / FS_GCS) and the pilot's FC-mode flip recovers it.
 
@@ -57,6 +62,16 @@ A bare FPV quad has no GPS / EKF position estimate. GUIDED_NOGPS + `SET_ATTITUDE
 - [ ] **GPS-denied GCS failsafe = LAND.** Set `FS_GCS_ENABLE`/`FS_OPTIONS` so a lost GCS lands
       (NOT RTL/SmartRTL — they need GPS). The companion emits a ~1 Hz GCS heartbeat so FS_GCS is
       armed on Pi death; the GUIDED command timeout is the inner backstop. Configure + bench-test.
+- [ ] **`FS_OPTIONS` bit 4 (=16)** (auto-enforced): GCS failsafe is ignored in pilot-controlled
+      modes. Without it, a Pi death/restart LANDs a craft being flown MANUALLY on the sticks
+      (suspected flight-2 mechanism). The failsafe still LANDs in GUIDED_NOGPS, where losing
+      the companion means nobody is flying.
+- [ ] **`FS_GCS_TIMEOUT` ≥ 20 s** (enforced from `config/imx500.yaml` at startup). The heartbeat
+      runs on its own thread (independent of the camera), but a camera-watchdog **process restart**
+      still gaps it for a few seconds — at the 5 s default that LANDs the craft on every camera
+      hiccup (flight-2 finding, 2026-06-12). 20 s rides through a restart; a truly dead Pi and the
+      systemd rung-4 reboot (~48 s) still fail safe. While ENGAGED, the GUIDED command timeout
+      (~3 s, levels the craft) covers the gap — FS_GCS is the outer backstop, not the first line.
 - [ ] **Arming GPS-denied:** the EKF must allow arming without GPS (e.g. `EK3_SRC1_POSXY`/`VELXY`
       = 0, `POSZ` = Baro; relax `ARMING_CHECK` only on the bench). The craft must reach
       GUIDED_NOGPS armed + airborne (e.g. take off in a pilot mode, then switch to GUIDED_NOGPS).

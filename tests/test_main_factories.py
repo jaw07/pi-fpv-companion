@@ -125,6 +125,38 @@ def test_enforce_fc_params_skipped_when_disabled():
     assert fc.called is False
 
 
+def test_enforce_fc_params_never_runs_while_armed():
+    # The pass re-runs on every service start — including a camera-watchdog restart
+    # MID-FLIGHT. Param reads/writes while armed are forbidden: skip the whole pass.
+    cfg = load(_CONFIG_ROOT / "imx500.yaml")
+
+    class ArmedFC:
+        def __init__(self): self.called = False
+        def armed_known(self): return True
+        def is_armed(self): return True
+        def ensure_params(self, desired): self.called = True; return {}
+        def ensure_param_bits(self, name, bits): self.called = True; return "ok"
+
+    fc = ArmedFC()
+    _enforce_fc_params(cfg, fc)
+    assert fc.called is False
+
+
+def test_enforce_fc_params_runs_when_confirmed_disarmed():
+    cfg = load(_CONFIG_ROOT / "imx500.yaml")
+
+    class DisarmedFC:
+        def __init__(self): self.called = False
+        def armed_known(self): return True
+        def is_armed(self): return False
+        def ensure_params(self, desired): self.called = True; return {k: "ok" for k in desired}
+        def ensure_param_bits(self, name, bits): return "ok"
+
+    fc = DisarmedFC()
+    _enforce_fc_params(cfg, fc)
+    assert fc.called is True
+
+
 def test_imx500_detector_is_none_sensor_does_inference(tmp_path):
     # On the IMX500 path the detector is None — the sensor emits detections inline.
     cfg = load(_CONFIG_ROOT / "imx500.yaml")

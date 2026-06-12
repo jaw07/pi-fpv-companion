@@ -257,3 +257,29 @@ def test_no_detections_returns_none():
     t = MultiObjectTracker()
     assert t.consume(None, [], 0.0) is None
     assert t.tracks == []
+
+
+def test_phantom_velocity_coast_decays_instead_of_streaking():
+    # Bench finding: a ghost detection cross-matched onto a real object injects a huge
+    # phantom velocity (60 px jump in 33 ms ~ 900 px/s); when detections stop, the
+    # track must NOT dead-reckon across the screen — coasting velocity decays so the
+    # box glides to a stop within a bounded distance.
+    t = MultiObjectTracker(confirm_hits=1)
+    t.consume(_Frame(720, 576), [_d(300, 300)], 0.000)
+    t.consume(_Frame(720, 576), [_d(360, 300)], 0.033)   # 60 px jump -> phantom velocity
+    xs = []
+    for i in range(2, 26):
+        t.consume(_Frame(720, 576), [], i * 0.033)       # never seen again
+        if t.tracks:
+            xs.append(t.tracks[0].detection.x)
+    assert xs, "track coasts (not dropped instantly)"
+    assert max(xs) < 520, f"coast must be bounded, drifted to {max(xs):.0f}px"
+    assert abs(xs[-1] - xs[-2]) < 1.0, "coast flattens to a stop"
+
+
+def test_velocity_estimate_is_clamped_to_plausible_speed():
+    t = MultiObjectTracker(confirm_hits=1, vel_max_px_s=1440.0)
+    t.consume(_Frame(720, 576), [_d(100, 100)], 0.000)
+    t.consume(_Frame(720, 576), [_d(160, 100)], 0.005)   # 60 px in 5 ms = 12000 px/s raw
+    vx, vy = t._vel[1]
+    assert (vx * vx + vy * vy) ** 0.5 <= 1440.0 + 1e-6

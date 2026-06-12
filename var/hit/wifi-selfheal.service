@@ -1,0 +1,8 @@
+[Unit]
+Description=pi-fpv-companion WiFi self-heal (re-associate wlan0 if down)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wifi-selfheal.sh

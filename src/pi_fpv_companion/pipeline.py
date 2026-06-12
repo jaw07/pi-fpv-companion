@@ -29,6 +29,7 @@ StatusCallback = Callable[
 ]
 
 
+
 class Pipeline:
     def __init__(
         self,
@@ -237,8 +238,15 @@ class Pipeline:
         # FC is in the flight mode our control_mode expects (control_ready
         # interlock); otherwise release, so we never push sticks into the wrong
         # mode. (When the gate mutes while engaged, gated.intent is neutral -> hold.)
+        # ALSO release while disarmed: ZERO_INTENT's thrust is HOVER (0.5), which in
+        # stabilize maps to the hover throttle PWM — a standing throttle-at-hover
+        # override on a disarmed FC self-launches the craft at arm (same flight-2
+        # failure class as the rate path's hover-hold; gate() mutes the intent but
+        # muting yields ZERO_INTENT, not silence, so the disarm case must release).
+        can_command = armed or not self._safety_cfg.require_armed
         ready = getattr(self._fc, "control_ready", None)
-        if switch.mode is GuidanceMode.STANDBY or (ready is not None and not ready()):
+        if (switch.mode is GuidanceMode.STANDBY or not can_command
+                or (ready is not None and not ready())):
             self._fc.release()
         else:
             self._fc.send_intent(gated.intent)
@@ -260,25 +268,40 @@ class Pipeline:
             self._last_rate_mode = switch.mode
         ready = getattr(fc, "control_ready", None)
         fc_in_guided = ready is None or ready()   # FC actually in GUIDED_NOGPS (accepts our rates)
+        # NEVER command body rates while disarmed (unless the config waives the armed
+        # gate for bench work). A standing SET_ATTITUDE_TARGET with hover thrust while
+        # disarmed on the ground means the craft launches itself the instant the pilot
+        # arms — flight-2 finding. The gate() below also enforces this when engaged,
+        # but the STANDBY hover-hold branch bypasses gate(), so check it explicitly.
+        can_command = armed or not self._safety_cfg.require_armed
         if switch.mode is GuidanceMode.STANDBY or not fc_in_guided:
-            fc.release()                            # clear any stray RC override (no-op in guided)
-            if fc_in_guided and hasattr(fc, "send_body_rates"):
-                # Disengaged but the FC is STILL in GUIDED_NOGPS (pilot paused at STANDBY, hasn't
-                # taken the mode back) -> HOLD A LEVEL HOVER. Never leave the FC coasting on the
-                # last (possibly dive) attitude with no setpoint. Self-trim the hover toward null
-                # climb so it holds altitude. Manual recovery = pilot flips the FC mode OUT of
-                # GUIDED_NOGPS, at which point fc_in_guided is False and we command nothing.
-                p = _math.radians(fc.pitch_deg()) if hasattr(fc, "pitch_deg") else 0.0
-                r = _math.radians(fc.roll_deg()) if hasattr(fc, "roll_deg") else 0.0
-                if hasattr(fc, "climb_mps"):
-                    self._rate_state.hover = max(0.05, min(0.6, self._rate_state.hover - 0.01 * fc.climb_mps()))
-                fc.send_body_rates(max(-0.6, min(0.6, 2.0 * (0.0 - r))),
-                                   max(-0.6, min(0.6, 2.0 * (0.0 - p))),
-                                   0.0, self._rate_state.hover)
-                reason = "standby-hover-hold"
-            else:
+            # STANDBY injects NOTHING, regardless of the FC's flight mode (operator
+            # requirement, flight-2 hardening). release() is the only transmission and
+            # it is a hands-off instruction (zero-override burst, then quiet — see the
+            # backend). Even with the FC left in GUIDED_NOGPS the companion stays
+            # silent: ArduCopter's GUID_TIMEOUT (3 s, auto-enforced) levels and holds
+            # zero climb natively after our last engaged setpoint. Consequence, by
+            # explicit operator choice: disengaging mid-dive leaves the FC on the dive
+            # attitude for up to that timeout — the pilot's ch6 mode flip out of
+            # GUIDED_NOGPS is the instant recovery, as always.
+            fc.release()
+            if not fc_in_guided:
                 reason = "manual (FC not in GUIDED_NOGPS)"
+            elif can_command:
+                reason = "standby (silent; FC guided-timeout holds)"
+            else:
+                reason = "standby (disarmed; no commands)"
             gated = GateResult(ZERO_INTENT, True, reason)
+            if self._on_status is not None:
+                self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
+            return gated
+        if not can_command:
+            # Engaged but disarmed: send NOTHING, and keep the controller state
+            # pristine — running the rate controller here would wind its integrals /
+            # dive timers against a craft that can't move, releasing them as a step
+            # input on the first armed tick (the launch-at-arm class again, via state).
+            self._rate_state.reset()
+            gated = GateResult(ZERO_INTENT, True, "fc not armed")
             if self._on_status is not None:
                 self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
             return gated

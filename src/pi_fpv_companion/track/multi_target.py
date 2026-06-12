@@ -51,7 +51,8 @@ class MultiObjectTracker:
     def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30,
                  max_match_dist_px: float = 60.0, vel_alpha: float = 0.5,
                  reacquire_radius_px: float = 90.0,
-                 confirm_hits: int = 1, confirm_window: int = 5) -> None:
+                 confirm_hits: int = 1, confirm_window: int = 5,
+                 vel_max_px_s: float = 1440.0, coast_vel_decay: float = 0.8) -> None:
         self._iou_threshold = iou_threshold
         self._max_lost_frames = max_lost_frames
         # M-of-N confirmation: a track must be DETECTED (matched, not coasted) in at
@@ -77,6 +78,17 @@ class MultiObjectTracker:
         # in the image would otherwise swap ids under nearest-neighbour matching.
         self._max_match_dist_px = max_match_dist_px
         self._vel_alpha = vel_alpha
+        # Velocity sanity (bench finding: a ghost box cross-matched onto a real object
+        # reads the position jump as motion — 60 px in one 33 ms frame = ~900 px/s of
+        # PHANTOM velocity — and the track then streaks across the screen while the
+        # object stands still):
+        #   - vel_max_px_s clamps the estimate to plausible image motion (~2 frame
+        #     widths/s; a real target refreshes its velocity every frame anyway), and
+        #   - coast_vel_decay shrinks the velocity each UNMATCHED frame, so coasting
+        #     extrapolates a few boxes' worth and flattens to a stop instead of
+        #     dead-reckoning at full speed until the off-frame drop.
+        self._vel_max_px_s = vel_max_px_s
+        self._coast_vel_decay = coast_vel_decay
         self._vel: Dict[int, Tuple[float, float]] = {}   # track_id -> (vx, vy) px/s
         self._last_t: Optional[float] = None
         self._tracks: Dict[int, Target] = {}
@@ -237,10 +249,13 @@ class MultiObjectTracker:
                 unmatched.remove(best)
                 if dt > 1e-3:
                     a = self._vel_alpha
-                    self._vel[tid] = (
-                        a * (best.x - cur.detection.x) / dt + (1 - a) * vx,
-                        a * (best.y - cur.detection.y) / dt + (1 - a) * vy,
-                    )
+                    nvx = a * (best.x - cur.detection.x) / dt + (1 - a) * vx
+                    nvy = a * (best.y - cur.detection.y) / dt + (1 - a) * vy
+                    speed = (nvx * nvx + nvy * nvy) ** 0.5
+                    if speed > self._vel_max_px_s:     # implausible = mostly match noise
+                        scale = self._vel_max_px_s / speed
+                        nvx, nvy = nvx * scale, nvy * scale
+                    self._vel[tid] = (nvx, nvy)
                 self._tracks[tid] = Target(detection=best, track_id=tid,
                                            lost_frames=0, timestamp=now)
                 self._record_hit(tid, True)
@@ -252,7 +267,13 @@ class MultiObjectTracker:
                 if lost > self._max_lost_frames or self._off_frame(pred):
                     self._drop(tid)
                 else:
-                    # Coast on the prediction (so a brief miss keeps moving with it).
+                    # Coast on the prediction (so a brief miss keeps moving with it),
+                    # DECAYING the velocity each unmatched frame: nothing is being
+                    # measured, so there is no basis for sustained extrapolation — a
+                    # phantom velocity dies out instead of streaking off-screen, and a
+                    # real mover re-measures (and refreshes) within a few frames.
+                    self._vel[tid] = (vx * self._coast_vel_decay,
+                                      vy * self._coast_vel_decay)
                     self._tracks[tid] = Target(detection=pred, track_id=tid,
                                                lost_frames=lost, timestamp=cur.timestamp)
                     self._record_hit(tid, False)

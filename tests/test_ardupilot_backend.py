@@ -479,6 +479,171 @@ def test_mode_command_retries_until_confirmed_on_dropped_commands():
         backend.close(); fake.stop()
 
 
+def _offline_guided_backend():
+    """Backend with NO transport (never opened): _send_mode/_drain no-op, so the
+    mode-command and switch-debounce state machines can be unit-driven directly."""
+    return ArduPilotBackend(
+        device="udpin:127.0.0.1:1", baud=0, switch_channel=7,
+        track_threshold_us=1300, dive_threshold_us=1700, auto_guided=True,
+        mapping=ArduCopterRcMapping(control_mode="guided_nogps"))
+
+
+def test_reengage_race_own_restore_heartbeat_is_not_a_pilot_override():
+    # Quick STANDBY->TRACK re-toggle: the disengage's restore is still unconfirmed when
+    # the re-engage starts. Neither the STALE current_mode (== new target) may false-
+    # confirm the new command, nor may the restore's late-landing HEARTBEAT be read as
+    # a pilot override (it is our own command arriving).
+    b = _offline_guided_backend()
+    b._current_mode = 0; b._hb_count = 1
+    b.set_engaged(True)                              # cmd GUIDED_NOGPS, saved=STABILIZE
+    b._current_mode = 20; b._hb_count = 2
+    b._service_mode()
+    assert b._target_mode is None                    # engage confirmed
+    b.set_engaged(False)                             # restore STABILIZE (pending)
+    b.set_engaged(True)                              # re-engage BEFORE restore confirms
+    b._service_mode()
+    assert b._target_mode == 20, "stale current_mode==target must NOT false-confirm"
+    b._current_mode = 0; b._hb_count = 3             # our restore lands late
+    b._service_mode()
+    assert b._target_mode == 20, "own late restore must not read as pilot override"
+    b._current_mode = 2; b._hb_count = 4             # pilot really flips to ALT_HOLD
+    b._service_mode()
+    assert b._target_mode is None, "a real pilot mode change must cancel"
+
+
+def test_disengage_skips_restore_when_pilot_already_moved_the_fc():
+    # Pilot manual recovery mid-engagement (FC flipped to a third mode), then ch7 ->
+    # STANDBY: the companion must NOT restore the saved mode over the pilot's choice.
+    b = _offline_guided_backend()
+    b._current_mode = 0; b._hb_count = 1
+    b.set_engaged(True)
+    b._current_mode = 20; b._hb_count = 2
+    b._service_mode()                                # engaged + confirmed
+    b._current_mode = 2; b._hb_count = 3             # pilot takes ALT_HOLD
+    b.set_engaged(False)
+    assert b._target_mode is None and b._saved_mode is None
+
+
+def test_switch_escalation_debounced_deescalation_instant():
+    # One glitched RC frame must never engage TRACK/DIVE (flight-2 hardening);
+    # de-escalation toward STANDBY commits immediately (disengage never lags).
+    # Timestamps are FC time_boot_ms (10 Hz stream = 100 ms apart).
+    b = _offline_guided_backend()
+    b._update_switch(1800, 0)
+    assert b._last_switch.mode is GuidanceMode.STANDBY    # single sample: held
+    b._update_switch(1800, 100)
+    assert b._last_switch.mode is GuidanceMode.DIVE       # confirmed on the 2nd
+    b._update_switch(1000, 200)
+    assert b._last_switch.mode is GuidanceMode.STANDBY    # disengage: instant
+    b._update_switch(1500, 300); b._update_switch(1000, 400); b._update_switch(1500, 500)
+    assert b._last_switch.mode is GuidanceMode.STANDBY    # alternating glitches: never engage
+    b._update_switch(1500, 600)
+    assert b._last_switch.mode is GuidanceMode.TRACK      # steady switch: engages
+    b._update_switch(1800, 700)
+    assert b._last_switch.mode is GuidanceMode.TRACK      # TRACK->DIVE also debounced
+    b._update_switch(1800, 800)
+    assert b._last_switch.mode is GuidanceMode.DIVE
+
+
+def test_switch_escalation_requires_real_time_span_not_just_sample_count():
+    # A burst of queued/duplicated RC_CHANNELS delivered in one drain carries the
+    # same (or near-same) FC timestamp — sample COUNT alone must not confirm.
+    b = _offline_guided_backend()
+    b._update_switch(1800, 5000)
+    b._update_switch(1800, 5000)                          # duplicate burst, zero span
+    assert b._last_switch.mode is GuidanceMode.STANDBY
+    b._update_switch(1800, 5010)                          # still < confirm span
+    assert b._last_switch.mode is GuidanceMode.STANDBY
+    b._update_switch(1800, 5100)                          # >= 80 ms of real FC time
+    assert b._last_switch.mode is GuidanceMode.DIVE
+
+
+def test_release_bursts_then_goes_radio_silent():
+    # Steady-state STANDBY must put NOTHING on the wire that touches control inputs:
+    # release() transmits a short zero-override burst (startup, and after overrides
+    # were active), then stops sending entirely.
+    from pi_fpv_companion.types import ZERO_INTENT
+    b = _offline_guided_backend()
+    sent = []
+    b._mav = object()                                    # "open" enough for the send path
+    b._send_channels = lambda overrides: sent.append(dict(overrides))
+    for _ in range(30):
+        b.release()
+    assert len(sent) == 8, "startup burst then silence"
+    b.send_intent(ZERO_INTENT)                           # overrides go active
+    assert sent[-1], "intent sends real overrides"
+    for _ in range(30):
+        b.release()
+    assert len(sent) == 8 + 1 + 8, "fresh burst after overrides, then silent again"
+    assert all(not o for o in sent[-8:]), "burst frames are all-zero (release)"
+
+
+def test_hb_liveness_gate_withholds_heartbeats_when_loop_wedges():
+    # The GCS heartbeat must report LOOP liveness: startup grace before the first
+    # drain, flow while draining, withhold when the loop wedges (so FS_GCS can fire).
+    b = _offline_guided_backend()
+    now = time.monotonic()
+    assert b._hb_should_send(now)                  # startup grace
+    assert not b._hb_should_send(b._hb_open_t + 120.0)   # grace is BOUNDED: a process
+    # that never reaches the main loop must not claim "healthy GCS" forever
+    b._last_drain_t = now - 1.0
+    assert b._hb_should_send(now)                  # loop alive
+    b._last_drain_t = now - 10.0
+    assert not b._hb_should_send(now)              # wedged -> withhold
+    b._last_drain_t = now - 0.1
+    assert b._hb_should_send(now)                  # resumed
+
+
+def test_mode_command_cancelled_when_pilot_changes_mode():
+    # Flight-2 fix: the pilot's TX mode switch must always win. While the companion is
+    # retrying DO_SET_MODE (FC rejecting it), the FC moving to a THIRD mode (pilot or
+    # failsafe) cancels the retry instead of fighting it every 0.5 s forever.
+    backend, fake = _guided_backend(start_mode=0)
+    fake.reject_mode = 20                                    # FC refuses GUIDED_NOGPS
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        _pump(backend, fake, 0.7)                            # retrying against the reject
+        assert backend._target_mode == 20
+        fake.custom_mode = 2                                 # pilot flips to ALT_HOLD
+        ok = _pump(backend, fake, 2.0, lambda: backend._target_mode is None)
+        assert ok, "pilot mode change must cancel the pending mode command"
+        sent_at_cancel = len(fake.set_mode_cmds)
+        _pump(backend, fake, 1.2)                            # > 2 resend intervals
+        assert len(fake.set_mode_cmds) == sent_at_cancel     # no more DO_SET_MODE
+        assert fake.custom_mode == 2                         # pilot's choice stands
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_mode_command_gives_up_after_retry_budget(monkeypatch):
+    # Flight-2 fix: the retry loop is bounded — a permanently rejected mode stops
+    # being re-commanded after _MODE_RETRY_BUDGET_S instead of forever.
+    import pi_fpv_companion.fc.ardupilot as ap_mod
+    monkeypatch.setattr(ap_mod, "_MODE_RETRY_BUDGET_S", 1.0)
+    backend, fake = _guided_backend(start_mode=0)
+    fake.reject_mode = 20                                    # FC refuses GUIDED_NOGPS
+    try:
+        _pump(backend, fake, 0.5, lambda: backend._current_mode == 0)
+        backend.set_engaged(True)
+        ok = _pump(backend, fake, 3.0, lambda: backend._target_mode is None)
+        assert ok, "retry must give up after the budget"
+        assert fake.set_mode_cmds, "it did try before giving up"
+        assert fake.custom_mode == 0                         # FC was never moved
+        assert backend._saved_mode is None                   # no stale restore left armed
+    finally:
+        backend.close(); fake.stop()
+
+
+def test_gcs_heartbeat_flows_without_the_frame_loop(ap_pair):
+    # Flight-2 fix: the ~1 Hz GCS heartbeat (FS_GCS liveness) runs on its own thread —
+    # it must keep flowing even when nothing drives _drain() (camera stalled/booting).
+    backend, fake = ap_pair
+    before = len(fake.captured_heartbeats)
+    time.sleep(2.5)                       # NO read_switch()/_drain() calls at all
+    assert len(fake.captured_heartbeats) - before >= 2
+
+
 def test_auto_guided_off_never_commands_mode():
     backend, fake = _guided_backend(auto_guided=False, start_mode=0)
     try:

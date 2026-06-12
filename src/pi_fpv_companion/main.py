@@ -15,8 +15,10 @@ implementations. Everything downstream speaks Protocols.
 """
 from __future__ import annotations
 import argparse
+import logging
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Tuple
 
@@ -27,11 +29,14 @@ from pi_fpv_companion.pipeline import Pipeline
 from pi_fpv_companion.types import GuidanceMode
 
 
-def _resolve_class_ids(names) -> Tuple[int, ...]:
-    """COCO class name list -> tuple of integer ids. Unknown names are dropped with a warning."""
+def _resolve_class_ids(names, labels=COCO_CLASSES) -> Tuple[int, ...]:
+    """Class name list -> integer ids against `labels` (the model's OWN label set —
+    COCO-80 or, for a VisDrone-fine-tuned model, the 10 VisDrone classes). Resolving
+    against the wrong set silently mis-indexes (e.g. 'car' is COCO id 2 but VisDrone
+    id 3), so the caller passes the model's labels. Unknown names dropped with a warning."""
     if not names:
         return ()
-    name_to_id = {n: i for i, n in enumerate(COCO_CLASSES)}
+    name_to_id = {n: i for i, n in enumerate(labels)}
     ids = []
     for n in names:
         if n in name_to_id:
@@ -72,14 +77,18 @@ def _build_camera(cfg: AppConfig):
             fps=cfg.camera.framerate,
         )
     if t == "imx500":
-        from pi_fpv_companion.camera.imx500 import IMX500Camera
-        model = cfg.camera.imx500_model or "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk"
+        from pi_fpv_companion.camera.imx500 import IMX500Camera, DecoderProfile, _DEFAULT_MODEL
+        from pi_fpv_companion.detect.coco import COCO_CLASSES as _COCO
+        model = cfg.camera.imx500_model or _DEFAULT_MODEL
+        # Resolve classes_of_interest against the model's OWN label set (VisDrone vs
+        # COCO), the same set the decoder uses — see DecoderProfile.for_model.
+        labels = DecoderProfile.for_model(model).labels or _COCO
         return IMX500Camera(
             model_path=model,
             width=cfg.video.width, height=cfg.video.height,
             framerate=cfg.camera.framerate,
             conf_threshold=cfg.detector.conf_threshold,
-            target_class_ids=_resolve_class_ids(cfg.detector.classes_of_interest),
+            target_class_ids=_resolve_class_ids(cfg.detector.classes_of_interest, labels),
             zoom=cfg.camera.zoom,
         )
     raise SystemExit(f"unknown camera type: {t}")
@@ -143,6 +152,9 @@ def _build_fc(cfg: AppConfig):
                 yaw_sign=cfg.fc.rc_yaw_sign,
             ),
         )
+    if cfg.fc.backend == "none":
+        from pi_fpv_companion.fc.null import NullFC
+        return NullFC()
     if cfg.fc.backend == "betaflight":
         from pi_fpv_companion.fc.betaflight import BetaflightBackend
         if cfg.fc.betaflight is None:
@@ -167,6 +179,21 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
     ensure = getattr(fc, "ensure_params", None)
     if not callable(ensure):
         return
+    # NEVER touch FC params while ARMED. The pass re-runs on every service start,
+    # including a camera-watchdog restart MID-FLIGHT — param reads/writes then are
+    # pointless traffic at best (values already match from the preflight boot) and a
+    # mid-air EEPROM write at worst. Wait briefly for a HEARTBEAT to learn the armed
+    # state; unknown (FC silent) falls through to the normal enforce, which aborts
+    # fast on its own when the link is down.
+    known = getattr(fc, "armed_known", None)
+    if callable(known):
+        deadline = time.monotonic() + 2.0
+        while not known() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if known() and fc.is_armed():
+            print("  FC is ARMED — skipping param validation (mid-flight restart; "
+                  "params were enforced at the preflight boot)")
+            return
     desired: dict = {"ANGLE_MAX": round(cfg.fc.angle_max_deg * 100.0)}
     desired[f"RC{cfg.fc.switch_channel}_OPTION"] = 0
     if cfg.fc.select_channel:
@@ -175,29 +202,60 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
     print("  validating FC params ...")
     try:
         status = ensure(desired)
+        # One retry for failures: ensure_params aborts the pass on the first slow
+        # read (a busy FC at boot), which would otherwise silently skip params
+        # later in the list — including safety-critical ones like FS_GCS_TIMEOUT.
+        failed = {n: desired[n] for n, st in status.items()
+                  if st in ("read-fail", "write-fail")}
+        if failed:
+            print(f"  retrying {len(failed)} failed param(s) ...")
+            status.update(ensure(failed))
     except Exception as e:
         print(f"  WARN: FC param validation failed: {e}")
         return
     for name, st in status.items():
         print(f"    {name}: {st}")
+    bad = [n for n, st in status.items() if st not in ("ok", "set")]
+    if bad:
+        # Loud, because flying on FC-side defaults can be unsafe: e.g. an
+        # unenforced FS_GCS_TIMEOUT (5 s default) means the next camera-watchdog
+        # restart trips the GCS failsafe and the FC LANDs itself mid-flight.
+        print(f"  ERROR: FC params NOT enforced: {', '.join(bad)} — the FC is flying "
+              "on its stored values for these. Verify them in Mission Planner "
+              "before flight.")
     # guided_nogps RATE path: the thrust field MUST be real throttle, not a climb-rate,
     # or the dive planes. Enforce GUID_OPTIONS bit 3 (ThrustAsThrust), OR-ing it in so
     # other guided bits are preserved. (Bench finding: a wrong/missing bit silently turns
     # "throttle 0" into "hold altitude".)
-    if cfg.fc.control_mode == "guided_nogps":
-        ensure_bits = getattr(fc, "ensure_param_bits", None)
-        if callable(ensure_bits):
-            from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST
-            try:
-                st = ensure_bits("GUID_OPTIONS", GUID_OPTIONS_THRUST_AS_THRUST)
-                print(f"    GUID_OPTIONS(ThrustAsThrust): {st}")
-            except Exception as e:
-                print(f"  WARN: GUID_OPTIONS check failed: {e}")
+    ensure_bits = getattr(fc, "ensure_param_bits", None)
+    if cfg.fc.control_mode == "guided_nogps" and callable(ensure_bits):
+        from pi_fpv_companion.fc.ardupilot import GUID_OPTIONS_THRUST_AS_THRUST
+        try:
+            st = ensure_bits("GUID_OPTIONS", GUID_OPTIONS_THRUST_AS_THRUST)
+            print(f"    GUID_OPTIONS(ThrustAsThrust): {st}")
+        except Exception as e:
+            print(f"  WARN: GUID_OPTIONS check failed: {e}")
+    if callable(ensure_bits):
+        # Scope the GCS failsafe to modes where the companion actually has authority:
+        # without FS_OPTIONS bit 4, a Pi death/restart LANDs a craft being flown
+        # manually on the sticks (see FS_OPTIONS_CONTINUE_PILOT_GCS).
+        from pi_fpv_companion.fc.ardupilot import FS_OPTIONS_CONTINUE_PILOT_GCS
+        try:
+            st = ensure_bits("FS_OPTIONS", FS_OPTIONS_CONTINUE_PILOT_GCS)
+            print(f"    FS_OPTIONS(ContinuePilotModesOnGCSLoss): {st}")
+        except Exception as e:
+            print(f"  WARN: FS_OPTIONS check failed: {e}")
 
 
 def _build_sink(cfg: AppConfig, no_gui: bool):
     if no_gui:
         return None
+    # BENCH: browser MJPEG stream instead of the TV-out (no VTX/composite needed).
+    if cfg.video.web_stream_port:
+        from pi_fpv_companion.video.mjpeg_stream import MjpegStreamSink
+        return MjpegStreamSink(port=cfg.video.web_stream_port,
+                               quality=cfg.video.web_stream_quality,
+                               max_fps=cfg.video.web_stream_fps)
     from pi_fpv_companion.video.framebuffer import FramebufferSink
 
     # Prefer the legacy /dev/fb0 path if available (older Pi OS, or fkms).
@@ -229,6 +287,12 @@ def main(argv=None) -> int:
                     help="Mac->Pi scaling factor for perf estimates (see perf.py docstring)")
     args = ap.parse_args(argv)
 
+    # Without this, Python logging has NO handler: INFO records (param-ok lines, mode
+    # confirmations — the breadcrumbs that reconstruct a flight) are dropped entirely,
+    # and only WARNING+ reach stderr via the last-resort handler. journald adds its
+    # own timestamps, so the format stays terse.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
     cfg = load(args.config)
     print(f"loaded config: {args.config}")
     print(f"  camera   {cfg.camera.type}")
@@ -253,8 +317,18 @@ def main(argv=None) -> int:
             print(f"WARN: FC didn't return heartbeat within timeout: {e}")
         _enforce_fc_params(cfg, fc)
 
+    recorder = None
+    if cfg.recorder.enabled:
+        from pi_fpv_companion.flight_log import FlightRecorder
+        recorder = FlightRecorder(cfg.recorder.directory, rate_hz=cfg.recorder.rate_hz,
+                                  max_bytes=cfg.recorder.max_bytes,
+                                  keep_files=cfg.recorder.keep_files)
+        print(f"  recorder {cfg.recorder.directory} @ {cfg.recorder.rate_hz:g} Hz")
+
     def on_status(target, intent, gated, switch, armed, frame, tracks=None):
         perf.tick_end(on_status._t0)
+        if recorder is not None:
+            recorder.record(target, intent, gated, switch, armed)
         if sink is not None:
             sink.show(target, intent, gated, switch, armed, frame, tracks)
 
@@ -279,7 +353,9 @@ def main(argv=None) -> int:
         on_status=on_status,
         force_mode=force_mode,
         camera_watchdog_s=2.0,   # restart the process if the camera stalls (≈50 frames @25fps)
-        first_frame_grace_s=15.0,  # bail+restart if a (re)opened camera gives no frame in 15s
+        # bail+restart if a (re)opened camera gives no frame within the grace; must
+        # cover the IMX500 firmware upload, which varies per Pi (see CameraSection)
+        first_frame_grace_s=cfg.camera.first_frame_grace_s,
         rate_cfg=rate_cfg,
     )
 
@@ -301,6 +377,8 @@ def main(argv=None) -> int:
         pipeline.run()
     finally:
         fc.close()
+        if recorder is not None:
+            recorder.close()
         if sink is not None:
             sink.close()
 
