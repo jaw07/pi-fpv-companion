@@ -237,8 +237,15 @@ class Pipeline:
         # FC is in the flight mode our control_mode expects (control_ready
         # interlock); otherwise release, so we never push sticks into the wrong
         # mode. (When the gate mutes while engaged, gated.intent is neutral -> hold.)
+        # ALSO release while disarmed: ZERO_INTENT's thrust is HOVER (0.5), which in
+        # stabilize maps to the hover throttle PWM — a standing throttle-at-hover
+        # override on a disarmed FC self-launches the craft at arm (same flight-2
+        # failure class as the rate path's hover-hold; gate() mutes the intent but
+        # muting yields ZERO_INTENT, not silence, so the disarm case must release).
+        can_command = armed or not self._safety_cfg.require_armed
         ready = getattr(self._fc, "control_ready", None)
-        if switch.mode is GuidanceMode.STANDBY or (ready is not None and not ready()):
+        if (switch.mode is GuidanceMode.STANDBY or not can_command
+                or (ready is not None and not ready())):
             self._fc.release()
         else:
             self._fc.send_intent(gated.intent)
@@ -290,6 +297,16 @@ class Pipeline:
             if self._on_status is not None:
                 self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
             return gated
+        if not can_command:
+            # Engaged but disarmed: send NOTHING, and keep the controller state
+            # pristine — running the rate controller here would wind its integrals /
+            # dive timers against a craft that can't move, releasing them as a step
+            # input on the first armed tick (the launch-at-arm class again, via state).
+            self._rate_state.reset()
+            gated = GateResult(ZERO_INTENT, True, "fc not armed")
+            if self._on_status is not None:
+                self._on_status(target, ZERO_INTENT, gated, switch, armed, bundle, self._tracks)
+            return gated
         pitch = _math.radians(fc.pitch_deg()) if hasattr(fc, "pitch_deg") else 0.0
         roll = _math.radians(fc.roll_deg()) if hasattr(fc, "roll_deg") else 0.0
         gamma = fc.flight_path_angle_rad() if hasattr(fc, "flight_path_angle_rad") else 0.0
@@ -308,10 +325,7 @@ class Pipeline:
         probe = GuidanceIntent(0.0, 0.0, _math.degrees(ri.yaw_rate), ri.thrust,
                                target.timestamp if target is not None else now)
         gated = gate(probe, target, switch, armed, now, self._safety_cfg)
-        if not can_command:
-            # Disarmed: command NOTHING (not even the safe hold) — see can_command above.
-            pass
-        elif ri.phase == "STOP" or not gated.muted:
+        if ri.phase == "STOP" or not gated.muted:
             fc.send_body_rates(ri.roll_rate, ri.pitch_rate, ri.yaw_rate, ri.thrust)
         else:
             # Muted (no/stale/low-quality target) -> SAFE HOLD: level + hover, never search-dive.

@@ -526,6 +526,25 @@ def test_guided_nogps_engaged_sends_nothing_while_disarmed():
     for i in range(3):
         pipe.tick(cam.render_at(i * 0.05))
     assert fc.body_rates == [], "disarmed must NEVER receive body-rate commands"
+    # And the controller state stays pristine: no integrals/timers wound while
+    # disarmed that would release as a step input on the first armed tick.
+    assert pipe._rate_state.last_t is None and pipe._rate_state.engage_h is None
+    assert abs(pipe._rate_state.hover - 0.30) < 1e-9
+
+
+def test_stabilize_path_releases_instead_of_hover_override_while_disarmed():
+    # ZERO_INTENT's thrust is HOVER (0.5): in stabilize that maps to the hover
+    # throttle PWM, so sending the muted intent to a disarmed FC is a standing
+    # throttle-at-hover override -> self-launch at arm. Engaged + disarmed must
+    # RELEASE the channels, not send the neutral intent.
+    cam = SyntheticCamera(width=720, height=576)
+    tracker = IouAssociator(iou_threshold=0.2, max_lost_frames=10)
+    fc = StubFC(armed=False)               # engaged (TRACK), control_ready, DISARMED
+    pipeline = Pipeline(cam, tracker, _servo(), _safety(), fc)
+    for i in range(3):
+        pipeline.tick(cam.render_at(i * 0.05))
+    assert fc.sent == [], "disarmed must NEVER receive stick overrides"
+    assert fc.released >= 1
 
 
 def test_guided_nogps_standby_commands_nothing_when_pilot_takes_manual():
