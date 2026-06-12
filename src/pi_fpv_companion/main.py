@@ -29,11 +29,14 @@ from pi_fpv_companion.pipeline import Pipeline
 from pi_fpv_companion.types import GuidanceMode
 
 
-def _resolve_class_ids(names) -> Tuple[int, ...]:
-    """COCO class name list -> tuple of integer ids. Unknown names are dropped with a warning."""
+def _resolve_class_ids(names, labels=COCO_CLASSES) -> Tuple[int, ...]:
+    """Class name list -> integer ids against `labels` (the model's OWN label set —
+    COCO-80 or, for a VisDrone-fine-tuned model, the 10 VisDrone classes). Resolving
+    against the wrong set silently mis-indexes (e.g. 'car' is COCO id 2 but VisDrone
+    id 3), so the caller passes the model's labels. Unknown names dropped with a warning."""
     if not names:
         return ()
-    name_to_id = {n: i for i, n in enumerate(COCO_CLASSES)}
+    name_to_id = {n: i for i, n in enumerate(labels)}
     ids = []
     for n in names:
         if n in name_to_id:
@@ -74,14 +77,18 @@ def _build_camera(cfg: AppConfig):
             fps=cfg.camera.framerate,
         )
     if t == "imx500":
-        from pi_fpv_companion.camera.imx500 import IMX500Camera
+        from pi_fpv_companion.camera.imx500 import IMX500Camera, DecoderProfile
+        from pi_fpv_companion.detect.coco import COCO_CLASSES as _COCO
         model = cfg.camera.imx500_model or "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk"
+        # Resolve classes_of_interest against the model's OWN label set (VisDrone vs
+        # COCO), the same set the decoder uses — see DecoderProfile.for_model.
+        labels = DecoderProfile.for_model(model).labels or _COCO
         return IMX500Camera(
             model_path=model,
             width=cfg.video.width, height=cfg.video.height,
             framerate=cfg.camera.framerate,
             conf_threshold=cfg.detector.conf_threshold,
-            target_class_ids=_resolve_class_ids(cfg.detector.classes_of_interest),
+            target_class_ids=_resolve_class_ids(cfg.detector.classes_of_interest, labels),
             zoom=cfg.camera.zoom,
         )
     raise SystemExit(f"unknown camera type: {t}")
