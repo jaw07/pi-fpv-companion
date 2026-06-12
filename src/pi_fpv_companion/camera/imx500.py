@@ -87,6 +87,10 @@ class IMX500Camera:
         self._picam = None
         self._intrinsics = None
         self._profile = DecoderProfile.for_model(model_path)   # box order/scale/labels per model
+        # Network input size for box de-normalization; the profile default is a
+        # guess (640 for YOLO), REPLACED in open() by the sensor's real value via
+        # get_input_size() so 320/416/640 models all decode correctly.
+        self._input_size = (self._profile.input_size, self._profile.input_size)
         self._labels = self._profile.labels or COCO_CLASSES    # may be replaced by intrinsics in open()
         self._running = False
 
@@ -122,6 +126,16 @@ class IMX500Camera:
         self._picam.configure(config)
         self._imx500.show_network_fw_progress_bar()
         self._picam.start(config, show_preview=False)
+        # The network's TRUE input size (e.g. 416 or 640) — YOLO emits boxes in
+        # input-PIXEL space, so the decoder must divide by THIS, not a hardcoded
+        # guess. A 416 model's boxes divided by 640 collapse to ~65% of frame,
+        # top-left — a persistent mis-placed phantom box. Read it from the sensor.
+        try:
+            iw, ih = self._imx500.get_input_size()
+            if iw and ih:
+                self._input_size = (int(iw), int(ih))
+        except Exception:
+            pass   # fall back to the profile default set in __init__
         self._apply_zoom()
         self._running = True
 
@@ -191,8 +205,9 @@ class IMX500Camera:
         # YOLO's [3] is the real count; SSD's is a fixed 100 cap (score-sorted
         # candidates), so there we scan all and lean on conf_threshold.
         n = raw_n if p.count_is_real else len(boxes)
-        # YOLO boxes come in network-input PIXELS (0..input_size); SSD already 0..1.
-        box_div = float(p.input_size) if p.box_scale == "input_px" else 1.0
+        # YOLO boxes come in network-input PIXELS (0..input_w); SSD already 0..1.
+        # Use the sensor's REAL input width (set in open()), not the profile guess.
+        box_div = float(self._input_size[0]) if p.box_scale == "input_px" else 1.0
 
         out: List[Detection] = []
         for i in range(min(n, len(boxes))):
