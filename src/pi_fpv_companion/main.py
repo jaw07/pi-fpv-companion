@@ -346,7 +346,9 @@ def main(argv=None) -> int:
         on_status=on_status,
         force_mode=force_mode,
         camera_watchdog_s=2.0,   # restart the process if the camera stalls (≈50 frames @25fps)
-        first_frame_grace_s=15.0,  # bail+restart if a (re)opened camera gives no frame in 15s
+        # bail+restart if a (re)opened camera gives no frame within the grace; must
+        # cover the IMX500 firmware upload, which varies per Pi (see CameraSection)
+        first_frame_grace_s=cfg.camera.first_frame_grace_s,
         rate_cfg=rate_cfg,
     )
 
