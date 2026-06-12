@@ -269,9 +269,9 @@ def test_engaged_dive_holds_when_committed_target_drops_not_swaps():
     aircraft never attacks a different target than the one committed to."""
     from pi_fpv_companion.track.multi_target import MultiObjectTracker
 
-    def bundle_with(dets):
+    def bundle_with(dets, t=0.0):
         return FrameBundle(image=np.full((576, 720, 3), 64, dtype=np.uint8),
-                           width=720, height=576, timestamp=0.0, detections=dets)
+                           width=720, height=576, timestamp=t, detections=dets)
 
     A = Detection(x=150, y=300, w=40, h=40, confidence=0.6, class_id=0)
     B = Detection(x=560, y=300, w=40, h=40, confidence=0.9, class_id=0)
@@ -287,11 +287,13 @@ def test_engaged_dive_holds_when_committed_target_drops_not_swaps():
     id_a = tracker.selected_id
 
     # Commit to DIVE, then A vanishes (only B detected) for longer than max_lost.
+    # Time ADVANCES (real frames carry a clock) so the lost target ages out via the
+    # staleness watchdog / time-based quality — the realistic mute mechanism.
     fc.mode = GuidanceMode.DIVE
     fc.armed = True
     gated = None
-    for _ in range(5):
-        gated = pipe.tick(bundle_with([B]))
+    for i in range(5):
+        gated = pipe.tick(bundle_with([B], t=0.5 * (i + 1)))
     assert tracker.selected_id == id_a            # never swapped to B
     assert gated.muted                            # held (no target) instead of attacking B
 

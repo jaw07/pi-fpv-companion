@@ -121,3 +121,35 @@ def test_coasting_box_does_not_recover_quality():
     q_locked = f.update(_tgt(360, 288, conf=0.9), W, H, 0.05).quality
     ft = f.update(_tgt(360, 288, conf=0.9, lost=1), W, H, 0.10)
     assert ft.quality < q_locked                         # decayed, not recovered
+
+
+def test_quality_survives_low_detector_rate_into_fast_pipeline():
+    # The core fix: a detector firing at ~5.5 Hz into a 30 fps pipeline coasts ~5
+    # frames between real detections. Quality must stay HIGH across those gaps (the
+    # track is healthy), where the old per-frame decay would have cratered it.
+    f = AlphaBetaTargetFilter()
+    t = 0.0
+    f.update(_tgt(360, 288, conf=0.85), W, H, t)
+    qmin = 1.0
+    for _ in range(20):                       # 20 detection cycles
+        for k in range(5):                    # 5 coast frames (no fresh detection)
+            t += 1 / 30
+            ft = f.update(None, W, H, t)
+            qmin = min(qmin, ft.quality)
+        t += 1 / 30                           # the fresh detection (object barely moved)
+        ft = f.update(_tgt(362, 289, conf=0.85), W, H, t)
+    assert ft.quality > 0.75, f"healthy track at 5.5Hz must stay high, got {ft.quality:.2f}"
+    assert qmin > 0.6, f"between-detection dip must stay well above the gate, got {qmin:.2f}"
+
+
+def test_quality_still_drops_on_genuine_loss():
+    # Time-based staleness must still age out a TRULY lost track (no detection for
+    # seconds), so the safety gate mutes it.
+    f = AlphaBetaTargetFilter()
+    f.update(_tgt(360, 288, conf=0.9), W, H, 0.0)
+    last = None
+    for i in range(1, 200):
+        last = f.update(None, W, H, i * 0.05)
+        if last is None:
+            break
+    assert last is None, "a track with no detection for seconds must drop"
