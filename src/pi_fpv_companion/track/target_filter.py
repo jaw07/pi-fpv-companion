@@ -41,10 +41,18 @@ class FilterConfig:
     # Motion plausibility: reject a measurement whose jump from the prediction
     # exceeds this fraction of the frame diagonal (a teleport = misdetection).
     max_jump_frac: float = 0.25
-    # Quality dynamics (per-update multiplicative/additive in [0,1]):
-    quality_recover: float = 0.25   # toward measurement confidence on a good update
-    quality_reject_penalty: float = 0.34  # subtracted on a rejected/implausible update
-    quality_coast_decay: float = 0.2      # multiplicative when coasting (no measurement)
+    # Quality = TRUST x STALENESS. Trust is a [0,1] confidence in the lock, moved
+    # ONLY by real detections (recovers toward measurement confidence on a good
+    # update, penalized on a rejected/implausible one). Staleness is a wall-clock
+    # discount, 0.5 ** (age / halflife), where age is the time since the last
+    # ACCEPTED measurement. Splitting them makes quality independent of the
+    # pipeline frame rate vs the detector's rate: a detector firing at 5.5 Hz into
+    # a 30 fps pipeline coasts ~5 frames between detections, and a per-frame decay
+    # (the old model) would crater quality in those gaps even though the track is
+    # perfectly healthy. Time-based staleness only discounts genuine age.
+    quality_recover: float = 0.4    # trust moves this fraction toward meas confidence per accept
+    quality_reject_penalty: float = 0.34  # trust subtracted on a rejected/implausible update
+    quality_staleness_halflife_s: float = 0.8  # quality halves per this long with no real measurement
     drop_below_quality: float = 0.05      # fully drop the track under this
 
 
@@ -60,7 +68,7 @@ class AlphaBetaTargetFilter:
         self._x = self._y = 0.0
         self._vx = self._vy = 0.0
         self._w = self._h = 0.0
-        self._quality = 0.0
+        self._trust = 0.0    # confidence in the lock (moved only by real detections)
         self._last_t = 0.0
         self._meas_t = 0.0   # time of the last ACCEPTED real measurement
 
@@ -77,7 +85,7 @@ class AlphaBetaTargetFilter:
         self._x, self._y = d.x, d.y
         self._vx = self._vy = 0.0
         self._w, self._h = d.w, d.h
-        self._quality = max(0.0, min(1.0, d.confidence))
+        self._trust = max(0.0, min(1.0, d.confidence))
         self._last_t = now
         self._meas_t = now   # a fresh lock counts as a real measurement
 
@@ -100,8 +108,11 @@ class AlphaBetaTargetFilter:
             self._x += self._vx * dt
             self._y += self._vy * dt
             self._last_t = now
-            self._quality *= (1.0 - cfg.quality_coast_decay)
-            if self._quality < cfg.drop_below_quality:
+            # No trust change while coasting (the box is unconfirmed — never recover
+            # from it). Quality falls via time-based staleness (_emit); drop when it
+            # crosses the floor. This decays by elapsed TIME, not frame count, so a
+            # slow detector's between-detection gaps don't crater a healthy track.
+            if self._quality(now) < cfg.drop_below_quality:
                 self._init = False
                 return None
             return self._emit(now)
@@ -124,12 +135,13 @@ class AlphaBetaTargetFilter:
         class_flip = d.class_id != self._class_id
 
         if implausible_jump or class_flip:
-            # Reject the measurement: coast on prediction, penalize quality.
-            # Do NOT pull the track toward a teleport / different object.
+            # Reject the measurement: coast on prediction, penalize TRUST (an immediate
+            # hit, independent of staleness). Do NOT pull toward the teleport / other
+            # object, and do NOT advance _meas_t (staleness keeps growing too).
             self._x, self._y = px, py
             self._last_t = now
-            self._quality = max(0.0, self._quality - cfg.quality_reject_penalty)
-            if self._quality < cfg.drop_below_quality:
+            self._trust = max(0.0, self._trust - cfg.quality_reject_penalty)
+            if self._quality(now) < cfg.drop_below_quality:
                 self._init = False
                 return None
             return self._emit(now)
@@ -144,24 +156,33 @@ class AlphaBetaTargetFilter:
         self._w += cfg.size_alpha * (d.w - self._w)
         self._h += cfg.size_alpha * (d.h - self._h)
         self._last_t = now
-        self._meas_t = now   # accepted a fresh, plausible measurement
-        # quality recovers toward this measurement's confidence
+        self._meas_t = now   # accepted a fresh, plausible measurement (resets staleness)
+        # trust recovers toward this measurement's confidence
         target_q = max(0.0, min(1.0, d.confidence))
-        self._quality += cfg.quality_recover * (target_q - self._quality)
-        self._quality = max(0.0, min(1.0, self._quality))
+        self._trust += cfg.quality_recover * (target_q - self._trust)
+        self._trust = max(0.0, min(1.0, self._trust))
         return self._emit(now)
 
+    def _quality(self, now: float) -> float:
+        """trust x staleness. Staleness = 0.5 ** (age / halflife), age since the last
+        accepted measurement — a wall-clock discount, so the score is independent of
+        how the detector's rate compares to the pipeline frame rate."""
+        age = max(0.0, now - self._meas_t)
+        staleness = 0.5 ** (age / self._cfg.quality_staleness_halflife_s)
+        return max(0.0, min(1.0, self._trust * staleness))
+
     def _emit(self, now: float) -> FilteredTarget:
+        q = self._quality(now)
         return FilteredTarget(
             detection=Detection(
                 x=self._x, y=self._y, w=self._w, h=self._h,
-                confidence=self._quality, class_id=self._class_id,
+                confidence=q, class_id=self._class_id,
                 class_name="",
             ),
             track_id=self._track_id,
             vx_px_s=self._vx,
             vy_px_s=self._vy,
-            quality=self._quality,
+            quality=q,
             timestamp=now,
             measurement_timestamp=self._meas_t,
         )

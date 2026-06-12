@@ -29,11 +29,11 @@ camera:
 
 detector:
   type: none                 # IMX500 does detection on-sensor
-  # Bench: LOWER than the flight 0.45. Small INT8 COCO models score "obvious"
-  # objects around 0.4-0.6 by nature — absolute confidence is poorly calibrated.
-  # Temporal filtering (confirm_hits M-of-N + the coast-decay fix) is the real
-  # ghost filter, so on the bench we accept more candidates and let it work.
-  conf_threshold: 0.30
+  # YOLO11n/YOLO26n are WELL-CALIBRATED (real objects ~0.8, background junk ~0.05-0.2),
+  # unlike NanoDet's washed-out scores — so a firm threshold cleanly separates them.
+  # This is the primary ghost filter at the YOLO NPU rate (confirm_hits can't latch
+  # M-of-N frames when detections arrive every ~6th frame).
+  conf_threshold: 0.50
   classes_of_interest: [person, car, truck, motorcycle, bus, boat]
 
 tracker:
