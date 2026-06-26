@@ -63,11 +63,14 @@ fc:
   # ch7 auto-engage: leaving STANDBY (TRACK/DIVE) commands the FC into GUIDED_NOGPS
   # (DO_SET_MODE, re-sent until the HEARTBEAT confirms); returning to STANDBY restores
   # the prior mode. So ch7 alone engages — no separate FC-mode switch needed to enter.
-  # OFF after flight 2 (2026-06-12): uncommanded mode changes suspected in STANDBY —
-  # with auto_guided on, ANY ch7 reading >= track_threshold flips the FC into
-  # GUIDED_NOGPS and takes the sticks. Keep OFF until ch7 behaviour is validated from
-  # FC dataflash logs (RCIN.C7 + MODE msgs); engage via the TX flight-mode switch instead.
-  auto_guided: false
+  # ON (2026-06-23, user request): leaving STANDBY (ch7 >= track_threshold, i.e. TRACK
+  # or DIVE) commands the FC into GUIDED_NOGPS; returning to STANDBY restores the prior
+  # mode. ch7 alone engages — no separate FC-mode switch needed to enter.
+  # Was OFF after flight 2 (uncommanded-mode-change suspicion); re-enabled before ch7 was
+  # validated from FC dataflash logs, so VERIFY ch7 (RCIN.C7 + MODE msgs) reads cleanly on
+  # this FC before a real engage. The ch6 TX flight-mode switch still overrides instantly
+  # (manual recovery / mid-dive abort) and is the backstop if the Pi dies while engaged.
+  auto_guided: true
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY
   # GPS-denied flight path. control_mode MUST match the FC's flight mode. guided_nogps
