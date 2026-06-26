@@ -228,21 +228,12 @@ Validation state, honestly:
   in the air. Flight-tuning of gains + the props-off bench checklist are
   hardware-gated, tracked in `docs/deployment-safety.md`.
 
-Setup (one-shot):
+### Install on a Pi (the flight rig)
 
-```
-bash scripts/setup-venv.sh
-```
-
-Creates `.venv`, installs the package editable, and resolves the
-`opencv-python` vs `opencv-contrib-python` conflict (a plain `opencv-python`
-pulled in transitively silently overrides `cv2.legacy` trackers; the script
-force-reinstalls the contrib package last so its `cv2.so` wins).
-
-Deploy to a fresh Pi — from inside the cloned repo, one line does everything
-(apt deps + `imx500-all` firmware, sync to `/opt`, venv, systemd unit enabled,
-persistent journald, wifi-selfheal timer, and the boot config — free the UART via
-`disable-bt` + composite TV-out), then reboot:
+Clone the repo onto the Pi, then from inside it **one line does everything** —
+apt deps + `imx500-all` firmware, sync to `/opt`, build the venv, install + enable
+the systemd unit, persistent journald, wifi-selfheal timer, and the boot config
+(free the UART via `disable-bt` + composite TV-out) — then reboot:
 
 ```
 sudo -v && printf 'y\ny\n' | bash scripts/install-pi.sh && sudo reboot
@@ -252,7 +243,21 @@ sudo -v && printf 'y\ny\n' | bash scripts/install-pi.sh && sudo reboot
 prompts; `printf 'y\ny\n'` answers them (yes to `imx500-all`, yes to the boot
 config). Drop the `printf` pipe to confirm each prompt interactively. The service
 is **enabled but not started** by the installer — it comes up on the post-install
-reboot. See `scripts/install-pi.sh` and `scripts/setup-pi-boot.sh`.
+reboot. This is the only command you need on a Pi.
+
+### Dev setup (Mac / laptop — no Pi hardware)
+
+Just the Python environment (the Pi installer above runs this for you, so you
+don't need it separately on a Pi):
+
+```
+bash scripts/setup-venv.sh
+```
+
+Creates `.venv`, installs the package editable, and resolves the
+`opencv-python` vs `opencv-contrib-python` conflict (a plain `opencv-python`
+pulled in transitively silently overrides `cv2.legacy` trackers; the script
+force-reinstalls the contrib package last so its `cv2.so` wins).
 
 Run the production entry point:
 
