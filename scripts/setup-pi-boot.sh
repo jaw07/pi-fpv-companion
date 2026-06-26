@@ -46,6 +46,12 @@ add_line_once() {
 # default KMS but kept clean to avoid confusion)
 sed -i -E '/^(enable_tvout|sdtv_mode|sdtv_aspect)=/d' "$CONFIG"
 
+# Comment out a pre-existing PLAIN vc4-kms-v3d overlay: stock images ship one, and
+# leaving it alongside the ,composite variant below loads KMS twice (a duplicate
+# overlay that suppresses the composite connector). Replace it with the composite
+# form rather than stacking. Idempotent — a line already commented is left alone.
+sed -i -E 's/^dtoverlay=vc4-kms-v3d$/#&  # pi-fpv-companion: superseded by composite overlay below/' "$CONFIG"
+
 echo >> "$CONFIG"
 add_line_once "# pi-fpv-companion: free PL011 for ttyAMA0 (move BT to mini-UART)"
 add_line_once "dtoverlay=disable-bt"
