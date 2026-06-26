@@ -239,9 +239,20 @@ Creates `.venv`, installs the package editable, and resolves the
 pulled in transitively silently overrides `cv2.legacy` trackers; the script
 force-reinstalls the contrib package last so its `cv2.so` wins).
 
-Deploy to a fresh Pi: `scripts/install-pi.sh` (apt deps + `imx500-all` firmware,
-sync to `/opt`, venv, systemd unit, persistent journald, wifi-selfheal timer) and
-`scripts/setup-pi-boot.sh` (free the UART via `disable-bt`, composite TV-out).
+Deploy to a fresh Pi — from inside the cloned repo, one line does everything
+(apt deps + `imx500-all` firmware, sync to `/opt`, venv, systemd unit enabled,
+persistent journald, wifi-selfheal timer, and the boot config — free the UART via
+`disable-bt` + composite TV-out), then reboot:
+
+```
+sudo -v && printf 'y\ny\n' | bash scripts/install-pi.sh && sudo reboot
+```
+
+`sudo -v` caches credentials so they don't collide with the script's two `[y/N]`
+prompts; `printf 'y\ny\n'` answers them (yes to `imx500-all`, yes to the boot
+config). Drop the `printf` pipe to confirm each prompt interactively. The service
+is **enabled but not started** by the installer — it comes up on the post-install
+reboot. See `scripts/install-pi.sh` and `scripts/setup-pi-boot.sh`.
 
 Run the production entry point:
 
