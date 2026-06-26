@@ -87,8 +87,8 @@ across 5V/GND close to the board.
 
 ```
                        Pi Zero 2W
-                  +-----------------+
-   IMX500 ─────▶  │  capture        │
+                 +-----------------+
+   IMX500 ─────▶ │  capture        │
                  │     │           │
                  │     ▼           │
                  │  detector       │   (IMX500 on-sensor metadata — flight; light dev detectors on the Mac)
