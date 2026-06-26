@@ -39,6 +39,50 @@ guidance so the drone flies toward the tracked target.
 See `docs/hardware.md` for solder points, `config.txt` settings (composite/PAL,
 DRM KMS, `disable-bt` to free the PL011 UART), and wiring notes.
 
+## Connections
+
+Four wires worth of hookup. `scripts/setup-pi-boot.sh` (run by the installer)
+handles the **Pi-side** boot config — freeing the UART, composite output, PAL.
+The **FC-side** serial params you set yourself (Mission Planner / config), and
+the physical connections are below. Full solder detail in `docs/hardware.md`.
+
+**1. Pi → FC, telemetry/control (UART, crossover):**
+
+| Pi | | FC |
+|----|----|----|
+| pin 8  — GPIO14 / **TXD0** | → | FC serial **RX** |
+| pin 10 — GPIO15 / **RXD0** | → | FC serial **TX** |
+| any GND pin (6/9/14/…) | → | FC **GND** |
+
+After `disable-bt`, this is the PL011 at `/dev/serial0` → `ttyAMA0` (what
+`config/imx500.yaml` points at). **Baud: 115200** (project standard for both
+backends). On ArduPilot, on the UART you wired: `SERIALn_PROTOCOL = 2` (MAVLink2)
+and `SERIALn_BAUD = 115`. Betaflight MSP defaults to 115200. Do **not** use a TELEM
+port's default 921600.
+
+**2. Camera → Pi (CSI ribbon):** the IMX500 plugs into the Pi Zero 2W's **mini
+22-pin, 0.5 mm camera connector** (the narrow one). If the camera shipped with a
+15-pin cable you need the Pi-Zero adapter ribbon (e.g. Arducam UC-440). CSI is
+**not** hot-pluggable — connect with the Pi powered off, contacts seated firmly
+both ends. The IMX500 enumerates over I²C and streams over the high-speed CSI
+lanes; if it enumerates but delivers zero frames, that's a ribbon/seating fault.
+
+**3. Pi video → FC camera-in (composite/CVBS):** the Pi Zero 2W has **no RCA
+jack** — composite is two unpopulated "TV" pads on the board underside:
+
+| Pi "TV" pads | | FC |
+|----|----|----|
+| left pad (by the "TV" silkscreen) — **CVBS signal (+)** | → | FC analog **cam-in** |
+| right pad — **GND** | → | FC video **GND** |
+
+1 Vpp, AC-coupled FC inputs need no external parts. Output is PAL 720×576 (or NTSC
+via `setup-pi-boot.sh --ntsc`). **Never short the signal pad to 3.3/5 V — it kills
+the SoC's video pin.**
+
+**4. Power:** 5 V BEC with >1 A headroom to the Pi's 5V/GND (sharing the FC's 5V
+rail is usually fine; a high-current servo rail is not). Add a 470 µF low-ESR cap
+across 5V/GND close to the board.
+
 ## Architecture
 
 ```
