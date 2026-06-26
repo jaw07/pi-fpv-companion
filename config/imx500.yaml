@@ -113,7 +113,7 @@ fc:
   rc_pitch_sign: 1
   rc_yaw_sign: 1
 
-# ATTITUDE-domain guidance (ALT_HOLD RC-override surface). See docs/gps-denied-modes.md.
+# ATTITUDE-domain guidance (ALT_HOLD RC-override surface). See docs/guidance.md.
 guidance:
   max_yaw_rate_dps: 60
   max_pitch_deg: 15.0
@@ -138,7 +138,7 @@ guidance:
   # but stays framed; DIVE does the vertical aiming.
   pitch_p_gain: 0.15        # deg pitch per px of vertical error (DIVE aim)
   track_vcenter_gain: 0.0   # TRACK vertical re-centre — OFF (fights range-hold; see above)
-  # --- DIVE: closed-loop constant-bearing homing (see docs/dive-guidance.md) ---
+  # --- DIVE: closed-loop constant-bearing homing (see docs/guidance.md) ---
   # PITCH is a fixed gentle forward lean (a steeper lean over-depresses the fixed
   # camera and pushes an ABOVE target out the top); the THROTTLE flies a commanded
   # vertical RATE that holds the target's vertical frame position. Holding a fixed

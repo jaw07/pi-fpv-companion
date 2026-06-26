@@ -9,11 +9,11 @@ and, for each candidate mode, measures whether ArduCopter will:
 Candidates (both GPS-free, commanded via RC_CHANNELS_OVERRIDE sticks):
   - ALT_HOLD  (2) — self-levelling + baro altitude hold; the companion injects
     roll/pitch/yaw/throttle sticks. A normal *pilot* mode. THE CHOSEN PATH
-    (ArduPilotBackend flies this; see docs/gps-denied-modes.md).
+    (ArduPilotBackend flies this; see docs/guidance.md).
   - STABILIZE (0) — self-levelling, manual throttle (fallback if no baro).
 
 (GUIDED_NOGPS also works GPS-free but was retired in favour of ALT_HOLD; this
-probe established that and the comparison is recorded in gps-denied-modes.md.)
+probe established that and the comparison is recorded in guidance.md.)
 
     docker run -d --rm --name pifpv-sitl --platform linux/amd64 \
         -p 5760:5760 radarku/ardupilot-sitl:latest

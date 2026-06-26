@@ -47,7 +47,7 @@ class GuidanceIntent:
     A bare FPV quad has no EKF position/velocity estimate, so velocity
     commands are not serviceable (see docs/architecture-audit.md §1). Both
     backends consume this via RC stick override into a self-levelling pilot
-    mode (no GUIDED, no GUID_OPTIONS — see docs/gps-denied-modes.md):
+    mode (no GUIDED, no GUID_OPTIONS — see docs/guidance.md):
       - ArduPilot STABILIZE/ALT_HOLD -> RC_CHANNELS_OVERRIDE AETR sticks (lean
         angle + yaw rate + throttle), GPS-denied
       - Betaflight ANGLE mode        -> AETR sticks (angle = stick deflection)

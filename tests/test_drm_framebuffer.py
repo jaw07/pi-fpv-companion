@@ -1,7 +1,7 @@
 """Tests for DrmFramebuffer pure logic — ioctl number computation + struct sizes.
 
 The actual DRM ioctl path can only be exercised on real Linux with
-`/dev/dri/card0` present, so those tests live in `docs/pi-hardware-todos.md`
+`/dev/dri/card0` present, so those tests live in `docs/deployment-safety.md`
 as manual validation. Here we verify the math that's known to be a common
 source of bugs in ctypes-based DRM clients.
 """

@@ -1,7 +1,7 @@
 # ArduPilot SITL — validating the GPS-denied control surface
 
 > **The flight path is GUIDED_NOGPS + `SET_ATTITUDE_TARGET` body rates** (see
-> `docs/gps-denied-modes.md`); validated in SITL + Gazebo camera-in-the-loop
+> `docs/guidance.md`); validated in SITL + Gazebo camera-in-the-loop
 > (`scripts/sitl_gz_validate.py` drives the production Pipeline against SITL:
 > GUID_OPTIONS bit-3 preflight, STANDBY safe-hold, Pi-death hold, TRACK→DIVE→impact).
 > The **RC-override fallbacks** (STABILIZE / ALT_HOLD) are validated on **ArduCopter

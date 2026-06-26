@@ -6,7 +6,7 @@ backend-agnostic ATTITUDE intent (the GPS-denied control surface).
   roll                   -> 0           (pure pursuit; lateral via yaw only)
   thrust                 -> neutral in TRACK (FC/adaptive-hover holds altitude);
                             in DIVE it moves altitude onto the target — see the
-                            agnostic DIVE block below and docs/dive-guidance.md
+                            agnostic DIVE block below and docs/guidance.md
 
 Yaw is P + velocity FEEDFORWARD (audit §4): pure-P against a moving target
 leaves a structural steady-state lag (the target sits permanently off-centre,
@@ -432,7 +432,7 @@ def compute_intent(
         # re-centre it (limiting the lean) so it stays in view. The two share the
         # pitch budget — closure dominates, vcentre keeps the target from drifting
         # out the top. (Accommodating a target at a different *altitude* is a
-        # throttle job, not pitch — see docs/dive-guidance.md.)
+        # throttle job, not pitch — see docs/guidance.md.)
         cy = cfg.frame_height / 2.0
         dy = _deadband(det.y - cy, cfg.pixel_deadzone_px)
         size_frac = (det.h / cfg.frame_height) if cfg.frame_height else 0.0

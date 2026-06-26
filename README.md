@@ -174,7 +174,7 @@ the line of sight, tracked on `VFR_HUD.climb`) to hold the target's frame
 position. Holding a fixed frame point is a constant bearing → a collision course,
 so the flight path follows the line of sight regardless of target altitude.
 FOV-retention and dive geometry are verified by a closed-loop simulator and SITL.
-See `docs/dive-guidance.md`.
+See `docs/guidance.md`.
 
 **GPS-denied control (why body rates):** velocity setpoints
 (`SET_POSITION_TARGET_LOCAL_NED`) need an EKF position solution a GPS-denied quad
@@ -183,7 +183,7 @@ body rates** (the flight path — smooth, dive-capable), and **RC-override into 
 self-levelling pilot mode** (`stabilize`/`althold` fallbacks, where releasing the
 override hands control straight back). STABILIZE allows a real dive (SITL 4.6:
 ~16 m/s / 77° vs ALT_HOLD's ~1–5 m/s) with no baro altitude floor. See
-`docs/gps-denied-modes.md`.
+`docs/guidance.md`.
 
 **`control_mode: guided_nogps` (body-rate — THE FLIGHT PATH):** GUIDED_NOGPS with
 `SET_ATTITUDE_TARGET` **body rates** + real thrust. Rates are integrated by the
@@ -383,11 +383,11 @@ job is passthrough, IoU association, filter, overlay, and MAVLink — measured a
 - `config.py` (typed YAML loader), `main.py` (component factory by config),
   `perf.py` (Pi-budget verdict).
 - systemd unit + `scripts/install-pi.sh` / `scripts/setup-pi-boot.sh`.
-- Docs: `docs/how-it-works.md`, `docs/user-guide.md`,
-  `docs/architecture-audit.md` (durable audit record),
-  `docs/deployment-safety.md` (pre-flight bench checklist), `docs/dive-guidance.md`,
-  `docs/gps-denied-modes.md`, `docs/ardupilot-vertical-control-research.md`,
-  `docs/sitl.md`, `docs/hardware.md`, `docs/pi-hardware-todos.md`.
+- Docs: `docs/how-it-works.md` (system walkthrough + user guide),
+  `docs/guidance.md` (GPS-denied flight modes, body-rate control, DIVE/TRACK
+  homing), `docs/deployment-safety.md` (pre-flight bench checklist + hardware
+  validation), `docs/hardware.md` (wiring/solder/composite), `docs/sitl.md`
+  (SITL validation), `docs/architecture-audit.md` (durable audit record).
 
 ## Next
 

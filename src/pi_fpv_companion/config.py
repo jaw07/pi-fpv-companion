@@ -96,7 +96,7 @@ class FcSection:
     # control_mode MUST match the FC's flight mode: "stabilize" (DEFAULT; direct
     # throttle, 0.5=hover; no altitude hold -> a true steep dive ~16 m/s, companion
     # owns altitude) or "althold" (throttle = climb rate, 0.5=hold via baro — gentle,
-    # descent capped at PILOT_SPEED_DN ~1-5 m/s). See docs/gps-denied-modes.md.
+    # descent capped at PILOT_SPEED_DN ~1-5 m/s). See docs/guidance.md.
     control_mode: str = "stabilize"
     stab_hover_throttle_us: int = 1450   # stabilize: starting hover guess (learner refines it)
     # Adaptive hover (stabilize): companion vertical-velocity hold — trims hover

@@ -3,7 +3,7 @@
 A bare analog FPV quad has no GPS / position estimate. The robust GPS-denied way
 to let the companion fly it is a self-levelling PILOT mode, with the companion
 injecting AETR stick values via **RC_CHANNELS_OVERRIDE**. Two modes (control_mode;
-must match the FC's flight mode — see docs/gps-denied-modes.md):
+must match the FC's flight mode — see docs/guidance.md):
 
   - **STABILIZE (default)** — direct throttle, no altitude hold. Enables a true
     steep dive (SITL: ~16 m/s, ~77deg path vs ALT_HOLD's ~1-5 m/s). The companion

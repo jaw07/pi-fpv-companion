@@ -2,7 +2,7 @@
 
 The agnostic DIVE only offsets throttle by `dive_descent` (~0.12), so the
 adaptive-hover hold band MUST be below that or the hover PI loop cancels the
-descent and the aircraft never dives (see docs/dive-guidance.md). Unit tests
+descent and the aircraft never dives (see docs/guidance.md). Unit tests
 cover the backend math; this confirms it end-to-end on ArduCopter: drive the
 PRODUCTION ArduPilotBackend (STABILIZE, adaptive hover ON) with a gentle dive
 intent and a gentle climb intent and measure real altitude change.

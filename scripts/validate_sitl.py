@@ -11,7 +11,7 @@ Run against the radarku/ardupilot-sitl container (TCP 5760, no MAVProxy):
     .venv/bin/python scripts/validate_sitl.py --connect tcp:127.0.0.1:5760
 
 ARMING_CHECK is zeroed (SITL convenience). ALT_HOLD needs only baro + IMU — no
-GPS — so this is the right model for a GPS-denied airframe (docs/gps-denied-modes.md).
+GPS — so this is the right model for a GPS-denied airframe (docs/guidance.md).
 """
 from __future__ import annotations
 import argparse
