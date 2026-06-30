@@ -10,9 +10,13 @@ dev (SyntheticCamera + FakeArduCopter) and production (IMX500 + ArduPilotBackend
 over UART).
 """
 from __future__ import annotations
+import logging
+import threading
 import time
 from dataclasses import replace
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 from pi_fpv_companion.camera.base import Camera, FrameBundle
 from pi_fpv_companion.detect.base import Detector
@@ -42,6 +46,7 @@ class Pipeline:
         detector: Optional[Detector] = None,
         detect_period_frames: int = 1,
         on_status: Optional[StatusCallback] = None,
+        display: Optional[StatusCallback] = None,
         force_mode: Optional[GuidanceMode] = None,
         camera_watchdog_s: float = 0.0,
         first_frame_grace_s: float = 15.0,
@@ -65,7 +70,20 @@ class Pipeline:
         self._fc = fc
         self._detector = detector
         self._detect_period = max(1, detect_period_frames)
-        self._on_status = on_status
+        # Decoupled display: when `display` is set, run() splits capture+display (camera
+        # rate) from the control/guidance tick (its own, slower rate) onto separate
+        # threads so the video stays smooth even though one tick takes ~90ms. The FC is
+        # touched ONLY by the control thread (the safety contract is unchanged). The
+        # control tick captures its outputs into _latest_status; the capture thread
+        # renders the freshest frame with that (slightly stale) overlay state.
+        self._display = display
+        self._raw_on_status = on_status
+        self._on_status = self._status_capture
+        self._latest_status: Optional[tuple] = None     # (target,intent,gated,switch,armed,tracks)
+        self._latest_status_lock = threading.Lock()
+        self._latest_bundle: Optional[FrameBundle] = None
+        self._frame_lock = threading.Lock()
+        self._frame_event = threading.Event()
         self._stopping = False
         self._frame_idx = -1
         # Operator target selection (multi-target tracker only): a rising edge on
@@ -92,19 +110,94 @@ class Pipeline:
     def stop(self) -> None:
         self._stopping = True
 
+    def _status_capture(self, target, intent, gated, switch, armed, frame, tracks=None) -> None:
+        """Internal on_status hook (control thread). Stashes the control outputs so the
+        capture thread can render the freshest frame with the latest overlay state, then
+        forwards to the user's on_status (perf + flight recorder)."""
+        with self._latest_status_lock:
+            self._latest_status = (target, intent, gated, switch, armed, tracks)
+        if self._raw_on_status is not None:
+            self._raw_on_status(target, intent, gated, switch, armed, frame, tracks)
+
     def run(self) -> None:
         self._camera.open()
         if self._camera_watchdog_s > 0:
             self._start_camera_watchdog()
+        try:
+            if self._display is not None:
+                self._run_decoupled()
+            else:
+                self._run_inline()
+        finally:
+            self._camera.close()
+
+    def _run_inline(self) -> None:
+        """Single-threaded loop: capture -> tick (-> on_status renders). Used headless
+        / in tests / when no decoupled display sink is provided. Unchanged behaviour."""
+        for bundle in self._camera.frames():
+            if self._stopping:
+                break
+            self._last_frame_ts = time.monotonic()
+            self._got_frame = True
+            self.tick(bundle)
+
+    def _run_decoupled(self) -> None:
+        """Capture+display on THIS thread at camera rate; control/guidance on a worker
+        thread at its own rate. The capture thread publishes the latest frame for the
+        control thread and renders every frame with the most recent control state, so
+        the video stays smooth (~camera fps) while a ~90ms tick runs in parallel."""
+        control = threading.Thread(target=self._control_loop, name="control", daemon=True)
+        control.start()
         try:
             for bundle in self._camera.frames():
                 if self._stopping:
                     break
                 self._last_frame_ts = time.monotonic()
                 self._got_frame = True
-                self.tick(bundle)
+                with self._frame_lock:
+                    self._latest_bundle = bundle
+                self._frame_event.set()
+                # Render the freshest frame with the latest control overlay state. The
+                # state lags by up to one control tick (~90ms) — fine for a HUD; the
+                # video itself is current. Skip until the first tick produces state.
+                with self._latest_status_lock:
+                    st = self._latest_status
+                if st is not None:
+                    target, intent, gated, switch, armed, tracks = st
+                    try:
+                        self._display(target, intent, gated, switch, armed, bundle, tracks)
+                    except Exception:
+                        logger.exception("display render failed; dropping frame")
         finally:
-            self._camera.close()
+            self._stopping = True
+            self._frame_event.set()       # wake the control thread so it can exit
+            control.join(timeout=2.0)
+
+    def _control_loop(self) -> None:
+        """Worker thread: run the control/guidance tick on the latest captured frame,
+        dropping stale frames (latest-wins). This is the ONLY thread that touches the
+        FC — the safety contract in tick()/_tick_rate() is unchanged. A tick exception
+        exits the process (-> systemd restart -> clean STANDBY handover) rather than
+        silently leaving the FC unattended."""
+        import os
+        import sys
+        last = None
+        while not self._stopping:
+            self._frame_event.wait()
+            self._frame_event.clear()
+            if self._stopping:
+                break
+            with self._frame_lock:
+                bundle = self._latest_bundle
+            if bundle is None or bundle is last:
+                continue
+            last = bundle
+            try:
+                self.tick(bundle)
+            except Exception:
+                logger.exception("control tick failed — exiting for restart")
+                print("CONTROL LOOP CRASHED; exiting for restart", file=sys.stderr, flush=True)
+                os._exit(3)
 
     def _start_camera_watchdog(self) -> None:
         """Force a process exit (-> systemd restart) if the camera stalls or

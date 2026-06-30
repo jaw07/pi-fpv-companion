@@ -571,3 +571,74 @@ def test_stabilize_path_unchanged_uses_send_intent():
         pipe.tick(cam.render_at(i * 0.05))
     assert fc.sent, "STABILIZE path must still send RC-stick intents"
     assert fc.body_rates == [], "STABILIZE path must NOT command body rates"
+
+
+# --------------------- decoupled capture/display + control split ---------------------
+
+def test_decoupled_run_renders_at_capture_rate_and_controls_separately():
+    """With `display` set, run() splits capture+display from the control tick onto
+    separate threads. Verify: both run, the camera is opened/closed, and the FC is
+    driven ONLY by the control thread (FC interactions == control ticks, NOT render
+    calls) so the safety contract is unaffected by the faster display path."""
+    import time
+
+    class _ListCamera:
+        def __init__(self, bundles, delay=0.01):
+            self._bundles, self._delay = bundles, delay
+            self.opened = self.closed = False
+        def open(self): self.opened = True
+        def close(self): self.closed = True
+        def frames(self):
+            for b in self._bundles:
+                time.sleep(self._delay)
+                yield b
+
+    src = SyntheticCamera(width=320, height=240)
+    bundles = [src.render_at(i * 0.05) for i in range(15)]
+    cam = _ListCamera(bundles, delay=0.01)
+    fc = StubFC(switch_active=True, armed=True)
+
+    displayed, controlled = [], []
+    def display(target, intent, gated, switch, armed, frame, tracks=None):
+        displayed.append(frame)
+    def on_status(target, intent, gated, switch, armed, frame, tracks=None):
+        controlled.append(switch.mode)
+
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(320, 240), _safety(), fc,
+                    on_status=on_status, display=display)
+    pipe.run()
+
+    assert cam.opened and cam.closed
+    assert len(controlled) >= 1, "control thread must have ticked"
+    assert len(displayed) >= 1, "capture thread must have rendered"
+    # The FC is touched once per control tick (send_intent or release), never from the
+    # render path: total FC interactions equal control ticks, independent of render count.
+    assert len(fc.sent) + fc.released == len(controlled)
+
+
+def test_decoupled_run_stops_cleanly_on_stop():
+    """stop() must end the capture loop and join the control thread (no hang/leak)."""
+    import time, threading
+
+    class _SlowCamera:
+        def __init__(self): self.opened = self.closed = False
+        def open(self): self.opened = True
+        def close(self): self.closed = True
+        def frames(self):
+            src = SyntheticCamera(width=320, height=240)
+            i = 0
+            while True:
+                time.sleep(0.01)
+                yield src.render_at(i * 0.05); i += 1
+
+    cam = _SlowCamera()
+    fc = StubFC(switch_active=False, armed=False)
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(320, 240), _safety(), fc,
+                    on_status=lambda *a, **k: None, display=lambda *a, **k: None)
+    t = threading.Thread(target=pipe.run)
+    t.start()
+    time.sleep(0.2)
+    pipe.stop()
+    t.join(timeout=3.0)
+    assert not t.is_alive(), "run() must return promptly after stop()"
+    assert cam.closed

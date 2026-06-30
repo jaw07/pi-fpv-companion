@@ -35,8 +35,11 @@ def _put_text(image, text, org, color, scale=0.5, thickness=1) -> None:
     """Draw text with a black outline so it stays legible over any background.
     Plain coloured glyphs blend in — and thin strokes get averaged away when the
     preview is downscaled, so HUD callers bump scale/thickness to compensate."""
-    cv2.putText(image, text, org, _HUD_FONT, scale, _OUTLINE, thickness + 3, cv2.LINE_AA)
-    cv2.putText(image, text, org, _HUD_FONT, scale, color, thickness, cv2.LINE_AA)
+    # LINE_8 (aliased), not LINE_AA: anti-aliasing was the #2 render cost (py-spy) and
+    # is invisible on a 720x576 analog-composite feed. The black outline keeps glyphs
+    # legible without it.
+    cv2.putText(image, text, org, _HUD_FONT, scale, _OUTLINE, thickness + 3, cv2.LINE_8)
+    cv2.putText(image, text, org, _HUD_FONT, scale, color, thickness, cv2.LINE_8)
 
 
 def draw_overlay(

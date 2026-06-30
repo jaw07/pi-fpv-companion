@@ -307,6 +307,13 @@ def main(argv=None) -> int:
     tracker = _build_tracker(cfg)
     fc = _build_fc(cfg)
     sink = _build_sink(cfg, no_gui=args.no_gui)
+    if sink is not None:
+        # Run the render (overlay + framebuffer write, ~20-35ms of GIL-releasing C work)
+        # on its own thread so it stops capping the control loop on the Pi Zero 2W. The
+        # flight recorder stays inline in on_status below, so dropped video frames never
+        # cost telemetry. See video/threaded_sink.py.
+        from pi_fpv_companion.video.threaded_sink import ThreadedSink
+        sink = ThreadedSink(sink)
     perf = PerfMonitor(PiBudget(max_tick_ms=33.0, max_rss_mb=200.0, pi_scale_factor=args.pi_scale))
 
     fc.open()
@@ -326,11 +333,12 @@ def main(argv=None) -> int:
         print(f"  recorder {cfg.recorder.directory} @ {cfg.recorder.rate_hz:g} Hz")
 
     def on_status(target, intent, gated, switch, armed, frame, tracks=None):
+        # Per control-tick bookkeeping (runs on the control thread). The video render
+        # is NOT here — the pipeline's capture thread renders via `display=sink` at
+        # camera rate so the feed stays smooth while this ~90ms tick runs in parallel.
         perf.tick_end(on_status._t0)
         if recorder is not None:
             recorder.record(target, intent, gated, switch, armed)
-        if sink is not None:
-            sink.show(target, intent, gated, switch, armed, frame, tracks)
 
     on_status._t0 = 0.0
 
@@ -351,6 +359,9 @@ def main(argv=None) -> int:
         detector=detector,
         detect_period_frames=cfg.detector.detect_period_frames,
         on_status=on_status,
+        # capture thread renders at camera rate (decoupled). Pass the bound show()
+        # callable; main owns the sink's open/close lifecycle. None -> inline mode.
+        display=(sink.show if sink is not None else None),
         force_mode=force_mode,
         camera_watchdog_s=2.0,   # restart the process if the camera stalls (≈50 frames @25fps)
         # bail+restart if a (re)opened camera gives no frame within the grace; must
