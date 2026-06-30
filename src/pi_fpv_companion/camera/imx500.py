@@ -132,10 +132,18 @@ class IMX500Camera:
                         or COCO_CLASSES)
 
         self._picam = Picamera2(self._imx500.camera_num)
+        # raw=None: drop the unused full-res Bayer stream picamera2 allocates by
+        # default (raw={} -> a 2028x1520 sensor-mode stream). We never read it, and on
+        # a 512MB Pi Zero 2W those buffers (~3.8MB each) push the process into SD swap,
+        # which thrashes the loop down to ~8Hz. The NPU runs on-sensor, so detection
+        # metadata is unaffected (verified: get_outputs() still populated with raw=None).
+        # buffer_count 12->4: 12 was wasteful for an ~8-15Hz consumer; 4 is plenty and
+        # cuts main+raw buffer memory ~3x. Together these stop the swapping.
         config = self._picam.create_preview_configuration(
             main={"size": (self._width, self._height), "format": "BGR888"},
+            raw=None,
             controls={"FrameRate": float(self._fps)},
-            buffer_count=12,
+            buffer_count=4,
         )
         self._picam.configure(config)
         self._imx500.show_network_fw_progress_bar()

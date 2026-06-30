@@ -13,12 +13,13 @@ video:
 camera:
   type: imx500               # on-sensor inference; detections emitted inline in FrameBundle
   framerate: 30
-  # DEFAULT: YOLO11n fine-tuned on VisDrone (aerial drone-view) @416 — our own model,
-  # built via the export pipeline (Thor train -> LattePanda export -> Pi package) and
-  # shipped in the repo (models/). ~12.9 Hz on the NPU, well-calibrated (q~0.8 on real
-  # targets), strong on vehicles (car val-mAP50 0.63). The decoder auto-detects the
-  # 10 VisDrone classes from the "visdrone" filename. Path is the deployed repo dir.
-  imx500_model: /opt/pi-fpv-companion/models/imx500_network_yolo11n_visdrone416_pp.rpk
+  # Stock YOLO11n @416 (COCO-80), NOT the VisDrone fine-tune. The VisDrone model is
+  # trained on aerial top-down views and misses low-altitude OBLIQUE FPV targets (a
+  # side-on car / standing person fall below conf at backyard altitude — see the 2026-06-29
+  # flight). Stock COCO is trained on varied ground-level viewpoints, so it fits the
+  # low/oblique flight domain better. The decoder uses COCO labels when the filename has
+  # no "visdrone" tag. VisDrone .rpk still in models/ if we want it back.
+  imx500_model: /opt/pi-fpv-companion/models/imx500_network_yolo11n_416_pp.rpk
   # The IMX500 firmware upload varies per rig; generous grace so the first-frame
   # watchdog never kills the process mid-upload.
   first_frame_grace_s: 120
@@ -30,10 +31,10 @@ detector:
   # when it decodes the sensor's output tensors. YOLO is well-calibrated (real ~0.8,
   # junk ~0.1), so a firm 0.50 cleanly separates them — the primary ghost filter at
   # the YOLO NPU rate (frame-based confirm_hits can't latch when detections arrive
-  # every ~6th frame). Classes are the VisDrone taxonomy (resolved against the model's
-  # own labels, not COCO — see _resolve_class_ids).
+  # every ~6th frame). Classes are the COCO-80 taxonomy (the stock model's labels),
+  # NOT VisDrone — pedestrian/people->person, van->(none, reads as car/truck), motor->motorcycle.
   conf_threshold: 0.50
-  classes_of_interest: [pedestrian, people, car, van, truck, bus, motor]
+  classes_of_interest: [person, bicycle, car, motorcycle, bus, truck]
 
 tracker:
   type: multi_iou            # track ALL detections + operator selection (select_channel).
