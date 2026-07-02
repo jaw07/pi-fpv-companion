@@ -41,6 +41,10 @@ def main(argv=None) -> int:
     ap.add_argument("--switch-channel", type=int, default=7)
     ap.add_argument("--seconds", type=float, default=12.0)
     ap.add_argument("--force-mode", choices=["standby", "track", "dive"], default=None)
+    ap.add_argument("--auto-guided", action="store_true",
+                    help="build the backend with auto_guided ON (the flight config) — proves "
+                         "steady STANDBY stays silent WITH the ch7 auto-engage feature active. "
+                         "Without this the check can't see the auto_guided mode-command path.")
     args = ap.parse_args(argv)
 
     from pi_fpv_companion.camera.synthetic import SyntheticCamera
@@ -53,7 +57,11 @@ def main(argv=None) -> int:
     fc = ArduPilotBackend(device=args.device, baud=args.baud,
                           switch_channel=args.switch_channel,
                           track_threshold_us=1300, dive_threshold_us=1700,
+                          auto_guided=args.auto_guided,
                           mapping=ArduCopterRcMapping(control_mode="guided_nogps"))
+    if args.auto_guided:
+        print("  auto_guided=ON — proving steady STANDBY sends NO DO_SET_MODE with the "
+              "ch7 auto-engage feature active (the flight-3 regression path).")
     fc.open()
     fc.wait_ready(timeout=10)
 
