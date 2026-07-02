@@ -90,7 +90,7 @@ def test_backend_reads_switch_channel_pwm(ap_pair):
     backend, fake = ap_pair
 
     fake.rc_channels[6] = 1800       # ch7 (0-indexed 6), >= dive threshold
-    time.sleep(0.25)
+    time.sleep(0.6)                  # escalation debounce is now 5 samples / 350ms
     s = backend.read_switch()
     assert s.pwm_us == 1800
     assert s.active is True
@@ -488,6 +488,56 @@ def _offline_guided_backend():
         mapping=ArduCopterRcMapping(control_mode="guided_nogps"))
 
 
+def test_orphan_recovery_hands_back_when_restart_orphaned_guided():
+    # A restart left the FC in GUIDED_NOGPS (20) with dead sticks, no engage this
+    # session, armed, switch STANDBY -> command STABILIZE (0) to hand control back.
+    b = _offline_guided_backend()
+    b._armed = True
+    b._current_mode = 20
+    assert b.recover_orphaned_mode() is True
+    assert b._target_mode == 0                       # commanding the recover mode (STABILIZE)
+
+
+def test_orphan_recovery_is_one_shot():
+    b = _offline_guided_backend()
+    b._armed = True; b._current_mode = 20
+    assert b.recover_orphaned_mode() is True
+    b._current_mode = 20                             # still stuck (command not yet confirmed)
+    assert b.recover_orphaned_mode() is False        # never fires twice
+
+
+def test_orphan_recovery_noop_when_fc_not_in_our_mode():
+    b = _offline_guided_backend()
+    b._armed = True; b._current_mode = 0             # FC already in STABILIZE — pilot has control
+    assert b.recover_orphaned_mode() is False
+    assert b._target_mode is None
+
+
+def test_orphan_recovery_noop_after_our_own_engage():
+    # If WE engaged this session, GUIDED_NOGPS is ours to restore, not an orphan.
+    b = _offline_guided_backend()
+    b._armed = True; b._current_mode = 0; b._hb_count = 1
+    b.set_engaged(True)                              # we command GUIDED -> _engaged_ever=True
+    b._current_mode = 20
+    assert b.recover_orphaned_mode() is False
+
+
+def test_orphan_recovery_waits_for_heartbeat_before_latching():
+    # No HEARTBEAT yet (current_mode None): don't latch, keep waiting; then evaluate once.
+    b = _offline_guided_backend()
+    b._armed = True; b._current_mode = None
+    assert b.recover_orphaned_mode() is False
+    assert b._orphan_checked is False                # did NOT latch — will re-evaluate
+    b._current_mode = 20
+    assert b.recover_orphaned_mode() is True
+
+
+def test_orphan_recovery_noop_when_disarmed():
+    b = _offline_guided_backend()
+    b._armed = False; b._current_mode = 20           # not flying -> no recovery
+    assert b.recover_orphaned_mode() is False
+
+
 def test_reengage_race_own_restore_heartbeat_is_not_a_pilot_override():
     # Quick STANDBY->TRACK re-toggle: the disengage's restore is still unconfirmed when
     # the re-engage starts. Neither the STALE current_mode (== new target) may false-
@@ -525,37 +575,52 @@ def test_disengage_skips_restore_when_pilot_already_moved_the_fc():
 
 
 def test_switch_escalation_debounced_deescalation_instant():
-    # One glitched RC frame must never engage TRACK/DIVE (flight-2 hardening);
-    # de-escalation toward STANDBY commits immediately (disengage never lags).
+    # A brief RC glitch must never engage TRACK/DIVE (flight-3 hardening: 5 samples /
+    # 350 ms). De-escalation toward STANDBY commits immediately (disengage never lags).
     # Timestamps are FC time_boot_ms (10 Hz stream = 100 ms apart).
     b = _offline_guided_backend()
-    b._update_switch(1800, 0)
-    assert b._last_switch.mode is GuidanceMode.STANDBY    # single sample: held
-    b._update_switch(1800, 100)
-    assert b._last_switch.mode is GuidanceMode.DIVE       # confirmed on the 2nd
-    b._update_switch(1000, 200)
-    assert b._last_switch.mode is GuidanceMode.STANDBY    # disengage: instant
-    b._update_switch(1500, 300); b._update_switch(1000, 400); b._update_switch(1500, 500)
-    assert b._last_switch.mode is GuidanceMode.STANDBY    # alternating glitches: never engage
-    b._update_switch(1500, 600)
-    assert b._last_switch.mode is GuidanceMode.TRACK      # steady switch: engages
-    b._update_switch(1800, 700)
-    assert b._last_switch.mode is GuidanceMode.TRACK      # TRACK->DIVE also debounced
-    b._update_switch(1800, 800)
-    assert b._last_switch.mode is GuidanceMode.DIVE
+    for i, t in enumerate((0, 100, 200, 300)):
+        b._update_switch(1800, t)
+        assert b._last_switch.mode is GuidanceMode.STANDBY  # <5 samples / <350ms: held
+    b._update_switch(1800, 400)                             # 5th sample, 400ms span
+    assert b._last_switch.mode is GuidanceMode.DIVE         # now confirmed
+    b._update_switch(1000, 500)
+    assert b._last_switch.mode is GuidanceMode.STANDBY      # disengage: instant
+    # alternating glitches never accumulate an engage
+    for t in (600, 700, 800, 900, 1000, 1100):
+        b._update_switch(1500 if t % 200 == 0 else 1000, t)
+    assert b._last_switch.mode is GuidanceMode.STANDBY
+    # a steady, sustained switch DOES engage (5 samples spanning >=350ms)
+    for t in (2000, 2100, 2200, 2300, 2400):
+        b._update_switch(1500, t)
+    assert b._last_switch.mode is GuidanceMode.TRACK
 
 
 def test_switch_escalation_requires_real_time_span_not_just_sample_count():
     # A burst of queued/duplicated RC_CHANNELS delivered in one drain carries the
     # same (or near-same) FC timestamp — sample COUNT alone must not confirm.
     b = _offline_guided_backend()
-    b._update_switch(1800, 5000)
-    b._update_switch(1800, 5000)                          # duplicate burst, zero span
+    for _ in range(8):
+        b._update_switch(1800, 5000)                       # 8 duplicates, zero time span
     assert b._last_switch.mode is GuidanceMode.STANDBY
-    b._update_switch(1800, 5010)                          # still < confirm span
+    b._update_switch(1800, 5100)                           # span 100ms: still < 350ms
     assert b._last_switch.mode is GuidanceMode.STANDBY
-    b._update_switch(1800, 5100)                          # >= 80 ms of real FC time
+    b._update_switch(1800, 5400)                           # span 400ms >= 350ms -> confirmed
     assert b._last_switch.mode is GuidanceMode.DIVE
+
+
+def test_switch_invalid_pwm_fails_to_standby():
+    # Out-of-band PWM (receiver failsafe, or the MAVLink invalid-channel sentinel
+    # 65535) must NOT read as engage — flight-3 root cause. 65535 unclamped exceeded
+    # dive_threshold and read as DIVE, letting a failsafe frame command GUIDED_NOGPS.
+    b = _offline_guided_backend()
+    assert b._mode_for(65535) is GuidanceMode.STANDBY
+    assert b._mode_for(0) is GuidanceMode.STANDBY
+    assert b._mode_for(1800) is GuidanceMode.DIVE          # valid value still works
+    # a sustained stream of the invalid sentinel never engages
+    for t in range(0, 1000, 100):
+        b._update_switch(65535, t)
+    assert b._last_switch.mode is GuidanceMode.STANDBY
 
 
 def test_release_bursts_then_goes_radio_silent():

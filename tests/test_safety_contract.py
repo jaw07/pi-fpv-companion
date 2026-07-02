@@ -87,6 +87,28 @@ def test_engaging_resets_the_standby_burst_counter():
 def test_mode_command_while_disarmed_standby_flagged():
     c = _ck()
     c.on_heartbeat(0.0, armed=False)
-    c.on_rc_channels(0.0, STANDBY)
-    c.on_set_mode(0.1, 20)
-    assert any(v.kind == "DISARMED-STANDBY-no-mode-cmd" for v in c.violations)
+    for i in range(5):                          # settle in STANDBY (> standby_edge_frames)
+        c.on_rc_channels(i * 0.1, STANDBY)
+    c.on_set_mode(0.6, 20)
+    assert any(v.kind == "STANDBY-no-mode-cmd" for v in c.violations)
+
+
+def test_mode_command_while_ARMED_standby_flagged():
+    # flight-3 regression: an ARMED in-flight DO_SET_MODE in settled STANDBY (the
+    # auto_guided hijack) must FAIL — previously only the disarmed case was caught.
+    c = _ck()
+    c.on_heartbeat(0.0, armed=True)
+    for i in range(5):
+        c.on_rc_channels(i * 0.1, STANDBY)
+    c.on_set_mode(0.6, 20)
+    assert any(v.kind == "STANDBY-no-mode-cmd" for v in c.violations), c.report()
+
+
+def test_mode_command_at_restore_edge_is_allowed():
+    # A DO_SET_MODE within a frame or two of leaving engaged is the legit restore edge.
+    c = _ck()
+    c.on_heartbeat(0.0, armed=True)
+    c.on_rc_channels(0.0, ENGAGED)              # engaged
+    c.on_rc_channels(0.1, STANDBY)              # just disengaged -> restore edge
+    c.on_set_mode(0.11, 0)                      # restore prior mode: allowed
+    assert c.passed, c.report()

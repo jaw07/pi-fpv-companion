@@ -84,6 +84,12 @@ class Pipeline:
         self._latest_bundle: Optional[FrameBundle] = None
         self._frame_lock = threading.Lock()
         self._frame_event = threading.Event()
+        # Event-driven guidance: the control thread ticks once per FRESH detection (not
+        # per captured frame — feeding the same detection to the tracker/filter twice
+        # biases them, and detection-less frames carry no new information), with a
+        # fallback so FC commands + the heartbeat-liveness gate still fire during a
+        # detection drought (empty scene / lost target). 0.1s -> >=10Hz keepalive.
+        self._control_fallback_s = 0.1
         self._stopping = False
         self._frame_idx = -1
         # Operator target selection (multi-target tracker only): a rising edge on
@@ -173,25 +179,46 @@ class Pipeline:
             self._frame_event.set()       # wake the control thread so it can exit
             control.join(timeout=2.0)
 
+    @staticmethod
+    def _detection_sig(detections) -> tuple:
+        """Cheap signature of a detection set — identical across frames that carry the
+        SAME on-sensor tensor (the IMX500 repeats its last result on frames between
+        inferences). Used to tick guidance once per FRESH detection, not per frame."""
+        if not detections:
+            return ()
+        return tuple((round(d.x), round(d.y), round(d.w), round(d.h), d.class_id)
+                     for d in detections)
+
     def _control_loop(self) -> None:
-        """Worker thread: run the control/guidance tick on the latest captured frame,
-        dropping stale frames (latest-wins). This is the ONLY thread that touches the
-        FC — the safety contract in tick()/_tick_rate() is unchanged. A tick exception
-        exits the process (-> systemd restart -> clean STANDBY handover) rather than
-        silently leaving the FC unattended."""
+        """Worker thread: run the control/guidance tick once per FRESH detection (event-
+        driven), with a fallback keepalive tick every _control_fallback_s so FC commands
+        and the heartbeat-liveness gate still fire during a detection drought. Always
+        processes the LATEST frame (drops stale). This is the ONLY thread that touches
+        the FC — the safety contract in tick()/_tick_rate() is unchanged. A tick
+        exception exits the process (-> systemd restart -> clean STANDBY handover)."""
         import os
         import sys
-        last = None
+        last_sig = None
+        last_tick_t = 0.0
         while not self._stopping:
-            self._frame_event.wait()
+            self._frame_event.wait(timeout=self._control_fallback_s)
             self._frame_event.clear()
             if self._stopping:
                 break
             with self._frame_lock:
                 bundle = self._latest_bundle
-            if bundle is None or bundle is last:
+            if bundle is None:
                 continue
-            last = bundle
+            now = time.monotonic()
+            sig = self._detection_sig(bundle.detections)
+            fresh = sig != last_sig
+            # Tick on a fresh detection, else only on the fallback interval (keepalive
+            # for FC release / mode / timeout handling — NOT to re-feed a stale detection
+            # faster than needed).
+            if not fresh and (now - last_tick_t) < self._control_fallback_s:
+                continue
+            last_sig = sig
+            last_tick_t = now
             try:
                 self.tick(bundle)
             except Exception:
@@ -377,6 +404,13 @@ class Pipeline:
             # explicit operator choice: disengaging mid-dive leaves the FC on the dive
             # attitude for up to that timeout — the pilot's ch6 mode flip out of
             # GUIDED_NOGPS is the instant recovery, as always.
+            # Startup self-heal: if a restart orphaned a prior engage (FC stuck in
+            # GUIDED_NOGPS, dead sticks) this hands control back to the pilot — one-shot,
+            # only fires on a genuine orphan (switch STANDBY here).
+            if switch.mode is GuidanceMode.STANDBY:
+                recover = getattr(fc, "recover_orphaned_mode", None)
+                if recover is not None:
+                    recover()
             fc.release()
             if not fc_in_guided:
                 reason = "manual (FC not in GUIDED_NOGPS)"

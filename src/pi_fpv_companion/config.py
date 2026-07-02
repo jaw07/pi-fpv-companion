@@ -82,6 +82,9 @@ class FcSection:
     # STANDBY. False = pilot owns the flight-mode switch. Keep a TX flight-mode
     # switch assigned either way — it is the manual-recovery backstop.
     auto_guided: bool = False
+    # Mode the companion commands if a restart leaves the FC orphaned in the control
+    # mode (GUIDED_NOGPS) with dead sticks while the switch reads STANDBY. 0 = STABILIZE.
+    orphan_recover_mode: int = 0
     switch_threshold_us: int = 1700      # betaflight 2-state engage threshold
     # ArduPilot 3-position mode switch on switch_channel:
     #   pwm >= dive_threshold_us  -> DIVE
@@ -222,6 +225,7 @@ def _fc(d: Dict[str, Any]) -> FcSection:
         switch_channel=d.get("switch_channel", 7),
         select_channel=d.get("select_channel", 0),
         auto_guided=d.get("auto_guided", False),
+        orphan_recover_mode=d.get("orphan_recover_mode", 0),
         switch_threshold_us=d.get("switch_threshold_us", 1700),
         track_threshold_us=d.get("track_threshold_us", 1300),
         dive_threshold_us=d.get("dive_threshold_us", 1700),

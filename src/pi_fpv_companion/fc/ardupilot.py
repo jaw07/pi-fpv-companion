@@ -77,9 +77,12 @@ _MODE_RETRY_BUDGET_S = 10.0
 # delivered in one drain cannot fake a confirmation). One corrupted/glitched RC frame
 # can never engage guidance (or commit a dive) on its own.
 # De-escalation toward STANDBY is committed IMMEDIATELY — disengage must never lag.
-# RC_CHANNELS streams at ~10 Hz, so 2 samples ≈ +100 ms engage latency.
-_SWITCH_CONFIRM_SAMPLES = 2
-_SWITCH_CONFIRM_SPAN_MS = 80
+# RC_CHANNELS streams at ~10 Hz, so 5 samples ≈ +400 ms engage latency — deliberately
+# generous: engagement latency is not safety-critical, a SPURIOUS engage (which can
+# hand the aircraft to the companion mid-flight) is. Raised from 2/80ms after flight 3,
+# where a short ch7 excursion (2 frames) was enough to trigger an uncommanded engage.
+_SWITCH_CONFIRM_SAMPLES = 5
+_SWITCH_CONFIRM_SPAN_MS = 350
 
 # Release burst: how many all-zero RC_CHANNELS_OVERRIDE ("hand everything back") frames
 # to send after overrides were active (and once at startup, clearing any stale override
@@ -207,12 +210,19 @@ class ArduPilotBackend:
         mapping: Optional[ArduCopterRcMapping] = None,
         select_channel: int = 0,
         auto_guided: bool = False,
+        orphan_recover_mode: int = 0,
     ) -> None:
         self._device = device
         self._baud = baud
         self._switch_channel = switch_channel
         self._select_channel = select_channel    # 0 = disabled
         self._auto_guided = auto_guided          # ch7 auto-commands the FC flight mode
+        # Startup orphan-recovery: if a restart left the FC in our control mode
+        # (GUIDED_NOGPS) with no companion driving it and the switch reads STANDBY,
+        # command this mode to hand control back to the pilot (default 0 = STABILIZE).
+        self._orphan_recover_mode = orphan_recover_mode
+        self._engaged_ever = False               # did WE command the engage mode this session?
+        self._orphan_checked = False             # one-shot startup orphan-recovery guard
         self._select_pwm_us = 0
         # 3-position mode switch: pwm >= dive -> DIVE, >= track -> TRACK, else STANDBY.
         self._track_threshold_us = track_threshold_us
@@ -465,7 +475,16 @@ class ArduPilotBackend:
             except Exception:
                 pass
 
+    # Valid RC pulse-width band. Anything outside this is not a real switch position:
+    # receiver-failsafe outputs, a momentary channel-count change, or the MAVLink
+    # invalid-channel sentinel UINT16_MAX (65535) — all of which, unclamped, exceed
+    # dive_threshold_us and would read as DIVE. Fail such samples to STANDBY.
+    _PWM_MIN_US = 800
+    _PWM_MAX_US = 2200
+
     def _mode_for(self, pwm: int) -> GuidanceMode:
+        if not (self._PWM_MIN_US <= pwm <= self._PWM_MAX_US):
+            return GuidanceMode.STANDBY   # invalid / failsafe RC value -> fail safe
         if pwm >= self._dive_threshold_us:
             return GuidanceMode.DIVE
         if pwm >= self._track_threshold_us:
@@ -688,6 +707,7 @@ class ArduPilotBackend:
             # Remember where to hand back, unless the FC is already in the target mode.
             if self._current_mode is not None and self._current_mode != target:
                 self._saved_mode = self._current_mode
+            self._engaged_ever = True            # WE commanded the mode -> not an orphan
             self._command_mode(target)
         else:
             if self._saved_mode is not None:
@@ -705,6 +725,35 @@ class ArduPilotBackend:
                 self._saved_mode = None
             else:
                 self._target_mode = None   # nothing to restore; cancel any pending retry
+
+    def recover_orphaned_mode(self) -> bool:
+        """One-shot at startup: hand control back to the pilot if a restart orphaned a
+        prior engage. If auto_guided is on and the FC is sitting in the control mode's
+        flight mode (e.g. GUIDED_NOGPS) that WE did not command this session — the
+        signature of a camera-watchdog restart during an engage — while the pilot is
+        flying (armed), command the recover mode (default STABILIZE). Call from the
+        pipeline's STANDBY path (only meaningful when the switch reads STANDBY). Evaluates
+        exactly once, after the first HEARTBEAT establishes the FC mode. The pilot's TX
+        mode switch is the always-available manual backstop; this just self-heals the case
+        where the FC was left in GUIDED with dead sticks and no restore was owed to anyone.
+        Returns True if it commanded a recovery."""
+        if self._orphan_checked or not self._auto_guided:
+            return False
+        target = _EXPECTED_MODE.get(self._mapping.control_mode)
+        if target is None or self._current_mode is None:
+            return False                         # no expected mode, or no HEARTBEAT yet -> wait
+        self._orphan_checked = True              # evaluate exactly once, at startup
+        if self._engaged_ever or not self._armed:
+            return False                         # our own engage (handled in set_engaged), or not flying
+        if self._current_mode != target:
+            return False                         # FC not in our mode -> nothing orphaned
+        _log.warning("ORPHAN RECOVERY: FC is in mode %d (control_mode=%s) but the engage "
+                     "switch reads STANDBY and we never engaged this session — a restart "
+                     "likely orphaned a prior engage, leaving the pilot's sticks dead. "
+                     "Commanding recover mode %d to hand control back.",
+                     target, self._mapping.control_mode, self._orphan_recover_mode)
+        self._command_mode(self._orphan_recover_mode)
+        return True
 
     def _command_mode(self, mode: int) -> None:
         """Begin commanding the FC into `mode`; _service_mode() re-sends until confirmed,

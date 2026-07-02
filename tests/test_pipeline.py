@@ -642,3 +642,65 @@ def test_decoupled_run_stops_cleanly_on_stop():
     t.join(timeout=3.0)
     assert not t.is_alive(), "run() must return promptly after stop()"
     assert cam.closed
+
+
+# --------------------- event-driven (detection-driven) control loop ---------------------
+
+def test_detection_sig_stable_and_discriminating():
+    from pi_fpv_companion.pipeline import Pipeline as _P
+    d1 = [Detection(x=100.2, y=200.4, w=40, h=40, confidence=0.9, class_id=0)]
+    d1b = [Detection(x=100.1, y=200.3, w=40, h=40, confidence=0.7, class_id=0)]  # ~same box
+    d2 = [Detection(x=180, y=200, w=40, h=40, confidence=0.9, class_id=0)]        # moved
+    assert _P._detection_sig(d1) == _P._detection_sig(d1b)   # rounds to same box -> same sig
+    assert _P._detection_sig(d1) != _P._detection_sig(d2)    # moved target -> fresh
+    assert _P._detection_sig([]) == ()                        # empty scene
+
+
+def _det_bundle(x):
+    return FrameBundle(
+        image=np.zeros((240, 320, 3), dtype=np.uint8), width=320, height=240,
+        timestamp=0.0,
+        detections=[Detection(x=x, y=120, w=30, h=30, confidence=0.9, class_id=0, class_name="t")])
+
+
+class _ListCam:
+    def __init__(self, bundles, delay): self._b, self._d = bundles, delay; self.opened=self.closed=False
+    def open(self): self.opened=True
+    def close(self): self.closed=True
+    def frames(self):
+        import time as _t
+        for b in self._b:
+            _t.sleep(self._d); yield b
+
+
+def test_control_loop_dedupes_repeated_detections():
+    # Many frames carrying the SAME detection (IMX500 repeats its tensor between
+    # inferences) must NOT tick guidance per frame — only on the fallback keepalive.
+    import time
+    bundles = [_det_bundle(160.0) for _ in range(15)]      # identical detection every frame
+    cam = _ListCam(bundles, delay=0.02)                    # ~0.3s of frames
+    fc = StubFC(switch_active=True, armed=True)
+    ticks = []
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(320, 240), _safety(), fc,
+                    on_status=lambda *a, **k: ticks.append(1),
+                    display=lambda *a, **k: None)
+    pipe._control_fallback_s = 0.1                         # keepalive ~10Hz
+    pipe.run()
+    # 15 identical-detection frames over ~0.3s -> ~1 fresh + ~3 fallback ticks, NOT 15.
+    assert len(ticks) < 8, f"expected dedupe, got {len(ticks)} ticks for 15 repeated frames"
+    assert len(ticks) >= 1
+
+
+def test_control_loop_ticks_on_each_fresh_detection():
+    # Distinct detections (moving target) each tick guidance; fallback set high so the
+    # keepalive can't account for the ticks.
+    bundles = [_det_bundle(80.0 + 12 * i) for i in range(8)]   # target moves each frame
+    cam = _ListCam(bundles, delay=0.05)                        # slow enough the loop keeps up
+    fc = StubFC(switch_active=True, armed=True)
+    ticks = []
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(320, 240), _safety(), fc,
+                    on_status=lambda *a, **k: ticks.append(1),
+                    display=lambda *a, **k: None)
+    pipe._control_fallback_s = 1.0                             # fallback won't fire in ~0.4s
+    pipe.run()
+    assert len(ticks) >= 6, f"expected ~one tick per fresh detection, got {len(ticks)}"

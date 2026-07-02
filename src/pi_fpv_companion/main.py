@@ -130,6 +130,7 @@ def _build_fc(cfg: AppConfig):
             switch_channel=cfg.fc.switch_channel,
             select_channel=cfg.fc.select_channel,
             auto_guided=cfg.fc.auto_guided,
+            orphan_recover_mode=cfg.fc.orphan_recover_mode,
             track_threshold_us=cfg.fc.track_threshold_us,
             dive_threshold_us=cfg.fc.dive_threshold_us,
             mapping=ArduCopterRcMapping(

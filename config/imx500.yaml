@@ -12,7 +12,14 @@ video:
 
 camera:
   type: imx500               # on-sensor inference; detections emitted inline in FrameBundle
-  framerate: 30
+  # 22, NOT 30: the IMX500 delivers a detection tensor only on frames whose period exceeds
+  # the on-sensor inference occupancy (~45ms for YOLO11n@416 on this unit). At 30fps (33ms
+  # period) that's every 2nd frame -> 15Hz detections. At 22fps (45ms period) EVERY frame
+  # carries a fresh detection -> ~22Hz — measured on the airframe (framerate sweep 2026-07-02:
+  # 18->18, 20->20, 22->22, 24->12Hz; knee at 22). Costs ~3fps of display (25->22, still
+  # smooth) to gain ~7Hz of detection. Re-sweep after cooling — a cooler sensor may push the
+  # knee to 23-24 as occupancy drops.
+  framerate: 22
   # Stock YOLO11n @416 (COCO-80), NOT the VisDrone fine-tune. The VisDrone model is
   # trained on aerial top-down views and misses low-altitude OBLIQUE FPV targets (a
   # side-on car / standing person fall below conf at backyard altitude — see the 2026-06-29
@@ -67,10 +74,16 @@ fc:
   # ON (2026-06-23, user request): leaving STANDBY (ch7 >= track_threshold, i.e. TRACK
   # or DIVE) commands the FC into GUIDED_NOGPS; returning to STANDBY restores the prior
   # mode. ch7 alone engages — no separate FC-mode switch needed to enter.
-  # Was OFF after flight 2 (uncommanded-mode-change suspicion); re-enabled before ch7 was
-  # validated from FC dataflash logs, so VERIFY ch7 (RCIN.C7 + MODE msgs) reads cleanly on
-  # this FC before a real engage. The ch6 TX flight-mode switch still overrides instantly
-  # (manual recovery / mid-dive abort) and is the backstop if the Pi dies while engaged.
+  # ON — but HARDENED after flight 3 (2026-06-30), where the pilot flew entirely in STANDBY
+  # yet felt the controls "messed with". Audit root-caused the engage path: a spurious ch7
+  # read (receiver-failsafe value, or the MAVLink invalid-channel sentinel 65535 which read
+  # as DIVE) sustained for just 2 RC frames commanded the FC into GUIDED_NOGPS mid-flight and
+  # deadened the pilot's sticks; a camera-stall restart in that window orphaned the mode.
+  # Fixes so it can't recur: (1) _mode_for clamps out-of-band PWM (<800 / >2200us) to STANDBY,
+  # so 65535/failsafe can't read as engage; (2) escalation debounce raised to 5 samples/350ms
+  # so a brief glitch can't engage; (3) startup orphan-recovery restores a stuck GUIDED_NOGPS
+  # when the switch reads STANDBY (guided_restore_on_orphan). STILL DO: validate ch7 from FC
+  # dataflash (RCIN.C7 + MODE), and consider FC-side RCx_OPTION=55 (GUIDED) as belt-and-suspenders.
   auto_guided: true
   track_threshold_us: 1300   # pwm >= this -> TRACK (follow + hold range)
   dive_threshold_us: 1700    # pwm >= this -> DIVE (close the gap + dive); else STANDBY

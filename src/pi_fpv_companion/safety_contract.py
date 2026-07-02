@@ -30,6 +30,9 @@ class ContractConfig:
     # instruction); more than this many consecutive override frames in STANDBY is a
     # steady-state leak (the contract says STANDBY goes radio-silent after the burst).
     release_burst_max: int = 12
+    # A DO_SET_MODE within this many STANDBY frames of leaving engaged is the legit
+    # restore-on-disengage edge; beyond it, a mode command is a settled-STANDBY breach.
+    standby_edge_frames: int = 3
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,7 @@ class ContractChecker:
     _pwm: int = 0
     _pwm_known: bool = False
     _override_run: int = 0          # consecutive override frames in the current STANDBY stretch
+    _standby_run: int = 0           # consecutive STANDBY rc_channels frames (0 = just engaged/edge)
     counts: dict = field(default_factory=lambda: {
         "heartbeat": 0, "rc_channels": 0, "override_zero": 0, "override_nonzero": 0,
         "attitude_target": 0, "set_mode": 0})
@@ -63,9 +67,10 @@ class ContractChecker:
         self._pwm, self._pwm_known = switch_pwm, True
         self.counts["rc_channels"] += 1
         if self._standby():
-            pass                      # override-run is tracked on override frames
+            self._standby_run += 1    # count how long we've been settled in STANDBY
         else:
             self._override_run = 0    # engaged: reset the STANDBY burst counter
+            self._standby_run = 0     # ...and the STANDBY-settled counter (this is an edge)
 
     # ---- companion -> FC commands ----
     def on_rc_override(self, t: float, channels: List[int]) -> None:
@@ -98,12 +103,18 @@ class ContractChecker:
 
     def on_set_mode(self, t: float, mode: int) -> None:
         self.counts["set_mode"] += 1
-        # DO_SET_MODE in steady-state STANDBY is a violation (it should only fire on
-        # the engage edge). We can't see the edge directly, but a mode command while
-        # the switch has been STANDBY and we're disarmed is clearly out of contract.
-        if self._standby() and self._armed_known and not self._armed:
-            self._add(t, "DISARMED-STANDBY-no-mode-cmd",
-                      f"DO_SET_MODE({mode}) while disarmed in STANDBY")
+        # DO_SET_MODE is legitimate only on an engage/disengage EDGE. We approximate the
+        # edge with _standby_run: a mode command at the restore edge lands within a frame
+        # or two of leaving engaged (_standby_run small). A mode command once the switch
+        # has SETTLED in STANDBY (armed OR disarmed) is the flight-3 hijack signature —
+        # the FC being commanded to GUIDED_NOGPS while the pilot believes he's in STANDBY.
+        # The previous check only caught the disarmed case, so an ARMED in-flight hijack
+        # passed. Now both fail. _STANDBY_EDGE_FRAMES tolerates the genuine restore edge.
+        if self._standby() and self._standby_run > self.cfg.standby_edge_frames:
+            armed_s = "armed" if self._armed else ("disarmed" if self._armed_known else "unknown-arm")
+            self._add(t, "STANDBY-no-mode-cmd",
+                      f"DO_SET_MODE({mode}) in settled STANDBY ({armed_s}, "
+                      f"{self._standby_run} frames since engaged)")
 
     # ---- helpers ----
     def _standby(self) -> bool:
