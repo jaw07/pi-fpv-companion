@@ -31,6 +31,16 @@ camera:
   # watchdog never kills the process mid-upload.
   first_frame_grace_s: 120
   # zoom: 1.0 = full FOV (digital centre-crop zoom available but left off for now).
+  # Bias AE toward SHORT exposures. Exposure time is the motion-blur budget and blur is
+  # what costs a moving airframe its detections; left on "normal" AE runs the exposure
+  # out to the whole frame period (measured 45.2ms of a 45.5ms frame on the bench, at
+  # gain 16) because gain is its only other lever. "short" holds exposure ~3x shorter
+  # through the middle of the range (20ms vs 60ms at gain 4.0) at the cost of some
+  # sensor noise — the right trade when the alternative is a smeared target.
+  # NOT a hard cap: in very low light AE still extends exposure, and the frame duration
+  # caps it at 45ms regardless. Verify in DAYLIGHT (var/hit/exposure_probe.py) — the
+  # bench is too dark for AE to have any headroom to give back.
+  ae_exposure_mode: short
 
 detector:
   type: none                 # IMX500 does detection on-sensor — no CPU/ncnn model
@@ -51,10 +61,16 @@ tracker:
   # sample and a long coast lets it streak off-screen. 8 frames bridges the detection
   # gap but kills a runaway in ~0.25s.
   reacquire_after_lost_frames: 8
-  # confirm_hits 1: the YOLO NPU rate is far below camera fps, so a 3-of-5 frame gate
-  # can't latch — conf_threshold is the ghost filter instead (the quality filter's
-  # time-based staleness + the fast coast-drop handle the rest).
-  confirm_hits: 1
+  # M-of-N confirmation: a track must be detected in >= confirm_hits of the last
+  # confirm_window frames before it is shown on the HUD or can be selected.
+  # Raised 1 -> 3 (2026-08-04). The old value carried the note "the YOLO NPU rate is far
+  # below camera fps, so a 3-of-5 frame gate can't latch" — that was true at framerate 30
+  # (detections every ~2nd frame) but is now FALSE: at framerate 22 the sensor delivers a
+  # fresh tensor on 100% of frames (measured, var/hit/tensor_rate.py). So the frame-based
+  # gate latches properly again, and with it back on, a one- or two-frame ghost never
+  # reaches the HUD or the lock — which is what was making candidate boxes flicker in
+  # STANDBY. Cost: a real target takes 3 frames (~136ms) to confirm instead of 1.
+  confirm_hits: 3
   confirm_window: 5
 
 fc:

@@ -44,6 +44,16 @@ class CameraSection:
     # rig, ~55 s observed on a fresh bench Pi at ~65 kB/s SPI). Too short -> the
     # watchdog kills the process mid-upload, forever.
     first_frame_grace_s: float = 15.0
+    # IMX500 auto-exposure profile: how AE trades exposure TIME against analogue GAIN.
+    # Exposure time is what sets motion blur, and blur is what costs a moving airframe
+    # its detections. The Pi tuning file (imx500.json) defines the trade points:
+    #   normal: 100 / 10000 / 30000 / 60000 / 120000 us  at gain 1.0 / 1.5 / 2.0 / 4.0 / 16
+    #   short:  100 /  5000 / 10000 / 20000 / 120000 us  at the same gains
+    # i.e. "short" reaches for gain 2-3x sooner and holds exposure ~3x shorter through
+    # the middle of the range (20ms vs 60ms at gain 4.0) — the right trade in flight,
+    # where a slightly noisier but SHARP frame detects and a smeared one does not.
+    # "" leaves the sensor default (normal). Ignored by non-IMX500 cameras.
+    ae_exposure_mode: str = ""           # "" | normal | short | long
 
 
 @dataclass
@@ -176,6 +186,7 @@ def _camera(d: Dict[str, Any]) -> CameraSection:
         file_path=d.get("file_path", ""),
         webcam_device=d.get("webcam_device", 0),
         zoom=d.get("zoom", 1.0),
+        ae_exposure_mode=d.get("ae_exposure_mode", ""),
     )
 
 
@@ -313,6 +324,13 @@ def _validate(cfg: AppConfig) -> None:
       (full commit) before TRACK, with TRACK unreachable — it would commit the
       aircraft where the pilot expected follow-only.
     """
+    # A typo'd exposure profile is silently ignored by the sensor, which means you
+    # believe you are flying a short-exposure (low motion-blur) setup and are not.
+    if cfg.camera.ae_exposure_mode not in ("", "normal", "short", "long"):
+        raise ValueError(
+            f"camera.ae_exposure_mode must be one of '', normal, short, long; "
+            f"got {cfg.camera.ae_exposure_mode!r}"
+        )
     fc = cfg.fc
     if fc.backend == "ardupilot":
         if fc.control_mode not in _VALID_CONTROL_MODES:

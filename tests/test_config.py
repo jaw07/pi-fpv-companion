@@ -177,3 +177,35 @@ def test_dive_defaults_to_vertical_homing_off(tmp_path):
     cfg = load(_write_guidance(tmp_path, "max_yaw_rate_dps: 60"))
     assert cfg.servo.dive_vrate_gain == 0.0
     assert cfg.servo.dive_forward_deg == 10.0    # dataclass default
+
+
+def _write_camera(tmp_path, extra_camera: str = "", extra: str = "") -> str:
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "video: {width: 720, height: 576}\n"
+        "camera:\n  type: imx500\n  framerate: 22\n" + extra_camera +
+        "fc:\n  backend: ardupilot\n  control_mode: guided_nogps\n" + extra
+    )
+    return str(p)
+
+
+def test_ae_exposure_mode_is_loaded_from_yaml(tmp_path):
+    # It was added to CameraSection but not to the _camera() mapper first time round,
+    # so the yaml key was silently dropped and the flight rig ran on AE defaults.
+    from pi_fpv_companion.config import load
+    cfg = load(_write_camera(tmp_path, extra_camera="  ae_exposure_mode: short\n"))
+    assert cfg.camera.ae_exposure_mode == "short"
+
+
+def test_ae_exposure_mode_defaults_to_empty(tmp_path):
+    from pi_fpv_companion.config import load
+    assert load(_write_camera(tmp_path)).camera.ae_exposure_mode == ""
+
+
+def test_typo_in_ae_exposure_mode_is_rejected(tmp_path):
+    # Silently ignoring it would mean believing you fly a low-motion-blur setup when
+    # you do not — fail at load instead.
+    import pytest
+    from pi_fpv_companion.config import load
+    with pytest.raises(ValueError, match="ae_exposure_mode"):
+        load(_write_camera(tmp_path, extra_camera="  ae_exposure_mode: shrot\n"))
