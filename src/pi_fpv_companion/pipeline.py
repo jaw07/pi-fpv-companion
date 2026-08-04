@@ -32,6 +32,34 @@ StatusCallback = Callable[
      Optional[List[Target]]], None
 ]
 
+# Cap on how far the DISPLAY may forward-predict a target. Beyond this the control
+# state is old enough (a stalled tick) that extrapolating would fling the box across
+# the screen on a stale velocity — freeze it instead and let the box colour show the
+# decayed quality.
+_PREDICT_HORIZON_S = 0.12
+
+
+def _predict_to(target, frame_ts: float):
+    """Advance a FilteredTarget's centroid along its estimated image-plane velocity to
+    `frame_ts`. DISPLAY ONLY — guidance and the safety gate always use the unmodified
+    target, so this cannot influence what is sent to the FC.
+
+    The control thread produces its state from frame N while the capture thread is
+    already rendering frame N+1, so the drawn box trails the live image by one frame
+    (45ms measured). The filter already estimates vx/vy for exactly this reason, so
+    stepping the box forward by the render offset puts it where the target actually is
+    instead of where it was a frame ago."""
+    if target is None:
+        return None
+    dt = frame_ts - target.timestamp
+    if dt <= 0.0 or dt > _PREDICT_HORIZON_S:
+        return target
+    d = target.detection
+    return replace(
+        target,
+        detection=replace(d, x=d.x + target.vx_px_s * dt, y=d.y + target.vy_px_s * dt),
+    )
+
 
 
 class Pipeline:
@@ -70,12 +98,15 @@ class Pipeline:
         self._fc = fc
         self._detector = detector
         self._detect_period = max(1, detect_period_frames)
-        # Decoupled display: when `display` is set, run() splits capture+display (camera
-        # rate) from the control/guidance tick (its own, slower rate) onto separate
-        # threads so the video stays smooth even though one tick takes ~90ms. The FC is
-        # touched ONLY by the control thread (the safety contract is unchanged). The
-        # control tick captures its outputs into _latest_status; the capture thread
-        # renders the freshest frame with that (slightly stale) overlay state.
+        # Decoupled display: when `display` is set, run() splits capture+display from
+        # the control/guidance tick onto separate threads. The FC is touched ONLY by the
+        # control thread (the safety contract is unchanged). The control tick captures
+        # its outputs into _latest_status; the capture thread renders the freshest frame
+        # with that (one-frame-stale) overlay state, forward-predicted to frame time.
+        # NOTE: this split was introduced when the tick was believed to cost ~90ms. On
+        # the airframe it measures 0.8ms (real FC attached, var/hit/lag_probe.py), and
+        # the render 4.3ms — so the split now buys smoothness insurance, not throughput.
+        # Both threads therefore run at full camera rate; see _control_loop.
         self._display = display
         self._raw_on_status = on_status
         self._on_status = self._status_capture
@@ -84,12 +115,18 @@ class Pipeline:
         self._latest_bundle: Optional[FrameBundle] = None
         self._frame_lock = threading.Lock()
         self._frame_event = threading.Event()
-        # Event-driven guidance: the control thread ticks once per FRESH detection (not
-        # per captured frame — feeding the same detection to the tracker/filter twice
-        # biases them, and detection-less frames carry no new information), with a
-        # fallback so FC commands + the heartbeat-liveness gate still fire during a
-        # detection drought (empty scene / lost target). 0.1s -> >=10Hz keepalive.
+        # Keepalive tick interval used ONLY when frames stop arriving (camera stall), so
+        # FC release/mode handling and the heartbeat-liveness gate keep running. While
+        # frames flow the control thread ticks on EVERY frame — see _control_loop.
         self._control_fallback_s = 0.1
+        # Detection-tensor signature of the last tick that actually fed the tracker.
+        # A camera whose detector is slower than its frame rate repeats the previous
+        # tensor on the frames in between; re-feeding that to the tracker/filter biases
+        # them (it reads as a fresh confirmation and resets the staleness clock). So the
+        # tick still runs every frame — FC, switch, safety and HUD all need the rate —
+        # but the tracker/filter are fed only on a genuinely new tensor.
+        self._last_det_sig: Optional[tuple] = None
+        self._last_target = None
         self._stopping = False
         self._frame_idx = -1
         # Operator target selection (multi-target tracker only): a rising edge on
@@ -171,7 +208,8 @@ class Pipeline:
                 if st is not None:
                     target, intent, gated, switch, armed, tracks = st
                     try:
-                        self._display(target, intent, gated, switch, armed, bundle, tracks)
+                        self._display(_predict_to(target, bundle.timestamp),
+                                      intent, gated, switch, armed, bundle, tracks)
                     except Exception:
                         logger.exception("display render failed; dropping frame")
         finally:
@@ -190,16 +228,37 @@ class Pipeline:
                      for d in detections)
 
     def _control_loop(self) -> None:
-        """Worker thread: run the control/guidance tick once per FRESH detection (event-
-        driven), with a fallback keepalive tick every _control_fallback_s so FC commands
-        and the heartbeat-liveness gate still fire during a detection drought. Always
+        """Worker thread: run the control/guidance tick on EVERY captured frame, plus a
+        keepalive tick every _control_fallback_s when frames stop arriving. Always
         processes the LATEST frame (drops stale). This is the ONLY thread that touches
         the FC — the safety contract in tick()/_tick_rate() is unchanged. A tick
-        exception exits the process (-> systemd restart -> clean STANDBY handover)."""
+        exception exits the process (-> systemd restart -> clean STANDBY handover).
+
+        This used to gate the tick on the detection tensor CHANGING, with the fallback
+        as the floor. That coupled the control rate to detector noise and was the cause
+        of the "laggy tracker / STANDBY jitter" reports: the fallback is only evaluated
+        when the frame event fires, so a 0.1s floor quantised up to the next frame
+        boundary — 3 frames, 136ms, ~5Hz — and a near-stationary target (whose rounded
+        box is often identical frame to frame) held the whole loop there while the video
+        ran at 22fps. Measured on the airframe: 0.4px of detector dither -> 5.1Hz control
+        and the drawn box frozen 69% of the time; 2.0px -> 14Hz. The box therefore
+        stuttered at a rate set by how much the detector happened to be shaking.
+
+        Ticking every frame costs 0.8ms of a 45ms budget (measured, real FC attached).
+        Staleness protection for the tracker/filter moved into tick(), which is where it
+        belongs — see _last_det_sig.
+
+        CAMERA STALL: when frames stop, the keepalive re-ticks the LAST bundle. tick()
+        would otherwise take its clock from that frame's timestamp, so `now` would freeze
+        and the safety gate could never conclude the target had gone stale — guidance
+        would keep commanding on a frozen frame until the camera watchdog fired (up to
+        2s). So a re-tick of an already-processed bundle gets a clock advanced by the
+        REAL elapsed time instead, which is what makes the gate mute (and, on the rate
+        path, fall back to the level+hover safe hold) within watchdog_timeout_s."""
         import os
         import sys
-        last_sig = None
-        last_tick_t = 0.0
+        ticked_bundle = None       # identity of the bundle the last tick consumed
+        ticked_at = 0.0            # monotonic time of that first tick
         while not self._stopping:
             self._frame_event.wait(timeout=self._control_fallback_s)
             self._frame_event.clear()
@@ -209,18 +268,16 @@ class Pipeline:
                 bundle = self._latest_bundle
             if bundle is None:
                 continue
-            now = time.monotonic()
-            sig = self._detection_sig(bundle.detections)
-            fresh = sig != last_sig
-            # Tick on a fresh detection, else only on the fallback interval (keepalive
-            # for FC release / mode / timeout handling — NOT to re-feed a stale detection
-            # faster than needed).
-            if not fresh and (now - last_tick_t) < self._control_fallback_s:
-                continue
-            last_sig = sig
-            last_tick_t = now
+            if bundle is ticked_bundle:
+                # Keepalive re-tick of a frame we have already processed: no new image
+                # information, but real time HAS passed and the safety clocks must see it.
+                now = bundle.timestamp + (time.monotonic() - ticked_at)
+            else:
+                ticked_bundle = bundle
+                ticked_at = time.monotonic()
+                now = None                      # fresh frame -> use its own timestamp
             try:
-                self.tick(bundle)
+                self.tick(bundle, now)
             except Exception:
                 logger.exception("control tick failed — exiting for restart")
                 print("CONTROL LOOP CRASHED; exiting for restart", file=sys.stderr, flush=True)
@@ -254,10 +311,14 @@ class Pipeline:
 
         threading.Thread(target=_watch, daemon=True, name="camera-watchdog").start()
 
-    def tick(self, bundle: FrameBundle) -> GateResult:
-        """One iteration. Exposed so tests can drive the pipeline frame-by-frame."""
+    def tick(self, bundle: FrameBundle, now: Optional[float] = None) -> GateResult:
+        """One iteration. Exposed so tests can drive the pipeline frame-by-frame.
+
+        `now` defaults to the frame's own timestamp. The control loop overrides it when
+        it re-ticks a frame it has already processed (a camera stall), so that the
+        safety gate's staleness window keeps advancing — see _control_loop."""
         self._frame_idx += 1
-        now = bundle.timestamp
+        now = bundle.timestamp if now is None else now
 
         # Use the camera's intrinsic detections if it produced any (IMX500 emits them
         # inline); otherwise run the configured detector inline on the scheduled cadence.
@@ -282,6 +343,9 @@ class Pipeline:
             if callable(set_engaged):
                 set_engaged(engaged)
             self._last_engaged = engaged
+            # auto_acquire flips with this edge, which changes what consume() returns
+            # for the same detections — so the cached target must not be reused.
+            self._last_det_sig = None
 
         # Operator target selection (multi-target tracker): a rising edge on the FC
         # select channel (ch8) cycles the locked target among the current
@@ -296,20 +360,44 @@ class Pipeline:
             if (switch.mode is GuidanceMode.STANDBY
                     and pwm >= 1700 and self._last_select_pwm < 1700):
                 cycle_fn()
+                # The operator just moved the lock to a different track. The detections
+                # are unchanged, so without this the cached target would be reused and
+                # the pick wouldn't take effect until the boxes happened to shift —
+                # which, on the stationary target you are usually picking in STANDBY,
+                # could be a long time.
+                self._last_det_sig = None
             self._last_select_pwm = pwm
             # Acquire/re-acquire only in STANDBY; once committed, a dropped target
             # holds (no silent swap to a different target — see MultiObjectTracker).
             if hasattr(self._tracker, "auto_acquire"):
                 self._tracker.auto_acquire = switch.mode is GuidanceMode.STANDBY
 
-        raw_target = self._tracker.consume(bundle.image, detections, now)
-        self._tracks = getattr(self._tracker, "tracks", None)   # all tracks for the HUD
-
-        # Filter + quality-assess. Everything downstream uses the FilteredTarget,
-        # never the raw tracker output (audit §4/§5).
-        target = self._target_filter.update(
-            raw_target, bundle.width, bundle.height, now
-        )
+        # Feed the tracker/filter ONLY on a genuinely new detection tensor. A camera
+        # whose detector runs slower than its frame rate repeats the previous result on
+        # the frames in between; re-feeding that reads as a fresh confirmation, resets
+        # the filter's staleness clock and re-confirms the tracker's M-of-N history, so
+        # a dead detector would look healthy. On a stale tensor we reuse the last
+        # FilteredTarget unchanged: its measurement_timestamp does not advance, so the
+        # safety gate's staleness window and the quality decay both keep running.
+        # (On the flight rig at framerate 22 every frame carries a fresh tensor —
+        # measured 100%, var/hit/tensor_rate.py — so this is a safety net, not the
+        # normal path. The rest of the tick still runs at full frame rate.)
+        # An EMPTY detection set always feeds: "nothing detected" is real information
+        # the tracker needs in order to age out and drop its coasting tracks. Suppress
+        # only a repeated NON-EMPTY tensor, which is the actual double-feed case.
+        sig = self._detection_sig(detections)
+        if detections and sig == self._last_det_sig:
+            target = self._last_target
+        else:
+            self._last_det_sig = sig
+            raw_target = self._tracker.consume(bundle.image, detections, now)
+            self._tracks = getattr(self._tracker, "tracks", None)   # all tracks for the HUD
+            # Filter + quality-assess. Everything downstream uses the FilteredTarget,
+            # never the raw tracker output (audit §4/§5).
+            target = self._target_filter.update(
+                raw_target, bundle.width, bundle.height, now
+            )
+            self._last_target = target
         # guided_nogps body-RATE path: dispatch to the rate controller and return early; the
         # STABILIZE/RC-override path below is left completely unchanged for other control_modes.
         if self._rate_cfg is not None:

@@ -90,6 +90,7 @@ def _build_camera(cfg: AppConfig):
             conf_threshold=cfg.detector.conf_threshold,
             target_class_ids=_resolve_class_ids(cfg.detector.classes_of_interest, labels),
             zoom=cfg.camera.zoom,
+            ae_exposure_mode=cfg.camera.ae_exposure_mode,
         )
     raise SystemExit(f"unknown camera type: {t}")
 
@@ -336,7 +337,8 @@ def main(argv=None) -> int:
     def on_status(target, intent, gated, switch, armed, frame, tracks=None):
         # Per control-tick bookkeeping (runs on the control thread). The video render
         # is NOT here — the pipeline's capture thread renders via `display=sink` at
-        # camera rate so the feed stays smooth while this ~90ms tick runs in parallel.
+        # camera rate, in parallel with this tick (0.8ms measured on the airframe with
+        # the FC attached; the render is 4.3ms — see var/hit/).
         perf.tick_end(on_status._t0)
         if recorder is not None:
             recorder.record(target, intent, gated, switch, armed)
@@ -373,9 +375,9 @@ def main(argv=None) -> int:
 
     orig_tick = pipeline.tick
 
-    def timed_tick(bundle):
+    def timed_tick(bundle, *args, **kwargs):
         on_status._t0 = perf.tick_start()
-        return orig_tick(bundle)
+        return orig_tick(bundle, *args, **kwargs)
     pipeline.tick = timed_tick
 
     signal.signal(signal.SIGINT, lambda *_: pipeline.stop())
