@@ -69,12 +69,20 @@ def main(argv=None) -> int:
 
     # Wrap the backend's outbound MAVLink sends so every transmission is observed
     # with the live switch/armed state — this is the wire-level proof, at the source.
+    #
+    # These wrappers run INSIDE the backend's `_send_lock` (every send site holds it),
+    # so they must NEVER call back into a backend method that drains or sends:
+    # read_switch()/is_armed() drain, _drain() calls _service_mode(), and that can call
+    # _send_mode(), which re-takes the non-reentrant `_send_lock` and DEADLOCKS the
+    # caller. That is reachable here on the disengage edge, where a mode restore is
+    # pending while the release burst is still going out — and it would HANG this check
+    # rather than fail it. Read the backend's cached state attributes instead.
     real = fc._mav.mav
 
     def _state():
-        sw = fc.read_switch()
-        checker.on_rc_channels(time.time(), sw.pwm_us)
-        checker.on_heartbeat(time.time(), fc.is_armed())
+        sw = fc._last_switch                 # cached by the last drain; no re-entry
+        checker.on_rc_channels(time.time(), sw.pwm_us if sw is not None else 0)
+        checker.on_heartbeat(time.time(), bool(fc._armed))
 
     orig_override = real.rc_channels_override_send
     orig_attitude = real.set_attitude_target_send
