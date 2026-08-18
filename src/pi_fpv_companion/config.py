@@ -163,6 +163,12 @@ class AppConfig:
     servo: ServoConfig
     safety: SafetyConfig
     recorder: RecorderSection = field(default_factory=RecorderSection)
+    # Overrides for the guided_nogps BODY-RATE law (guidance/rate_control.RateConfig).
+    # The `guidance:` section configures the ATTITUDE/RC-override path (ServoConfig) and
+    # is INERT when fc.control_mode is guided_nogps — the rate path used to be reachable
+    # only by editing rate_control.py. Keys are validated against RateConfig at load, so
+    # a typo fails loudly instead of silently flying the default.
+    rate_guidance: Dict[str, Any] = field(default_factory=dict)
 
 
 def _video(d: Dict[str, Any]) -> VideoSection:
@@ -324,6 +330,18 @@ def _validate(cfg: AppConfig) -> None:
       (full commit) before TRACK, with TRACK unreachable — it would commit the
       aircraft where the pilot expected follow-only.
     """
+    # Unknown rate_guidance keys would be silently dropped, so you would believe you had
+    # detuned the guidance when you had not. Validate against RateConfig's real fields.
+    if cfg.rate_guidance:
+        from dataclasses import fields as _dc_fields
+        from pi_fpv_companion.guidance.rate_control import RateConfig as _RC
+        valid = {f.name for f in _dc_fields(_RC)} - {"frame_width", "frame_height"}
+        unknown = sorted(set(cfg.rate_guidance) - valid)
+        if unknown:
+            raise ValueError(
+                f"unknown rate_guidance key(s): {', '.join(unknown)}. "
+                f"Valid keys: {', '.join(sorted(valid))}")
+
     # A typo'd exposure profile is silently ignored by the sensor, which means you
     # believe you are flying a short-exposure (low motion-blur) setup and are not.
     if cfg.camera.ae_exposure_mode not in ("", "normal", "short", "long"):
@@ -445,6 +463,7 @@ def load(path: str | Path) -> AppConfig:
         servo=_servo(raw.get("guidance", {}), video.width, video.height),
         safety=_safety(raw.get("safety", {})),
         recorder=_recorder(raw.get("flight_log", {})),
+        rate_guidance=dict(raw.get("rate_guidance", {}) or {}),
     )
     _validate(cfg)
     return cfg

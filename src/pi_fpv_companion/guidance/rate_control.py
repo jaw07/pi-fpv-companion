@@ -36,6 +36,31 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
 
+def _lp(prev: float, target: float, tau_s: float, dt: float) -> float:
+    """First-order low-pass with a TIME CONSTANT, so smoothing does not change when the
+    control-loop rate does. dt <= 0 (the first tick) holds the previous value rather than
+    jumping to the target."""
+    if dt <= 0.0:
+        return prev
+    if tau_s <= 0.0:
+        return target
+    return prev + (1.0 - math.exp(-dt / tau_s)) * (target - prev)
+
+
+def _slew(prev: float, target: float, max_per_s: float, dt: float) -> float:
+    """Bound how far a command may move in one step. This is what guarantees the output
+    is INCREMENTAL: no matter how large a step the controller asks for, the commanded
+    body rate walks toward it at max_per_s rad/s^2 rather than jumping."""
+    if dt <= 0.0 or max_per_s <= 0.0:
+        return prev if dt <= 0.0 else target
+    step = max_per_s * dt
+    if target > prev + step:
+        return prev + step
+    if target < prev - step:
+        return prev - step
+    return target
+
+
 @dataclass
 class PID:
     """PID with a windowed-average derivative (less noise than a single-step diff) and an
@@ -92,11 +117,44 @@ class RateConfig:
     horiz_deadzone_rad: float = 0.030      # |err| below this -> zero yaw/roll (anti pan-shake)
     horiz_thresh: float = 0.05             # yaw/roll blend knee
     max_horiz_err: float = 0.4
-    # Differential low-pass on commanded rates (yaw heaviest: it was the oscillation)
-    ema_pitch: float = 0.22
-    ema_yaw: float = 0.18
-    ema_roll: float = 0.35
-    ema_thrust: float = 0.30
+    # --- Output conditioning ------------------------------------------------------
+    # Differential low-pass on the commanded rates, as TIME CONSTANTS (seconds), not
+    # per-tick EMA coefficients. A per-tick coefficient makes the smoothing a function
+    # of the control-loop rate: the old ema_pitch=0.22 gave a ~0.9s time constant at the
+    # 5Hz the loop used to run at, but only ~0.21s once the loop was fixed to run at the
+    # 22Hz camera rate — 4x less smoothing, silently, from a change made elsewhere.
+    # These values reproduce the old coefficients AT 22Hz (tau = period / alpha), so
+    # current behaviour is preserved and can no longer drift with the loop rate.
+    tau_pitch_s: float = 0.207
+    tau_yaw_s: float = 0.253             # yaw heaviest: it was the oscillation
+    tau_roll_s: float = 0.130
+    tau_thrust_s: float = 0.152
+    # SLEW limits: the most the commanded body rate may CHANGE per second (rad/s^2).
+    # The low-pass shapes the command; this GUARANTEES it can only ever move
+    # incrementally, including on a step input (fresh lock, target jump, mode entry).
+    # Defaults sit just above the slope the low-pass itself produces from a full-scale
+    # step, so normal tracking is untouched and only the extremes are bounded.
+    slew_pitch: float = 6.0
+    slew_yaw: float = 6.0
+    slew_roll: float = 8.0
+    # Hard magnitude clamp on the FINAL commanded body rates (rad/s). The PIDs clamp at
+    # pi/2 (90 deg/s) internally; this is the explicit, tunable outer bound.
+    max_pitch_rate: float = 1.57
+    max_yaw_rate: float = 1.57
+    max_roll_rate: float = 1.57
+    # THROTTLE conditioning. Measured 2026-08-18: with thrust_ilim == thrust_out the
+    # pursuit integral ALONE saturates the loop, so a sustained dive error drove throttle
+    # to EXACTLY 0.0 and held it there — motors at idle, freefall, and on a quad no
+    # headroom left to differential-thrust against, so attitude authority collapses too.
+    #   min_thrust_frac: floor as a fraction of the LEARNED hover (hover is airframe- and
+    #     battery-dependent, so an absolute floor would mean different things on different
+    #     days). 0.40 x hover still descends hard but keeps the props doing work.
+    #   slew_thrust: max change in throttle per second. The measured worst case was
+    #     1.71/s — hover to zero in well under a second, which is the "overcompensating"
+    #     feel. 0.6/s takes ~0.3s to cross the same span.
+    min_thrust_frac: float = 0.40
+    max_thrust: float = 0.90
+    slew_thrust: float = 0.6
     # TRACK: hold the engagement RANGE (follow without committing). Pitch-rate from a PI on
     # the bbox-height error vs the size captured at TRACK entry; thrust holds altitude (hover).
     track_kp: float = 3.0                  # rad/s per unit normalised bbox-height error
@@ -241,11 +299,37 @@ def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state
         rr, yr, thrust = -cfg.roll_return * roll_rad, 0.0, state.hover
         phase = "SEARCH"
 
-    # Differential low-pass: pitch heavy (smooth dive), yaw heaviest (it was the oscillation),
-    # roll moderate (banking), thrust mid.
-    state.sm_pr += cfg.ema_pitch * (pr - state.sm_pr)
-    state.sm_yr += cfg.ema_yaw * (yr - state.sm_yr)
-    state.sm_rr += cfg.ema_roll * (rr - state.sm_rr)
-    state.sm_thr += cfg.ema_thrust * (thrust - state.sm_thr)
+    # --- OUTPUT CONDITIONING (in this order, and the order matters) ---------------
+    #   1. low-pass  — shapes the command, rate-independent (time constants, not
+    #                  per-tick coefficients, so the loop rate can change safely)
+    #   2. slew      — bounds how fast the command may CHANGE: this is what makes the
+    #                  output strictly INCREMENTAL even on a step input (fresh lock,
+    #                  detector jump, mode entry). The low-pass alone does not: it
+    #                  passes alpha * step on the very first tick.
+    #   3. clamp     — bounds what may be commanded at all.
+    # Thrust gets 1 and 3 but no slew: it is not an attitude command and the pursuit
+    # loop needs authority to arrest a descent.
+    state.sm_pr = _slew(state.sm_pr, _lp(state.sm_pr, pr, cfg.tau_pitch_s, dt),
+                        cfg.slew_pitch, dt)
+    state.sm_yr = _slew(state.sm_yr, _lp(state.sm_yr, yr, cfg.tau_yaw_s, dt),
+                        cfg.slew_yaw, dt)
+    state.sm_rr = _slew(state.sm_rr, _lp(state.sm_rr, rr, cfg.tau_roll_s, dt),
+                        cfg.slew_roll, dt)
+    # Throttle: low-pass, then slew-limit (it was NOT slew-limited and could fall at
+    # 1.71/s), then clamp to a floor that preserves attitude authority. The floor is
+    # skipped for the impact STOP, which is a deliberate cut.
+    if phase == "STOP":
+        # Impact latch: a deliberate cut at ground contact. It must be IMMEDIATE — no
+        # low-pass, no slew, no floor. Smoothing this would keep the props driving into
+        # the ground for the length of the ramp.
+        state.sm_thr = thrust
+    else:
+        thr_lp = _lp(state.sm_thr, thrust, cfg.tau_thrust_s, dt)
+        state.sm_thr = _slew(state.sm_thr, thr_lp, cfg.slew_thrust, dt)
+        state.sm_thr = _clamp(state.sm_thr, cfg.min_thrust_frac * state.hover,
+                              cfg.max_thrust)
+    state.sm_pr = _clamp(state.sm_pr, -cfg.max_pitch_rate, cfg.max_pitch_rate)
+    state.sm_yr = _clamp(state.sm_yr, -cfg.max_yaw_rate, cfg.max_yaw_rate)
+    state.sm_rr = _clamp(state.sm_rr, -cfg.max_roll_rate, cfg.max_roll_rate)
     return RateIntent(roll_rate=state.sm_rr, pitch_rate=state.sm_pr, yaw_rate=state.sm_yr,
                       thrust=state.sm_thr, phase=phase)

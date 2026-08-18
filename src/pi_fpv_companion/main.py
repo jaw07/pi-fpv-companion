@@ -354,8 +354,12 @@ def main(argv=None) -> int:
     rate_cfg = None
     if cfg.fc.control_mode == "guided_nogps":
         from pi_fpv_companion.guidance.rate_control import RateConfig
-        rate_cfg = RateConfig(frame_width=cfg.video.width, frame_height=cfg.video.height)
+        rate_cfg = RateConfig(frame_width=cfg.video.width, frame_height=cfg.video.height,
+                              **cfg.rate_guidance)
         print(f"  guided_nogps RATE path active (frame {cfg.video.width}x{cfg.video.height})")
+        if cfg.rate_guidance:
+            for k in sorted(cfg.rate_guidance):
+                print(f"    rate_guidance {k} = {cfg.rate_guidance[k]}")
 
     pipeline = Pipeline(
         camera, tracker, cfg.servo, cfg.safety, fc,

@@ -209,3 +209,43 @@ def test_typo_in_ae_exposure_mode_is_rejected(tmp_path):
     from pi_fpv_companion.config import load
     with pytest.raises(ValueError, match="ae_exposure_mode"):
         load(_write_camera(tmp_path, extra_camera="  ae_exposure_mode: shrot\n"))
+
+
+def test_rate_guidance_overrides_reach_the_rate_config(tmp_path):
+    """The `guidance:` block is inert on the guided_nogps path — rate_control.RateConfig
+    used to be reachable only by editing Python. These overrides must actually apply."""
+    from pi_fpv_companion.config import load
+    from pi_fpv_companion.guidance.rate_control import RateConfig
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "video: {width: 720, height: 576}\n"
+        "camera: {type: imx500, framerate: 22}\n"
+        "fc: {backend: ardupilot, control_mode: guided_nogps}\n"
+        "rate_guidance:\n  tau_yaw_s: 0.5\n  slew_yaw: 2.0\n  max_yaw_rate: 0.4\n")
+    cfg = load(str(p))
+    assert cfg.rate_guidance == {"tau_yaw_s": 0.5, "slew_yaw": 2.0, "max_yaw_rate": 0.4}
+    rc = RateConfig(frame_width=720, frame_height=576, **cfg.rate_guidance)
+    assert rc.tau_yaw_s == 0.5 and rc.slew_yaw == 2.0 and rc.max_yaw_rate == 0.4
+
+
+def test_unknown_rate_guidance_key_is_rejected(tmp_path):
+    """Silently dropping a typo'd key means believing you detuned the guidance when you
+    did not — the failure mode that made the inert `guidance:` block dangerous."""
+    import pytest
+    from pi_fpv_companion.config import load
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "video: {width: 720, height: 576}\n"
+        "camera: {type: imx500}\n"
+        "fc: {backend: ardupilot, control_mode: guided_nogps}\n"
+        "rate_guidance: {tau_yaw_sec: 0.5}\n")
+    with pytest.raises(ValueError, match="unknown rate_guidance key"):
+        load(str(p))
+
+
+def test_rate_guidance_defaults_to_empty(tmp_path):
+    from pi_fpv_companion.config import load
+    p = tmp_path / "c.yaml"
+    p.write_text("video: {width: 720, height: 576}\ncamera: {type: imx500}\n"
+                 "fc: {backend: ardupilot, control_mode: guided_nogps}\n")
+    assert load(str(p)).rate_guidance == {}

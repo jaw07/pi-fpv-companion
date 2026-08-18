@@ -124,3 +124,155 @@ def test_roll_returns_toward_level():
     # Banked right (roll>0), target centred -> roll rate is negative (return to level).
     out, _ = _run([_ft(0.5, 0.45, ts=i) for i in range(8)], roll=0.3)
     assert out.roll_rate < 0.0
+
+
+# ---- output conditioning: incremental + stable -----------------------------------
+
+def _steps(cfg, st, hz, seconds, cx_n=0.95, mode=GuidanceMode.DIVE):
+    """Drive a hard off-centre target at `hz` for `seconds`; return the yaw-rate trace."""
+    dt = 1.0 / hz
+    trace = []
+    n = int(seconds * hz)
+    for i in range(n):
+        out = compute_rate_intent(_ft(cx_n, 0.5), cfg, st, now=i * dt, mode=mode,
+                                  pitch_rad=0.0, roll_rad=0.0, gamma_rad=0.0, agl_m=40.0)
+        trace.append(out.yaw_rate)
+    return trace
+
+
+def test_smoothing_is_independent_of_control_loop_rate():
+    """The smoothing must be a function of TIME, not of tick count.
+
+    This is a real regression guard: the old per-tick EMA coefficients meant the
+    5Hz -> 22Hz control-loop fix silently cut the yaw smoothing time constant by ~4x.
+    Same wall-clock elapsed, same commanded rate, whatever the loop rate."""
+    slow = _steps(RateConfig(W, H), RateState(), hz=5.0, seconds=1.0)
+    fast = _steps(RateConfig(W, H), RateState(), hz=22.0, seconds=1.0)
+    # compare at the same wall-clock instant (end of a 1s run)
+    assert abs(slow[-1] - fast[-1]) < 0.05 * max(1e-6, abs(fast[-1])) + 0.02, (
+        f"rate-dependent smoothing: 5Hz ended at {slow[-1]:.4f}, 22Hz at {fast[-1]:.4f}")
+
+
+def test_commanded_rates_move_incrementally_on_a_step_input():
+    """A fresh lock hard off-centre is a step into the controller. The commanded body
+    rate must WALK toward the demand at no more than the slew limit — never jump."""
+    cfg = RateConfig(W, H)
+    st = RateState()
+    hz = 22.0
+    dt = 1.0 / hz
+    prev = 0.0
+    worst = 0.0
+    for i in range(60):
+        out = compute_rate_intent(_ft(0.98, 0.5), cfg, st, now=i * dt,
+                                  mode=GuidanceMode.DIVE, pitch_rad=0.0, roll_rad=0.0,
+                                  gamma_rad=0.0, agl_m=40.0)
+        d = abs(out.yaw_rate - prev) / dt
+        worst = max(worst, d)
+        prev = out.yaw_rate
+    assert worst <= cfg.slew_yaw + 1e-6, f"yaw slewed at {worst:.2f} rad/s^2 > {cfg.slew_yaw}"
+
+
+def test_first_tick_commands_nothing():
+    """dt is 0 on the very first tick of an engagement. The output must stay at zero
+    rather than jumping to the controller's demand — engaging must not kick."""
+    out = compute_rate_intent(_ft(0.98, 0.9), RateConfig(W, H), RateState(), now=0.0,
+                              mode=GuidanceMode.DIVE, pitch_rad=0.0, roll_rad=0.0,
+                              gamma_rad=0.0, agl_m=40.0)
+    assert out.yaw_rate == 0.0 and out.pitch_rate == 0.0 and out.roll_rate == 0.0
+
+
+def test_commanded_rates_are_clamped():
+    """Whatever the controller asks for, the commanded body rates stay inside the
+    configured envelope."""
+    cfg = RateConfig(W, H, max_yaw_rate=0.30, max_pitch_rate=0.25, max_roll_rate=0.20)
+    st = RateState()
+    dt = 1.0 / 22.0
+    for i in range(200):
+        out = compute_rate_intent(_ft(0.99, 0.99), cfg, st, now=i * dt,
+                                  mode=GuidanceMode.DIVE, pitch_rad=0.0, roll_rad=0.0,
+                                  gamma_rad=0.0, agl_m=40.0)
+        assert abs(out.yaw_rate) <= cfg.max_yaw_rate + 1e-9
+        assert abs(out.pitch_rate) <= cfg.max_pitch_rate + 1e-9
+        assert abs(out.roll_rate) <= cfg.max_roll_rate + 1e-9
+
+
+def test_track_mode_output_is_also_conditioned():
+    """TRACK uses a different pitch law but the same output conditioning."""
+    cfg = RateConfig(W, H)
+    st = RateState()
+    dt = 1.0 / 22.0
+    prev = 0.0
+    worst = 0.0
+    for i in range(60):
+        out = compute_rate_intent(_ft(0.95, 0.5, h=20), cfg, st, now=i * dt,
+                                  mode=GuidanceMode.TRACK, pitch_rad=0.0, roll_rad=0.0,
+                                  gamma_rad=0.0, agl_m=40.0)
+        worst = max(worst, abs(out.pitch_rate - prev) / dt)
+        prev = out.pitch_rate
+    assert worst <= cfg.slew_pitch + 1e-6
+
+
+def test_throttle_never_commands_idle_in_a_dive():
+    """MEASURED REGRESSION (2026-08-18): thrust_ilim == thrust_out meant the pursuit
+    integral alone saturated the loop, so a sustained dive error drove throttle to
+    EXACTLY 0.0 and held it — motors at idle, freefall, and on a quad no headroom left
+    to differential-thrust against, so attitude authority goes with it."""
+    cfg = RateConfig(W, H)
+    st = RateState(); st.hover = 0.30
+    dt = 1.0 / 22.0
+    out = None
+    for i in range(200):
+        out = compute_rate_intent(_ft(0.5, 0.85), cfg, st, now=i * dt,
+                                  mode=GuidanceMode.DIVE, pitch_rad=-0.2, roll_rad=0.0,
+                                  gamma_rad=0.0, agl_m=40.0)
+    floor = cfg.min_thrust_frac * st.hover
+    assert out.thrust >= floor - 1e-9, f"throttle sank to {out.thrust:.4f}, floor {floor:.4f}"
+    assert out.thrust > 0.0
+
+
+def test_throttle_moves_incrementally():
+    """Throttle was the one channel with no slew limit; it fell at 1.71/s (hover to zero
+    in well under a second). That is the 'overcompensating' feel."""
+    cfg = RateConfig(W, H)
+    st = RateState(); st.hover = 0.30
+    dt = 1.0 / 22.0
+    prev = st.hover
+    worst = 0.0
+    for i in range(200):
+        out = compute_rate_intent(_ft(0.5, 0.85), cfg, st, now=i * dt,
+                                  mode=GuidanceMode.DIVE, pitch_rad=-0.2, roll_rad=0.0,
+                                  gamma_rad=0.0, agl_m=40.0)
+        worst = max(worst, abs(out.thrust - prev) / dt)
+        prev = out.thrust
+    assert worst <= cfg.slew_thrust + 1e-6, f"throttle slewed at {worst:.2f}/s"
+
+
+def test_throttle_floor_scales_with_learned_hover():
+    """hover is learned in flight and varies with airframe/battery, so an absolute floor
+    would mean different things on different days."""
+    cfg = RateConfig(W, H)
+    for hover in (0.20, 0.45):
+        st = RateState(); st.hover = hover
+        dt = 1.0 / 22.0
+        out = None
+        for i in range(200):
+            out = compute_rate_intent(_ft(0.5, 0.85), cfg, st, now=i * dt,
+                                      mode=GuidanceMode.DIVE, pitch_rad=-0.2,
+                                      roll_rad=0.0, gamma_rad=0.0, agl_m=40.0)
+        assert abs(out.thrust - cfg.min_thrust_frac * hover) < 1e-6
+
+
+def test_impact_stop_may_still_cut_throttle():
+    """The floor protects the dive; the impact latch is a deliberate cut and must not be
+    floored, or 'STOP' would keep the props driving after ground contact."""
+    cfg = RateConfig(W, H)
+    st = RateState(); st.hover = 0.30
+    st.had_lock = True
+    dt = 1.0 / 22.0
+    out = None
+    for i in range(40):
+        out = compute_rate_intent(None, cfg, st, now=i * dt, mode=GuidanceMode.DIVE,
+                                  pitch_rad=0.0, roll_rad=0.0, gamma_rad=0.0,
+                                  agl_m=cfg.impact_agl_m - 1.0)
+    assert out.phase == "STOP"
+    assert out.thrust < cfg.min_thrust_frac * st.hover
