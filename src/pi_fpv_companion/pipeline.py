@@ -144,6 +144,7 @@ class Pipeline:
         self._rate_cfg = rate_cfg
         self._rate_state = RateState()
         self._last_rate_mode: Optional[GuidanceMode] = None
+        self._hover_trim_t: Optional[float] = None   # for the TIME-BASED hover trim
 
         # Alpha-beta filter + wrong-target gating sits between the raw tracker
         # and the servo/safety. Everything downstream consumes FilteredTarget.
@@ -531,7 +532,13 @@ class Pipeline:
         # sinking by intent), then a subsequent SEARCH/hold would balloon up on that bad hover.
         if (switch.mode is GuidanceMode.TRACK and target is not None
                 and hasattr(fc, "climb_mps") and abs(pitch) < 0.26):
-            self._rate_state.hover = max(0.05, min(0.6, self._rate_state.hover - 0.01 * fc.climb_mps()))
+            from pi_fpv_companion.guidance.rate_control import trim_hover
+            dt_h = 0.0 if self._hover_trim_t is None else max(0.0, min(0.2, now - self._hover_trim_t))
+            self._rate_state.hover = trim_hover(self._rate_state.hover, fc.climb_mps(),
+                                                dt_h, self._rate_cfg)
+            self._hover_trim_t = now
+        else:
+            self._hover_trim_t = now
         ri = compute_rate_intent(target, self._rate_cfg, self._rate_state, now, mode=switch.mode,
                                  pitch_rad=pitch, roll_rad=roll, gamma_rad=gamma, agl_m=agl)
         # Safety gate (armed / staleness / quality). Probe carries the commanded thrust+yaw.

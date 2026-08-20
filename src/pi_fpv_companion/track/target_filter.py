@@ -35,6 +35,15 @@ from pi_fpv_companion.types import Detection, FilteredTarget, Target
 
 @dataclass(frozen=True)
 class FilterConfig:
+    # NOTE (2026-08-18) — these are PER-UPDATE gains, so their wall-clock behaviour is a
+    # function of how often the control loop runs. Three separate per-tick gains in the
+    # GUIDANCE path (rate smoothing, throttle slew, hover trim) were silently made ~4x
+    # more aggressive by the 5Hz -> 22Hz control-loop fix, and each had to be converted to
+    # a time constant. The same is structurally true here.
+    # They are DELIBERATELY LEFT ALONE: the tracker was observed working well on the
+    # airframe at 22Hz, so the current values ARE the good ones at the rate that flies.
+    # But if the control-loop rate is ever changed again, these shift with it — including
+    # quality_recover/quality_reject_penalty, which move the score the SAFETY GATE reads.
     alpha: float = 0.5            # position correction gain
     beta: float = 0.2            # velocity correction gain
     size_alpha: float = 0.3      # light low-pass on bbox size (closure proxy)

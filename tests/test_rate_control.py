@@ -247,9 +247,11 @@ def test_throttle_moves_incrementally():
     assert worst <= cfg.slew_thrust + 1e-6, f"throttle slewed at {worst:.2f}/s"
 
 
-def test_throttle_floor_scales_with_learned_hover():
-    """hover is learned in flight and varies with airframe/battery, so an absolute floor
-    would mean different things on different days."""
+def test_throttle_floor_is_the_higher_of_absolute_and_hover_relative():
+    """hover is learned in flight and varies with airframe/battery, so the floor scales
+    with it — BUT the hover-relative floor is only as trustworthy as hover itself. A
+    runaway learner drags the floor down with it (measured: hover collapsed 0.45 -> 0.056,
+    floor 0.180 -> 0.023). The absolute floor is what a bad hover cannot remove."""
     cfg = RateConfig(W, H)
     for hover in (0.20, 0.45):
         st = RateState(); st.hover = hover
@@ -259,7 +261,49 @@ def test_throttle_floor_scales_with_learned_hover():
             out = compute_rate_intent(_ft(0.5, 0.85), cfg, st, now=i * dt,
                                       mode=GuidanceMode.DIVE, pitch_rad=-0.2,
                                       roll_rad=0.0, gamma_rad=0.0, agl_m=40.0)
-        assert abs(out.thrust - cfg.min_thrust_frac * hover) < 1e-6
+        expected = max(cfg.min_thrust_abs, cfg.min_thrust_frac * hover)
+        assert abs(out.thrust - expected) < 1e-6
+    # a collapsed hover must not be able to take the floor with it
+    st = RateState(); st.hover = 0.056
+    for i in range(200):
+        out = compute_rate_intent(_ft(0.5, 0.85), cfg, st, now=i * dt,
+                                  mode=GuidanceMode.DIVE, pitch_rad=-0.2,
+                                  roll_rad=0.0, gamma_rad=0.0, agl_m=40.0)
+    assert out.thrust >= cfg.min_thrust_abs - 1e-9
+
+
+def test_hover_trim_is_time_based_not_per_tick():
+    """MEASURED REGRESSION: the trim was `hover -= 0.01 * climb` applied per TICK, so its
+    rate was a function of the control-loop rate. At 22Hz with a 12m/s climb that is
+    -2.6/s and hover slams to its clamp in ~0.15s, collapsing thrust and dropping the
+    aircraft. Same wall-clock, same result, whatever the loop rate."""
+    from pi_fpv_companion.guidance.rate_control import trim_hover
+    cfg = RateConfig(W, H)
+    def run(hz, seconds=1.0, climb=1.0):
+        h, dt = 0.45, 1.0 / hz
+        for _ in range(int(seconds * hz)):
+            h = trim_hover(h, climb, dt, cfg)
+        return h
+    assert abs(run(5.0) - run(22.0)) < 0.01
+    assert abs(run(22.0) - run(50.0)) < 0.01
+
+
+def test_hover_trim_ignores_large_climb_rates():
+    """Engaging TRACK while still climbing hard is the normal case (you climb to altitude
+    then engage). A big climb says the craft is nowhere near hover, so it carries no
+    information about what hover is — learning from it is what caused the collapse."""
+    from pi_fpv_companion.guidance.rate_control import trim_hover
+    cfg = RateConfig(W, H)
+    assert trim_hover(0.45, 12.0, 0.045, cfg) == 0.45     # ignored
+    assert trim_hover(0.45, 1.0, 0.045, cfg) < 0.45       # gentle trim down
+
+
+def test_hover_trim_rate_is_bounded():
+    from pi_fpv_companion.guidance.rate_control import trim_hover
+    cfg = RateConfig(W, H)
+    h0 = 0.45
+    h1 = trim_hover(h0, cfg.hover_learn_max_climb, 1.0, cfg)   # a full second
+    assert abs(h1 - h0) <= cfg.hover_learn_max_per_s + 1e-9
 
 
 def test_impact_stop_may_still_cut_throttle():

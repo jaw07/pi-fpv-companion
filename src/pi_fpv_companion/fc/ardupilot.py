@@ -239,6 +239,14 @@ class ArduPilotBackend:
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._gs_mps: float = 0.0            # latest VFR_HUD.groundspeed (forward speed)
         self._alt_m: float = 0.0             # latest VFR_HUD.alt
+        # GLOBAL_POSITION_INT.relative_alt (m above home). MEASURED 2026-08-18 on
+        # ArduCopter 4.6.3 with GPS disabled: VFR_HUD.alt reads 0.0 for the whole
+        # flight while the aircraft climbs to 76m, but relative_alt tracks correctly —
+        # the EKF publishes height-above-home from the BARO even with no GPS. Since
+        # this airframe is GPS-denied by design, relative_alt is the trustworthy AGL
+        # source and VFR_HUD.alt is only a fallback.
+        self._rel_alt_m: float = 0.0
+        self._rel_alt_t: float = 0.0
         self._home_alt: Optional[float] = None   # first VFR_HUD.alt = ground reference (for AGL)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
@@ -454,7 +462,10 @@ class ArduPilotBackend:
             return
         mav = self._mavutil.mavlink
         for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD,
-                       mav.MAVLINK_MSG_ID_ATTITUDE):
+                       mav.MAVLINK_MSG_ID_ATTITUDE,
+                       # GLOBAL_POSITION_INT carries relative_alt, the only altitude
+                       # that survives GPS-denied operation (see _rel_alt_m).
+                       mav.MAVLINK_MSG_ID_GLOBAL_POSITION_INT):
             try:
                 with self._send_lock:
                     self._mav.mav.command_long_send(
@@ -583,6 +594,9 @@ class ArduPilotBackend:
                 self._roll_rad = float(msg.roll)     # +bank-right
                 self._yaw_rad = float(msg.yaw)       # heading (rad)
                 self._pitch_t = time.monotonic()
+            elif t == "GLOBAL_POSITION_INT":
+                self._rel_alt_m = float(msg.relative_alt) / 1000.0   # mm -> m above home
+                self._rel_alt_t = time.monotonic()
             elif t == "LOCAL_POSITION_NED":
                 self._x_m = float(msg.x)             # NED north (m from origin)
                 self._y_m = float(msg.y)             # NED east  (m from origin)
@@ -642,11 +656,27 @@ class ArduPilotBackend:
         return self._alt_m
 
     def agl_m(self) -> float:
-        """Height above ground (m) = alt - home, where home is the alt captured while DISARMED
-        (the ground/arming point). Used by the rate-control DIVE impact latch. Returns a large
-        value until home is known (never seen disarmed -> e.g. a mid-flight restart) so a missing
-        ground reference never reads as 'on the ground' and false-latches the impact STOP."""
+        """Height above ground (m). Used by the rate-control DIVE impact latch and terminal
+        commit, so an ERRONEOUSLY SMALL value is dangerous: it makes DIVE freeze its rates
+        immediately and cut throttle on the first lost target, at any altitude.
+
+        Prefers GLOBAL_POSITION_INT.relative_alt. MEASURED on ArduCopter 4.6.3 with GPS
+        disabled: VFR_HUD.alt reads 0.0 for an entire flight (climbed to 76m) while
+        relative_alt tracked correctly — the EKF derives height-above-home from the baro
+        without GPS, but VFR_HUD.alt does not survive. On a GPS-denied airframe the old
+        VFR_HUD path therefore produced agl=0 permanently, which is exactly the dangerous
+        direction.
+
+        Falls back to the VFR_HUD difference only while relative_alt is stale, and returns
+        a LARGE value when neither source is trustworthy — a missing ground reference must
+        never read as 'on the ground'."""
+        if self._rel_alt_t and (time.monotonic() - self._rel_alt_t) < 3.0:
+            return self._rel_alt_m
         if self._home_alt is None:
+            return 1e9
+        # VFR_HUD.alt pinned at exactly 0 is the GPS-denied signature, not a real
+        # altitude — treat it as unknown rather than as 'on the ground'.
+        if self._alt_m == 0.0 and self._home_alt == 0.0:
             return 1e9
         return self._alt_m - self._home_alt
 

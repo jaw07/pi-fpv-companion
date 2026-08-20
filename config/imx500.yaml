@@ -122,6 +122,22 @@ fc:
   # truly dead Pi (or the rung-4 reboot, ~48 s) still fails safe. Engaged coverage for a
   # dead Pi stays with the GUIDED command timeout (levels in ~3 s), not this.
   enforce_params:
+    # --- EKF source set for a GPS-DENIED airframe -------------------------------
+    # Engaging TRACK failed with "needs an altitude/position estimate": with a GPS
+    # fitted but never locking, the EKF sits waiting for a fix that will not come, so
+    # it never publishes the estimate GUIDED_NOGPS entry and arming want.
+    #   POSXY/VELXY = 0 (None)  -> stop waiting for a horizontal source
+    #   POSZ        = 1 (Baro)  -> altitude comes from the barometer. THIS is the one
+    #                              that answers "need alt estimate".
+    #   VELZ        = 0 (None)  -> baro gives position, not velocity
+    # NOTE these are deliberately NOT the values in the ArduPilot optical-flow guide
+    # (EK3_SRC1_VELXY=5): that means "take velocity from the flow sensor", and this
+    # airframe has no flow sensor — it would wait on a sensor that isn't there.
+    # EK3_SRC* changes need an FC REBOOT to take effect.
+    EK3_SRC1_POSXY: 0
+    EK3_SRC1_VELXY: 0
+    EK3_SRC1_POSZ: 1
+    EK3_SRC1_VELZ: 0
     FS_GCS_TIMEOUT: 20
     # GUID_TIMEOUT backs the STANDBY design: the companion injects NOTHING in
     # STANDBY, so the FC's guided timeout (this many seconds after our last

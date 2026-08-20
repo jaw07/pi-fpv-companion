@@ -742,3 +742,54 @@ def test_ensure_param_bits_ok_when_already_set():
         assert int(fake.params["GUID_OPTIONS"]) == (TAT | 1)  # untouched
     finally:
         backend.close(); fake.stop()
+
+
+# ---- GPS-denied altitude (measured on ArduCopter 4.6.3, 2026-08-18) ----------------
+
+def _bare_backend():
+    from pi_fpv_companion.fc.ardupilot import ArduPilotBackend, ArduCopterRcMapping
+    return ArduPilotBackend(device="udpin:127.0.0.1:1", baud=0, switch_channel=7,
+                            track_threshold_us=1300, dive_threshold_us=1700,
+                            mapping=ArduCopterRcMapping(control_mode="guided_nogps"))
+
+
+def test_agl_prefers_relative_alt_over_vfr_hud():
+    """MEASURED: with GPS disabled, VFR_HUD.alt reads 0.0 for an entire flight while the
+    aircraft climbs to 76m; GLOBAL_POSITION_INT.relative_alt tracks correctly because the
+    EKF derives height-above-home from the baro. This airframe is GPS-denied by design,
+    so relative_alt is the trustworthy source."""
+    import time as _t
+    b = _bare_backend()
+    b._alt_m = 0.0            # what VFR_HUD reports GPS-denied
+    b._home_alt = 0.0
+    b._rel_alt_m = 42.0
+    b._rel_alt_t = _t.monotonic()
+    assert b.agl_m() == 42.0
+
+
+def test_agl_refuses_to_report_ground_on_the_gps_denied_signature():
+    """agl feeds the DIVE impact latch and terminal commit, so an erroneously SMALL value
+    is the dangerous direction: it freezes the dive's rates immediately and cuts throttle
+    on the first lost target, at any altitude. VFR_HUD.alt pinned at exactly 0 is the
+    GPS-denied signature, not a real altitude — report 'unknown', never 'on the ground'."""
+    b = _bare_backend()
+    b._alt_m = 0.0
+    b._home_alt = 0.0
+    b._rel_alt_t = 0.0        # no relative_alt yet
+    assert b.agl_m() > 1e6
+
+
+def test_agl_falls_back_to_vfr_hud_when_relative_alt_is_stale():
+    b = _bare_backend()
+    b._alt_m = 130.0
+    b._home_alt = 100.0
+    b._rel_alt_m = 42.0
+    b._rel_alt_t = 1.0        # ancient
+    assert abs(b.agl_m() - 30.0) < 1e-6
+
+
+def test_agl_unknown_without_any_reference():
+    b = _bare_backend()
+    b._home_alt = None
+    b._rel_alt_t = 0.0
+    assert b.agl_m() > 1e6

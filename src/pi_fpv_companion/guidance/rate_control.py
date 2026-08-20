@@ -47,6 +47,23 @@ def _lp(prev: float, target: float, tau_s: float, dt: float) -> float:
     return prev + (1.0 - math.exp(-dt / tau_s)) * (target - prev)
 
 
+def trim_hover(hover: float, climb_mps: float, dt: float, cfg: RateConfig) -> float:
+    """One step of the online hover trim: nudge `hover` toward the value that produces
+    zero climb. TIME-BASED and rate-limited.
+
+    The original was `hover -= 0.01 * climb` applied per TICK, which made the trim rate a
+    function of the control-loop rate. Measured on ArduCopter SITL at 22Hz: engaging TRACK
+    while still climbing at 12m/s drove hover from 0.45 to its 0.05 clamp almost
+    instantly, which collapses commanded thrust and drops the aircraft. Ignore large climb
+    rates entirely — the craft is not near hover then, so the reading says nothing about
+    what hover is."""
+    if dt <= 0.0 or abs(climb_mps) > cfg.hover_learn_max_climb:
+        return hover
+    step = _clamp(-cfg.hover_learn_rate * climb_mps,
+                  -cfg.hover_learn_max_per_s, cfg.hover_learn_max_per_s) * dt
+    return _clamp(hover + step, cfg.hover_min, cfg.hover_max)
+
+
 def _slew(prev: float, target: float, max_per_s: float, dt: float) -> float:
     """Bound how far a command may move in one step. This is what guarantees the output
     is INCREMENTAL: no matter how large a step the controller asks for, the commanded
@@ -153,8 +170,24 @@ class RateConfig:
     #     1.71/s — hover to zero in well under a second, which is the "overcompensating"
     #     feel. 0.6/s takes ~0.3s to cross the same span.
     min_thrust_frac: float = 0.40
+    # ABSOLUTE floor as well as the hover-relative one. The hover-relative floor is only
+    # as trustworthy as `hover`, and hover is LEARNED in flight — a runaway learner drags
+    # the floor down with it (measured 2026-08-18: hover collapsed 0.45 -> 0.056, taking
+    # the floor from 0.180 to 0.023). The two together mean a bad hover estimate cannot
+    # remove the floor's protection.
+    min_thrust_abs: float = 0.10
     max_thrust: float = 0.90
     slew_thrust: float = 0.6
+    # --- online hover trim (applied by the caller; see Pipeline._tick_rate) ----------
+    # Rate of change of the learned hover per (m/s) of climb, PER SECOND. The original
+    # was a per-TICK step (hover -= 0.01 * climb), i.e. silently proportional to the
+    # control-loop rate: at 22Hz with a 12m/s climb that is -2.6 per second and hover
+    # slams to its clamp in ~0.15s, collapsing thrust and dropping the aircraft.
+    hover_learn_rate: float = 0.05
+    hover_learn_max_per_s: float = 0.10   # clamp on how fast hover may move
+    hover_learn_max_climb: float = 5.0    # |climb| above this is not near-hover: ignore
+    hover_min: float = 0.05
+    hover_max: float = 0.60
     # TRACK: hold the engagement RANGE (follow without committing). Pitch-rate from a PI on
     # the bbox-height error vs the size captured at TRACK entry; thrust holds altitude (hover).
     track_kp: float = 3.0                  # rad/s per unit normalised bbox-height error
@@ -326,7 +359,8 @@ def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state
     else:
         thr_lp = _lp(state.sm_thr, thrust, cfg.tau_thrust_s, dt)
         state.sm_thr = _slew(state.sm_thr, thr_lp, cfg.slew_thrust, dt)
-        state.sm_thr = _clamp(state.sm_thr, cfg.min_thrust_frac * state.hover,
+        state.sm_thr = _clamp(state.sm_thr,
+                              max(cfg.min_thrust_abs, cfg.min_thrust_frac * state.hover),
                               cfg.max_thrust)
     state.sm_pr = _clamp(state.sm_pr, -cfg.max_pitch_rate, cfg.max_pitch_rate)
     state.sm_yr = _clamp(state.sm_yr, -cfg.max_yaw_rate, cfg.max_yaw_rate)
