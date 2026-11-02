@@ -38,7 +38,9 @@ sudo apt-get install -y \
     git \
     rsync \
     libgl1 \
-    libglib2.0-0t64
+    rpicam-apps-lite
+# glib was renamed for the 64-bit time_t transition (Trixie); Bookworm has the old name.
+sudo apt-get install -y libglib2.0-0t64 || sudo apt-get install -y libglib2.0-0
 
 read -r -p "==> install IMX500 firmware + models (imx500-all)? [y/N] " yn
 if [[ "$yn" =~ ^[Yy] ]]; then

@@ -102,6 +102,9 @@ def _build_tracker(cfg: AppConfig):
         return IouAssociator(
             iou_threshold=cfg.tracker.iou_threshold,
             max_lost_frames=cfg.tracker.reacquire_after_lost_frames,
+            max_match_dist_px=cfg.tracker.max_match_dist_px,
+            vel_alpha=cfg.tracker.vel_alpha,
+            vel_max_px_s=cfg.tracker.vel_max_px_s,
         )
     if t == "multi_iou":   # multi-target IoU + operator selection (fc.select_channel)
         from pi_fpv_companion.track.multi_target import MultiObjectTracker
@@ -110,6 +113,10 @@ def _build_tracker(cfg: AppConfig):
             max_lost_frames=cfg.tracker.reacquire_after_lost_frames,
             confirm_hits=cfg.tracker.confirm_hits,
             confirm_window=cfg.tracker.confirm_window,
+            vel_alpha=cfg.tracker.vel_alpha,
+            vel_max_px_s=cfg.tracker.vel_max_px_s,
+            coast_vel_decay=cfg.tracker.coast_vel_decay,
+            max_match_dist_px=cfg.tracker.max_match_dist_px,
         )
     if t == "classical":
         from pi_fpv_companion.track.cv2_tracker import ClassicalCv2Tracker
@@ -246,7 +253,8 @@ def _enforce_fc_params(cfg: AppConfig, fc) -> None:
             st = ensure_bits("FS_OPTIONS", FS_OPTIONS_CONTINUE_PILOT_GCS)
             print(f"    FS_OPTIONS(ContinuePilotModesOnGCSLoss): {st}")
         except Exception as e:
-            print(f"  WARN: FS_OPTIONS check failed: {e}")
+            print(f"  WARNING: FS_OPTIONS(ContinuePilotModesOnGCSLoss) check failed: {e} — "
+                  "a Pi restart may LAND a manually-flown craft")
 
 
 def _build_sink(cfg: AppConfig, no_gui: bool):

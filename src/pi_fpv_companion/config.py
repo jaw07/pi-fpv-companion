@@ -72,10 +72,12 @@ class TrackerSection:
     cv2_backend: str = "mosse"           # mosse | kcf | csrt | medianflow (classical only)
     reacquire_after_lost_frames: int = 30
     iou_threshold: float = 0.3
-    # multi_iou spurious-detection suppression: a track must be detected in >= confirm_hits
-    # of the last confirm_window frames before it is shown/selectable. 1 = off (back-compat).
     confirm_hits: int = 1
     confirm_window: int = 5
+    vel_alpha: float = 0.5
+    vel_max_px_s: float = 1440.0
+    coast_vel_decay: float = 0.8
+    max_match_dist_px: float = 60.0
 
 
 @dataclass
@@ -219,6 +221,10 @@ def _tracker(d: Dict[str, Any]) -> TrackerSection:
         iou_threshold=d.get("iou_threshold", 0.3),
         confirm_hits=d.get("confirm_hits", 1),
         confirm_window=d.get("confirm_window", 5),
+        vel_alpha=d.get("vel_alpha", 0.5),
+        vel_max_px_s=d.get("vel_max_px_s", 1440.0),
+        coast_vel_decay=d.get("coast_vel_decay", 0.8),
+        max_match_dist_px=d.get("max_match_dist_px", 60.0),
     )
 
 
@@ -452,7 +458,12 @@ def _recorder(d: Dict[str, Any]) -> RecorderSection:
 
 
 def load(path: str | Path) -> AppConfig:
-    raw = yaml.safe_load(Path(path).read_text())
+    p = Path(path)
+    try:
+        raw = yaml.safe_load(p.read_text())
+    except FileNotFoundError:
+        raise SystemExit(f"config file not found: {p.resolve()}\n"
+                         f"  copy a template from config/ and edit it") from None
     video = _video(raw.get("video", {}))
     cfg = AppConfig(
         video=video,

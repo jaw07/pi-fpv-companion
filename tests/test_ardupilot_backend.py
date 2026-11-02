@@ -383,6 +383,8 @@ def test_streams_rerequested_periodically(ap_pair, monkeypatch):
     backend._drain()                    # immediate -> gated, no re-request
     assert len(calls) == 1
     backend._last_stream_req -= _STREAM_REREQUEST_S + 1   # pretend interval elapsed
+    # Also make the streams look stale so the liveness gate triggers.
+    backend._last_rc_t = 0.0
     backend._drain()
     assert len(calls) == 2
 

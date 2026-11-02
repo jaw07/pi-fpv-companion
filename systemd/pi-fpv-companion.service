@@ -7,12 +7,13 @@ After=multi-user.target network.target
 #         capture hang in ~3-5s by reopening the camera (bench: 10/10, no hang).
 # Rung 3: ExecStartPre (camera-ready.sh) — if the sensor fell off the bus (not just a
 #         capture hang), reset the camera subsystem via driver unbind/rebind, NO reboot.
-# Rung 4: StartLimitAction=reboot if rung 3 keeps failing — full Pi reboot, last resort.
-#         A reboot fully re-inits the CSI/sensor. The companion runs STANDBY-only and
-#         the pilot keeps the FPV cam, so a ~48s outage is tolerable. =none to disable.
+# Rung 4: if the service keeps failing, systemd STOPS restarting it. It does NOT reboot
+#         the Pi: a repeating fault (camera, crash on import) survives a reboot, so
+#         StartLimitAction=reboot turned it into a reboot loop with a tiny SSH window.
+#         Recover by hand: journalctl -u pi-fpv-companion, then systemctl reset-failed.
 StartLimitIntervalSec=180
 StartLimitBurst=8
-StartLimitAction=reboot
+StartLimitAction=none
 
 [Service]
 Type=simple
@@ -30,8 +31,12 @@ ExecStart=/opt/pi-fpv-companion/.venv/bin/python -m pi_fpv_companion \
     --config /opt/pi-fpv-companion/config/imx500.yaml
 
 Restart=on-failure
-RestartSec=1
-TimeoutStopSec=10
+RestartSec=2
+# camera-ready.sh is bounded (~40s worst case); never let a wedged probe eat 90s.
+TimeoutStartSec=60
+# Give a stuck camera/dmabuf release time to finish before the next start reopens it.
+TimeoutStopSec=20
+KillMode=mixed
 
 # Filesystem hardening — drone software shouldn't be writing outside its install
 ProtectSystem=strict

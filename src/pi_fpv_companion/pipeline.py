@@ -118,13 +118,14 @@ class Pipeline:
         # Keepalive tick interval used ONLY when frames stop arriving (camera stall), so
         # FC release/mode handling and the heartbeat-liveness gate keep running. While
         # frames flow the control thread ticks on EVERY frame — see _control_loop.
-        self._control_fallback_s = 0.1
+        self._control_fallback_s = 0.01
         # Detection-tensor signature of the last tick that actually fed the tracker.
         # A camera whose detector is slower than its frame rate repeats the previous
         # tensor on the frames in between; re-feeding that to the tracker/filter biases
         # them (it reads as a fresh confirmation and resets the staleness clock). So the
         # tick still runs every frame — FC, switch, safety and HUD all need the rate —
         # but the tracker/filter are fed only on a genuinely new tensor.
+        self._display_errors = 0
         self._last_det_sig: Optional[tuple] = None
         self._last_target = None
         self._stopping = False
@@ -212,7 +213,11 @@ class Pipeline:
                         self._display(_predict_to(target, bundle.timestamp),
                                       intent, gated, switch, armed, bundle, tracks)
                     except Exception:
-                        logger.exception("display render failed; dropping frame")
+                        self._display_errors += 1
+                        if self._display_errors <= 5:
+                            logger.exception("display render failed; dropping frame")
+                        elif self._display_errors == 6:
+                            logger.error("display render failing repeatedly — suppressing further logs")
         finally:
             self._stopping = True
             self._frame_event.set()       # wake the control thread so it can exit
@@ -282,6 +287,10 @@ class Pipeline:
             except Exception:
                 logger.exception("control tick failed — exiting for restart")
                 print("CONTROL LOOP CRASHED; exiting for restart", file=sys.stderr, flush=True)
+                try:
+                    self._fc.release()
+                except Exception:
+                    pass
                 os._exit(3)
 
     def _start_camera_watchdog(self) -> None:
@@ -304,11 +313,18 @@ class Pipeline:
                     if now - start > grace:
                         print(f"CAMERA WATCHDOG: no first frame within {grace:.0f}s; "
                               "exiting for restart", file=sys.stderr, flush=True)
-                        os._exit(2)
+                        _watchdog_exit(2)
                 elif now - self._last_frame_ts > self._camera_watchdog_s:
                     print(f"CAMERA WATCHDOG: camera stalled (>{self._camera_watchdog_s:.1f}s "
                           "no frame); exiting for restart", file=sys.stderr, flush=True)
-                    os._exit(1)
+                    _watchdog_exit(1)
+
+        def _watchdog_exit(code: int) -> None:
+            try:
+                self._fc.release()
+            except Exception:
+                pass
+            os._exit(code)
 
         threading.Thread(target=_watch, daemon=True, name="camera-watchdog").start()
 
@@ -549,8 +565,16 @@ class Pipeline:
             fc.send_body_rates(ri.roll_rate, ri.pitch_rate, ri.yaw_rate, ri.thrust)
         else:
             # Muted (no/stale/low-quality target) -> SAFE HOLD: level + hover, never search-dive.
-            fc.send_body_rates(0.0, max(-0.6, min(0.6, 2.0 * (0.0 - pitch))), 0.0, self._rate_state.hover)
+            g = self._rate_cfg.muted_level_gain
+            mx = self._rate_cfg.muted_level_max_rate
+            fc.send_body_rates(0.0, max(-mx, min(mx, g * (0.0 - pitch))), 0.0, self._rate_state.hover)
         if self._on_status is not None:
-            hud = GuidanceIntent(0.0, 0.0, _math.degrees(ri.yaw_rate), ri.thrust, now)
+            hud = GuidanceIntent(0.0, 0.0, _math.degrees(ri.yaw_rate), ri.thrust, now,
+                                 phase=ri.phase,
+                                 pitch_rate_rads=ri.pitch_rate,
+                                 roll_rate_rads=ri.roll_rate,
+                                 yaw_rate_rads=ri.yaw_rate,
+                                 hover=self._rate_state.hover,
+                                 agl_m=agl)
             self._on_status(target, hud, gated, switch, armed, bundle, self._tracks)
         return gated

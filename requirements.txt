@@ -9,7 +9,7 @@
 # The packages below ARE pip-installable.
 
 numpy>=1.24
-opencv-contrib-python>=4.8 # full build with cv2.legacy.TrackerKCF/CSRT/MOSSE
+opencv-contrib-python>=4.8,<4.12 # full build with cv2.legacy.TrackerKCF/CSRT/MOSSE
 psutil>=5.9                # peak RSS tracking in PerfMonitor
 pymavlink>=2.4.40          # ArduPilot backend
 pyserial>=3.5              # MSP backend (Betaflight) and low-level access

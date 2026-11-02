@@ -87,19 +87,28 @@ class PID:
     kd: float = 0.0
     out_limit: float = 1e9
     i_limit: float = 1e9
+    d_tau: float = 0.05
     _i: float = 0.0
+    _d_lp: float = 0.0
     _hist: deque = field(default_factory=lambda: deque(maxlen=5))
 
     def reset(self) -> None:
         self._i = 0.0
+        self._d_lp = 0.0
         self._hist.clear()
 
     def update(self, error: float, dt: float) -> float:
         self._i = _clamp(self._i + error * dt, -self.i_limit, self.i_limit)
-        self._hist.append(error)
+        cum_t = (self._hist[-1][0] + dt) if self._hist else 0.0
+        self._hist.append((cum_t, error))
         d = 0.0
-        if self.kd != 0.0 and len(self._hist) > 1 and dt > 0:
-            d = (self._hist[-1] - self._hist[0]) / (dt * (len(self._hist) - 1))
+        if self.kd != 0.0 and len(self._hist) > 1:
+            span = self._hist[-1][0] - self._hist[0][0]
+            if span > 1e-6:
+                d = (self._hist[-1][1] - self._hist[0][1]) / span
+            alpha = dt / (self.d_tau + dt) if self.d_tau > 0 else 1.0
+            self._d_lp += alpha * (d - self._d_lp)
+            d = self._d_lp
         return _clamp(self.kp * error + self.ki * self._i + self.kd * d,
                       -self.out_limit, self.out_limit)
 
@@ -196,6 +205,12 @@ class RateConfig:
     # Acquisition / impact
     search_pitch_rad: float = -0.436       # ~-25deg: nose down to bring a below target into the FOV
     impact_agl_m: float = 12.0             # target lost below this AGL -> latch STOP
+    # Muted safe-hold (sent when the safety gate mutes while engaged): command a
+    # return-to-level at this gain (rad/s per rad of pitch) clamped to this rate,
+    # plus hover thrust. The alternative is silence (3s of GUID_TIMEOUT holding
+    # the last dive attitude), which is worse.
+    muted_level_gain: float = 2.0
+    muted_level_max_rate: float = 0.6
 
 
 @dataclass
@@ -340,8 +355,7 @@ def compute_rate_intent(target: Optional[FilteredTarget], cfg: RateConfig, state
     #                  detector jump, mode entry). The low-pass alone does not: it
     #                  passes alpha * step on the very first tick.
     #   3. clamp     — bounds what may be commanded at all.
-    # Thrust gets 1 and 3 but no slew: it is not an attitude command and the pursuit
-    # loop needs authority to arrest a descent.
+    # Thrust gets all three (low-pass, slew, clamp) — see the block below.
     state.sm_pr = _slew(state.sm_pr, _lp(state.sm_pr, pr, cfg.tau_pitch_s, dt),
                         cfg.slew_pitch, dt)
     state.sm_yr = _slew(state.sm_yr, _lp(state.sm_yr, yr, cfg.tau_yaw_s, dt),

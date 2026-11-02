@@ -320,3 +320,56 @@ def test_impact_stop_may_still_cut_throttle():
                                   agl_m=cfg.impact_agl_m - 1.0)
     assert out.phase == "STOP"
     assert out.thrust < cfg.min_thrust_frac * st.hover
+
+
+# ---- PID derivative filter ---------------------------------------------------
+
+def test_pid_derivative_responds_to_rising_error():
+    """The windowed derivative must contribute when the error is increasing."""
+    p = PID(kp=0.0, kd=1.0, d_tau=0.0)  # kp=0 isolates the D term; tau=0 = no LP
+    dt = 0.05
+    out = 0.0
+    for i in range(6):
+        out = p.update(i * 1.0, dt)
+    # error rising at 1.0/tick / 0.05s = 20/s; kd=1 -> output ~20
+    assert out > 10.0, f"derivative produced {out}, expected significant positive output"
+
+
+def test_pid_derivative_zero_on_constant_error():
+    """Constant error -> the windowed diff is zero -> D contributes nothing."""
+    p = PID(kp=0.0, kd=1.0, d_tau=0.0)
+    dt = 0.05
+    for _ in range(10):
+        out = p.update(5.0, dt)
+    assert abs(out) < 1e-6, f"derivative on constant error should be ~0, got {out}"
+
+
+def test_pid_derivative_lowpass_smooths_spikes():
+    """With d_tau > 0 the LP on the derivative term must attenuate a sudden spike
+    more than d_tau = 0 does."""
+    dt = 0.05
+    errors = [0.0] * 5 + [10.0]  # flat then spike
+
+    p_raw = PID(kp=0.0, kd=1.0, d_tau=0.0)
+    for e in errors:
+        raw_out = p_raw.update(e, dt)
+
+    p_lp = PID(kp=0.0, kd=1.0, d_tau=0.10)
+    for e in errors:
+        lp_out = p_lp.update(e, dt)
+
+    assert abs(lp_out) < abs(raw_out), (
+        f"LP derivative {lp_out:.4f} should be smaller than raw {raw_out:.4f}")
+
+
+def test_pid_windowed_derivative_uses_full_window():
+    """The 5-sample window spans more history than a single-step diff — verify the
+    derivative uses the oldest sample (not just the previous one)."""
+    p = PID(kp=0.0, kd=1.0, d_tau=0.0)
+    dt = 0.05
+    # ramp up 5 samples then hold: single-step diff would be 0 on the hold tick,
+    # but the windowed diff still sees the ramp from 5 samples ago.
+    for i in range(5):
+        p.update(float(i), dt)
+    out = p.update(4.0, dt)  # hold at 4.0 — single-step delta is 0
+    assert out > 1.0, f"windowed derivative should still see the ramp, got {out}"

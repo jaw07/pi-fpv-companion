@@ -13,8 +13,9 @@ TRACK and DIVE.
   .tracks      -> all current tracks              # what the HUD shows
   .cycle()     -> advance the selection to the next track (stable id order)
 
-Greedy IoU association: each existing track claims its highest-IoU unmatched
-detection above threshold; unmatched detections spawn new tracks; a track unseen
+Global best-pair greedy IoU association: all (track, detection) pairs are scored
+and assigned from best to worst, so a high-IoU match is never stolen by an
+earlier-numbered track. Unmatched detections spawn new tracks; a track unseen
 for more than `max_lost_frames` is dropped. The selected track persists while it
 coasts (so a brief miss doesn't drop the lock).
 
@@ -39,12 +40,18 @@ positives appeared and coasted off-frame):
     dropped immediately instead of gliding off-screen on its velocity estimate.
 """
 from __future__ import annotations
-from collections import deque
+import math
 from dataclasses import replace
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pi_fpv_companion.types import Detection, Target
-from pi_fpv_companion.track.iou_associator import best_match
+from pi_fpv_companion.track.iou_associator import _iou, best_match
+
+# Reference rate at which the per-frame parameters (vel_alpha, coast_vel_decay,
+# max_lost_frames, confirm_window) were tuned. Used to convert them to time-based
+# equivalents so the tracker behaves identically at this rate and correctly at any
+# other rate — the same bug class as the per-tick guidance gains (see memory note).
+_NOMINAL_HZ = 22.0
 
 
 class MultiObjectTracker:
@@ -54,13 +61,14 @@ class MultiObjectTracker:
                  confirm_hits: int = 1, confirm_window: int = 5,
                  vel_max_px_s: float = 1440.0, coast_vel_decay: float = 0.8) -> None:
         self._iou_threshold = iou_threshold
-        self._max_lost_frames = max_lost_frames
-        # M-of-N confirmation: a track must be DETECTED (matched, not coasted) in at
-        # least `confirm_hits` of the last `confirm_window` frames before it is shown
-        # or can be selected. Latched once met. 1 = confirm on first detection (off).
+        # Convert frame-based caps to wall-clock equivalents at the reference rate.
+        self._max_lost_s = max_lost_frames / _NOMINAL_HZ
+        # M-of-N confirmation: a track must be DETECTED (matched, not coasted) at
+        # least `confirm_hits` times within `confirm_window_s` seconds before it is
+        # shown or can be selected. Latched once met. 1 = confirm on first detection.
         self._confirm_hits = max(1, confirm_hits)
-        self._confirm_window = max(self._confirm_hits, confirm_window)
-        self._hist: Dict[int, Deque[bool]] = {}   # track_id -> recent match history
+        self._confirm_window_s = max(self._confirm_hits, confirm_window) / _NOMINAL_HZ
+        self._hit_times: Dict[int, List[float]] = {}   # track_id -> timestamps of hits
         self._confirmed: set = set()              # track_ids that have latched confirmed
         self._frame_w: Optional[int] = None       # frame bounds for the off-frame drop
         self._frame_h: Optional[int] = None
@@ -215,16 +223,28 @@ class MultiObjectTracker:
         """Remove a track and all its side state."""
         self._tracks.pop(tid, None)
         self._vel.pop(tid, None)
-        self._hist.pop(tid, None)
+        self._hit_times.pop(tid, None)
         self._confirmed.discard(tid)
 
-    def _record_hit(self, tid: int, matched: bool) -> None:
-        """Update a track's match history and latch confirmation once M-of-N is met."""
-        h = self._hist.get(tid)
-        if h is None:
-            h = self._hist[tid] = deque(maxlen=self._confirm_window)
-        h.append(matched)
-        if tid not in self._confirmed and sum(h) >= self._confirm_hits:
+    def _record_hit(self, tid: int, matched: bool, now: float) -> None:
+        """Record a detection and check time-based M-of-N confirmation.
+
+        Instead of counting hits in the last N frames (rate-dependent), count hits
+        whose timestamps fall within the last `_confirm_window_s` seconds. At the
+        reference rate the behaviour is identical; at other rates the wall-clock
+        confirmation time stays the same.
+        """
+        if tid in self._confirmed:
+            return  # already latched — no bookkeeping needed
+        if not matched:
+            return
+        times = self._hit_times.get(tid)
+        if times is None:
+            times = self._hit_times[tid] = []
+        times.append(now)
+        cutoff = now - self._confirm_window_s
+        times[:] = [t for t in times if t >= cutoff]
+        if len(times) >= self._confirm_hits:
             self._confirmed.add(tid)
 
     def _off_frame(self, det: Detection) -> bool:
@@ -236,55 +256,93 @@ class MultiObjectTracker:
     def _associate(self, detections: List[Detection], now: float) -> None:
         dt = (now - self._last_t) if self._last_t is not None else 0.0
         self._last_t = now
-        unmatched = list(detections)
-        # Existing tracks claim their best unmatched detection, matched against the
-        # track's constant-velocity PREDICTION (carries identity through a crossing).
-        for tid in sorted(self._tracks):
-            cur = self._tracks[tid]
+
+        # Rate-adapt the EMA smoothing factor so the effective time constant is
+        # independent of the loop rate (same bug class as the per-tick guidance gains).
+        # At _NOMINAL_HZ the value equals self._vel_alpha; at other rates it scales.
+        vel_alpha = (1.0 - (1.0 - self._vel_alpha) ** (dt * _NOMINAL_HZ)
+                     ) if dt > 1e-6 else 0.0
+
+        # Build constant-velocity predictions for every existing track.
+        preds: Dict[int, Tuple[Detection, float, float]] = {}  # tid -> (pred, vx, vy)
+        for tid, cur in self._tracks.items():
             vx, vy = self._vel.get(tid, (0.0, 0.0))
             pred = replace(cur.detection, x=cur.detection.x + vx * dt,
                            y=cur.detection.y + vy * dt)
-            best = best_match(pred, unmatched, self._iou_threshold, self._max_match_dist_px)
-            if best is not None:
-                unmatched.remove(best)
-                if dt > 1e-3:
-                    a = self._vel_alpha
-                    nvx = a * (best.x - cur.detection.x) / dt + (1 - a) * vx
-                    nvy = a * (best.y - cur.detection.y) / dt + (1 - a) * vy
-                    speed = (nvx * nvx + nvy * nvy) ** 0.5
-                    if speed > self._vel_max_px_s:     # implausible = mostly match noise
-                        scale = self._vel_max_px_s / speed
-                        nvx, nvy = nvx * scale, nvy * scale
-                    self._vel[tid] = (nvx, nvy)
-                self._tracks[tid] = Target(detection=best, track_id=tid,
-                                           lost_frames=0, timestamp=now)
-                self._record_hit(tid, True)
+            preds[tid] = (pred, vx, vy)
+
+        # Score every (track, detection-index) pair that passes the IoU or distance
+        # gate. Global best-pair greedy: sort all pairs by quality and assign from best
+        # to worst, so a high-IoU match is never stolen by an earlier-numbered track.
+        pairs: List[Tuple[Tuple[float, float], int, int]] = []
+        for tid, (pred, _vx, _vy) in preds.items():
+            bbox_diag = math.hypot(pred.w, pred.h)
+            gate = max(self._max_match_dist_px, bbox_diag * 2.0)
+            for di, d in enumerate(detections):
+                iou = _iou(pred, d)
+                dist = math.hypot(pred.x - d.x, pred.y - d.y)
+                if iou >= self._iou_threshold or dist <= gate:
+                    pairs.append(((iou, -dist), tid, di))
+        pairs.sort(reverse=True)
+
+        matched_tids: set = set()
+        matched_dets: set = set()
+        for _score, tid, di in pairs:
+            if tid in matched_tids or di in matched_dets:
+                continue
+            matched_tids.add(tid)
+            matched_dets.add(di)
+            d = detections[di]
+            cur = self._tracks[tid]
+            vx, vy = self._vel.get(tid, (0.0, 0.0))
+            if dt > 1e-3:
+                nvx = vel_alpha * (d.x - cur.detection.x) / dt + (1 - vel_alpha) * vx
+                nvy = vel_alpha * (d.y - cur.detection.y) / dt + (1 - vel_alpha) * vy
+                speed = (nvx * nvx + nvy * nvy) ** 0.5
+                if speed > self._vel_max_px_s:     # implausible = mostly match noise
+                    scale = self._vel_max_px_s / speed
+                    nvx, nvy = nvx * scale, nvy * scale
+                self._vel[tid] = (nvx, nvy)
+            self._tracks[tid] = Target(detection=d, track_id=tid,
+                                       lost_frames=0, timestamp=now)
+            self._record_hit(tid, True, now)
+
+        # Time-based coast velocity decay: same real-time halflife regardless of rate.
+        coast_decay = (self._coast_vel_decay ** (dt * _NOMINAL_HZ)
+                       ) if dt > 1e-6 else self._coast_vel_decay
+
+        # Unmatched tracks: coast or drop.
+        for tid in list(self._tracks):
+            if tid in matched_tids:
+                continue
+            cur = self._tracks[tid]
+            pred, vx, vy = preds[tid]
+            lost = cur.lost_frames + 1
+            # Time-based drop: how long since the last real match, not frame count.
+            coast_age = now - cur.timestamp
+            if coast_age > self._max_lost_s or self._off_frame(pred):
+                self._drop(tid)
             else:
-                lost = cur.lost_frames + 1
-                # Drop a coasting track that has left the frame instead of letting it
-                # glide off-screen on a (possibly spurious) velocity estimate; also
-                # drop once it has coasted past the staleness cap.
-                if lost > self._max_lost_frames or self._off_frame(pred):
-                    self._drop(tid)
-                else:
-                    # Coast on the prediction (so a brief miss keeps moving with it),
-                    # DECAYING the velocity each unmatched frame: nothing is being
-                    # measured, so there is no basis for sustained extrapolation — a
-                    # phantom velocity dies out instead of streaking off-screen, and a
-                    # real mover re-measures (and refreshes) within a few frames.
-                    self._vel[tid] = (vx * self._coast_vel_decay,
-                                      vy * self._coast_vel_decay)
-                    self._tracks[tid] = Target(detection=pred, track_id=tid,
-                                               lost_frames=lost, timestamp=cur.timestamp)
-                    self._record_hit(tid, False)
+                # Coast on the prediction (so a brief miss keeps moving with it),
+                # DECAYING the velocity each tick: nothing is being measured, so
+                # there is no basis for sustained extrapolation — a phantom velocity
+                # dies out instead of streaking off-screen, and a real mover
+                # re-measures (and refreshes) within a few frames.
+                self._vel[tid] = (vx * coast_decay, vy * coast_decay)
+                self._tracks[tid] = Target(detection=pred, track_id=tid,
+                                           lost_frames=lost, timestamp=cur.timestamp)
+                self._record_hit(tid, False, now)
+
         # Unmatched detections become new tracks (velocity seeds at zero). Off-frame
         # detections are ignored (don't spawn a track that's already gone).
-        for d in unmatched:
+        for di, d in enumerate(detections):
+            if di in matched_dets:
+                continue
             if self._off_frame(d):
                 continue
             tid = self._next_id
             self._tracks[tid] = Target(detection=d, track_id=tid,
                                        lost_frames=0, timestamp=now)
             self._vel[tid] = (0.0, 0.0)
-            self._record_hit(tid, True)
+            self._record_hit(tid, True, now)
             self._next_id += 1

@@ -19,15 +19,27 @@ fi
 
 PIP="$VENV_DIR/bin/pip"
 
+# Pin numpy to the version apt installed. The venv sees system packages (picamera2,
+# simplejpeg) that were compiled against it; a pip-installed numpy 2.x would shadow it
+# and crash them at import ("numpy.dtype size changed"). opencv is capped <4.12 in
+# pyproject.toml because newer wheels require numpy>=2.
+CONSTRAINTS="$(mktemp)"
+trap 'rm -f "$CONSTRAINTS"' EXIT
+SYS_NUMPY="$(/usr/bin/python3 -c 'import numpy; print(numpy.__version__)' 2>/dev/null || true)"
+if [ -n "$SYS_NUMPY" ]; then
+    echo "pinning numpy==$SYS_NUMPY (system)"
+    echo "numpy==$SYS_NUMPY" > "$CONSTRAINTS"
+fi
+
 echo "installing package + deps ..."
-"$PIP" install -q -e .
+"$PIP" install -q -c "$CONSTRAINTS" -e .
 
 # If any dep pulls in opencv-python, it installs alongside opencv-contrib-python and can
 # silently win on import, breaking cv2.legacy.TrackerKCF/CSRT/etc. Force-reinstall the
 # contrib package as the last step so its cv2.so is the one that ends up resolved.
 echo "ensuring opencv-contrib wins on import ..."
 "$PIP" uninstall -q -y opencv-python || true
-"$PIP" install -q --force-reinstall --no-deps opencv-contrib-python
+"$PIP" install -q --force-reinstall --no-deps "opencv-contrib-python>=4.8,<4.12"
 
 echo "installing dev deps ..."
 "$PIP" install -q pytest
