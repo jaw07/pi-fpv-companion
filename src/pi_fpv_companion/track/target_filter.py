@@ -32,12 +32,14 @@ from typing import Optional
 
 from pi_fpv_companion.types import Detection, FilteredTarget, Target
 
+_NOMINAL_HZ = 22.0
+
 
 @dataclass(frozen=True)
 class FilterConfig:
-    alpha: float = 0.5            # position correction gain
-    beta: float = 0.2            # velocity correction gain
-    size_alpha: float = 0.3      # light low-pass on bbox size (closure proxy)
+    alpha: float = 0.5            # position correction gain (at _NOMINAL_HZ)
+    beta: float = 0.2            # velocity correction gain (at _NOMINAL_HZ)
+    size_alpha: float = 0.3      # light low-pass on bbox size (at _NOMINAL_HZ)
     # Motion plausibility: reject a measurement whose jump from the prediction
     # exceeds this fraction of the frame diagonal (a teleport = misdetection).
     max_jump_frac: float = 0.25
@@ -146,15 +148,23 @@ class AlphaBetaTargetFilter:
                 return None
             return self._emit(now)
 
-        # accept: alpha-beta correction
+        # accept: alpha-beta correction (rate-adapted so wall-clock smoothing
+        # stays constant regardless of the control-loop rate)
         res_x = rx - px
         res_y = ry - py
-        self._x = px + cfg.alpha * res_x
-        self._y = py + cfg.alpha * res_y
-        self._vx += (cfg.beta / dt) * res_x
-        self._vy += (cfg.beta / dt) * res_y
-        self._w += cfg.size_alpha * (d.w - self._w)
-        self._h += cfg.size_alpha * (d.h - self._h)
+        a = 1.0 - (1.0 - cfg.alpha) ** (dt * _NOMINAL_HZ)
+        self._x = px + a * res_x
+        self._y = py + a * res_y
+        # Floor dt for the velocity correction so beta/dt stays bounded after a
+        # stall — two frames arriving 5ms apart would otherwise spike the gain to
+        # 40x the residual. The position prediction (above) still uses the real dt.
+        vel_dt = max(0.02, dt)
+        b = 1.0 - (1.0 - cfg.beta) ** (dt * _NOMINAL_HZ)
+        self._vx += (b / vel_dt) * res_x
+        self._vy += (b / vel_dt) * res_y
+        sa = 1.0 - (1.0 - cfg.size_alpha) ** (dt * _NOMINAL_HZ)
+        self._w += sa * (d.w - self._w)
+        self._h += sa * (d.h - self._h)
         self._last_t = now
         self._meas_t = now   # accepted a fresh, plausible measurement (resets staleness)
         # trust recovers toward this measurement's confidence

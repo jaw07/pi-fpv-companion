@@ -6,7 +6,7 @@ import json
 from pi_fpv_companion.flight_log import FlightRecorder
 from pi_fpv_companion.guidance.safety import GateResult
 from pi_fpv_companion.types import (
-    Detection, FilteredTarget, GuidanceMode, SwitchState, ZERO_INTENT)
+    Detection, FilteredTarget, GuidanceIntent, GuidanceMode, SwitchState, ZERO_INTENT)
 
 
 def _switch(mode=GuidanceMode.TRACK, pwm=1500):
@@ -64,3 +64,44 @@ def test_unwritable_directory_disables_quietly(tmp_path):
     rec = FlightRecorder(blocker / "flight", rate_hz=1000.0)   # mkdir fails -> disabled
     rec.record(_target(), ZERO_INTENT, _gated(), _switch(), armed=True)   # must not raise
     rec.close()
+
+
+def test_rate_path_fields_recorded_when_present(tmp_path):
+    """When the intent carries rate-path fields (phase, body rates, hover, agl),
+    they must appear in the JSONL record."""
+    intent = GuidanceIntent(
+        roll_deg=0.0, pitch_deg=-5.0, yaw_rate_dps=10.0, thrust=0.35,
+        timestamp=1.0,
+        phase="DIVE",
+        pitch_rate_rads=-0.1234,
+        roll_rate_rads=0.0567,
+        yaw_rate_rads=0.0890,
+        hover=0.312,
+        agl_m=28.5,
+    )
+    rec = FlightRecorder(tmp_path, rate_hz=1000.0)
+    rec.record(_target(), intent, _gated(), _switch(GuidanceMode.DIVE, 1800), armed=True)
+    rec.close()
+    lines = [json.loads(ln) for f in tmp_path.glob("flight-*.jsonl")
+             for ln in f.read_text().splitlines()]
+    assert len(lines) == 1
+    r = lines[0]
+    assert r["phase"] == "DIVE"
+    assert r["pr_rads"] == round(-0.1234, 4)
+    assert r["rr_rads"] == round(0.0567, 4)
+    assert r["yr_rads"] == round(0.0890, 4)
+    assert r["hover"] == 0.312
+    assert r["agl"] == 28.5
+
+
+def test_rate_path_fields_absent_when_not_set(tmp_path):
+    """ZERO_INTENT has no rate-path fields — they must NOT appear in the record."""
+    rec = FlightRecorder(tmp_path, rate_hz=1000.0)
+    rec.record(None, ZERO_INTENT, _gated(), _switch(), armed=True)
+    rec.close()
+    lines = [json.loads(ln) for f in tmp_path.glob("flight-*.jsonl")
+             for ln in f.read_text().splitlines()]
+    assert len(lines) == 1
+    r = lines[0]
+    for key in ("phase", "pr_rads", "rr_rads", "yr_rads", "hover", "agl"):
+        assert key not in r, f"unexpected key {key!r} in record with ZERO_INTENT"

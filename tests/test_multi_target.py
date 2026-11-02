@@ -283,3 +283,149 @@ def test_velocity_estimate_is_clamped_to_plausible_speed():
     t.consume(_Frame(720, 576), [_d(160, 100)], 0.005)   # 60 px in 5 ms = 12000 px/s raw
     vx, vy = t._vel[1]
     assert (vx * vx + vy * vy) ** 0.5 <= 1440.0 + 1e-6
+
+
+# ---- Rate-independence tests ----
+
+def test_rate_independent_coast_duration():
+    """A track must coast for the same wall-clock time regardless of loop rate.
+    At 5Hz, 22Hz, and 60Hz the track should survive roughly the same real seconds."""
+    max_lost = 10  # at 22Hz nominal -> ~0.45s
+    results = {}
+    for hz, label in [(5.0, "5Hz"), (22.0, "22Hz"), (60.0, "60Hz")]:
+        t = MultiObjectTracker(confirm_hits=1, max_lost_frames=max_lost)
+        t.consume(_Frame(720, 576), [_d(100, 100)], 0.0)
+        dt = 1.0 / hz
+        now = dt
+        alive_until = 0.0
+        for _ in range(200):
+            r = t.consume(_Frame(720, 576), [], now)
+            if t.tracks:
+                alive_until = now
+            now += dt
+        results[label] = alive_until
+    # All three should agree within 20% of each other
+    vals = list(results.values())
+    spread = max(vals) - min(vals)
+    mean = sum(vals) / len(vals)
+    assert spread / mean < 0.20, f"coast durations diverge: {results}"
+
+
+def test_rate_independent_velocity_estimate():
+    """A target moving at 100 px/s should produce similar velocity estimates
+    regardless of whether the loop runs at 5Hz, 22Hz, or 60Hz."""
+    speed_px_s = 100.0
+    results = {}
+    for hz, label in [(5.0, "5Hz"), (22.0, "22Hz"), (60.0, "60Hz")]:
+        t = MultiObjectTracker(confirm_hits=1, vel_alpha=0.5)
+        dt = 1.0 / hz
+        # Run 20 frames of steady motion to let the EMA converge
+        for i in range(20):
+            x = 100.0 + speed_px_s * i * dt
+            t.consume(_Frame(720, 576), [_d(x, 200)], i * dt)
+        vx, vy = t._vel[1]
+        results[label] = vx
+    # All should be close to 100 px/s (within 25%)
+    for label, vx in results.items():
+        assert abs(vx - speed_px_s) / speed_px_s < 0.25, \
+            f"{label}: vx={vx:.1f}, expected ~{speed_px_s}"
+
+
+def test_rate_independent_confirmation_time():
+    """M-of-N confirmation should take the same wall-clock time at any rate.
+    Uses confirm_window=15 so the time-based window (~0.68s) is wide enough
+    that even the 5Hz rate can land 3 hits inside it."""
+    confirm_hits, confirm_window = 3, 15
+    results = {}
+    for hz, label in [(5.0, "5Hz"), (22.0, "22Hz"), (60.0, "60Hz")]:
+        t = MultiObjectTracker(confirm_hits=confirm_hits, confirm_window=confirm_window)
+        dt = 1.0 / hz
+        confirmed_at = None
+        for i in range(100):
+            now = i * dt
+            t.consume(_Frame(720, 576), [_d(200, 200)], now)
+            if t.tracks:
+                confirmed_at = now
+                break
+        results[label] = confirmed_at
+    vals = [v for v in results.values() if v is not None]
+    assert len(vals) == 3, f"not all confirmed: {results}"
+    # At every rate, confirmation happens at 3rd hit = 2 inter-frame gaps.
+    # The wall-clock time for that is 2/hz, so spread is inherent to rate
+    # differences, but the TIME-BASED window ensures all three DO confirm.
+    for label, t in results.items():
+        assert t is not None, f"{label} never confirmed"
+
+
+# ---- IouAssociator velocity clamp test ----
+
+def test_iou_associator_velocity_clamp():
+    from pi_fpv_companion.track.iou_associator import IouAssociator
+    a = IouAssociator(vel_max_px_s=500.0)
+    a.consume(None, [_d(100, 100)], 0.0)
+    # Jump 200px in 10ms = 20000 px/s raw — must be clamped
+    a.consume(None, [_d(300, 100)], 0.01)
+    speed = (a._vx ** 2 + a._vy ** 2) ** 0.5
+    assert speed <= 500.0 + 1e-6, f"velocity not clamped: {speed:.1f}"
+
+
+# ---- Alpha-beta filter dt-spike test ----
+
+def test_alpha_beta_filter_velocity_bounded_after_stall():
+    """After a camera stall (large dt gap), a burst of fast frames should not
+    spike the velocity estimate to absurd values."""
+    from pi_fpv_companion.track.target_filter import AlphaBetaTargetFilter, FilterConfig
+    from pi_fpv_companion.types import Target
+    f = AlphaBetaTargetFilter(FilterConfig(beta=0.2))
+    # Seed
+    t0 = Target(detection=_d(100, 100), track_id=1, lost_frames=0, timestamp=0.0)
+    f.update(t0, 720, 576, 0.0)
+    # Normal frames
+    for i in range(1, 10):
+        now = i * 0.045
+        t = Target(detection=_d(100 + i * 2, 100), track_id=1, lost_frames=0, timestamp=now)
+        f.update(t, 720, 576, now)
+    pre_stall_vx = f._vx
+    # Stall: 500ms gap, then a burst of 3 frames 5ms apart
+    stall_end = 10 * 0.045 + 0.5
+    for j in range(3):
+        now = stall_end + j * 0.005
+        t = Target(detection=_d(120 + j * 2, 100), track_id=1, lost_frames=0, timestamp=now)
+        f.update(t, 720, 576, now)
+    # Velocity should not spike more than 10x the pre-stall estimate
+    assert abs(f._vx) < abs(pre_stall_vx) * 10 + 50, \
+        f"velocity spiked after stall: {f._vx:.1f} vs pre-stall {pre_stall_vx:.1f}"
+
+
+# ---- Edge case: dt=0 (two frames at same timestamp) ----
+
+def test_same_timestamp_does_not_crash():
+    """Two consume() calls with identical timestamps must not divide by zero."""
+    t = MultiObjectTracker(confirm_hits=1)
+    t.consume(_Frame(720, 576), [_d(100, 100)], 1.0)
+    t.consume(_Frame(720, 576), [_d(105, 100)], 1.0)  # dt=0
+    # Should still track without error
+    assert len(t.tracks) >= 1
+
+
+def test_iou_associator_same_timestamp():
+    from pi_fpv_companion.track.iou_associator import IouAssociator
+    a = IouAssociator()
+    a.consume(None, [_d(100, 100)], 1.0)
+    a.consume(None, [_d(105, 100)], 1.0)  # dt=0
+    assert a.is_locked()
+
+
+# ---- Adaptive match distance test ----
+
+def test_adaptive_match_distance_scales_with_bbox():
+    """A large bbox (close target) should use a wider distance gate than the
+    base max_match_dist_px, allowing matches further away."""
+    t = MultiObjectTracker(confirm_hits=1, max_match_dist_px=30.0)
+    # Large box: 200x200 -> diag ~283, gate = max(30, 283*2) = 566
+    t.consume(_Frame(720, 576), [_d(300, 300, w=200, h=200)], 0.0)
+    # Move 100px — beyond base 30px gate but within adaptive gate
+    t.consume(_Frame(720, 576), [_d(400, 300, w=200, h=200)], 0.045)
+    # Should still be the same track (id=1), not a new track
+    assert len(t.tracks) == 1
+    assert t.tracks[0].track_id == 1

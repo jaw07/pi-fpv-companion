@@ -75,6 +75,12 @@ class GuidanceIntent:
     thrust: float
     timestamp: float
     vertical_rate_mps: float | None = None
+    phase: str | None = None
+    pitch_rate_rads: float | None = None
+    roll_rate_rads: float | None = None
+    yaw_rate_rads: float | None = None
+    hover: float | None = None
+    agl_m: float | None = None
 
 
 @dataclass(frozen=True)

@@ -44,6 +44,16 @@ class CameraSection:
     # rig, ~55 s observed on a fresh bench Pi at ~65 kB/s SPI). Too short -> the
     # watchdog kills the process mid-upload, forever.
     first_frame_grace_s: float = 15.0
+    # IMX500 auto-exposure profile: how AE trades exposure TIME against analogue GAIN.
+    # Exposure time is what sets motion blur, and blur is what costs a moving airframe
+    # its detections. The Pi tuning file (imx500.json) defines the trade points:
+    #   normal: 100 / 10000 / 30000 / 60000 / 120000 us  at gain 1.0 / 1.5 / 2.0 / 4.0 / 16
+    #   short:  100 /  5000 / 10000 / 20000 / 120000 us  at the same gains
+    # i.e. "short" reaches for gain 2-3x sooner and holds exposure ~3x shorter through
+    # the middle of the range (20ms vs 60ms at gain 4.0) — the right trade in flight,
+    # where a slightly noisier but SHARP frame detects and a smeared one does not.
+    # "" leaves the sensor default (normal). Ignored by non-IMX500 cameras.
+    ae_exposure_mode: str = ""           # "" | normal | short | long
 
 
 @dataclass
@@ -62,10 +72,12 @@ class TrackerSection:
     cv2_backend: str = "mosse"           # mosse | kcf | csrt | medianflow (classical only)
     reacquire_after_lost_frames: int = 30
     iou_threshold: float = 0.3
-    # multi_iou spurious-detection suppression: a track must be detected in >= confirm_hits
-    # of the last confirm_window frames before it is shown/selectable. 1 = off (back-compat).
     confirm_hits: int = 1
     confirm_window: int = 5
+    vel_alpha: float = 0.5
+    vel_max_px_s: float = 1440.0
+    coast_vel_decay: float = 0.8
+    max_match_dist_px: float = 60.0
 
 
 @dataclass
@@ -153,6 +165,12 @@ class AppConfig:
     servo: ServoConfig
     safety: SafetyConfig
     recorder: RecorderSection = field(default_factory=RecorderSection)
+    # Overrides for the guided_nogps BODY-RATE law (guidance/rate_control.RateConfig).
+    # The `guidance:` section configures the ATTITUDE/RC-override path (ServoConfig) and
+    # is INERT when fc.control_mode is guided_nogps — the rate path used to be reachable
+    # only by editing rate_control.py. Keys are validated against RateConfig at load, so
+    # a typo fails loudly instead of silently flying the default.
+    rate_guidance: Dict[str, Any] = field(default_factory=dict)
 
 
 def _video(d: Dict[str, Any]) -> VideoSection:
@@ -176,6 +194,7 @@ def _camera(d: Dict[str, Any]) -> CameraSection:
         file_path=d.get("file_path", ""),
         webcam_device=d.get("webcam_device", 0),
         zoom=d.get("zoom", 1.0),
+        ae_exposure_mode=d.get("ae_exposure_mode", ""),
     )
 
 
@@ -202,6 +221,10 @@ def _tracker(d: Dict[str, Any]) -> TrackerSection:
         iou_threshold=d.get("iou_threshold", 0.3),
         confirm_hits=d.get("confirm_hits", 1),
         confirm_window=d.get("confirm_window", 5),
+        vel_alpha=d.get("vel_alpha", 0.5),
+        vel_max_px_s=d.get("vel_max_px_s", 1440.0),
+        coast_vel_decay=d.get("coast_vel_decay", 0.8),
+        max_match_dist_px=d.get("max_match_dist_px", 60.0),
     )
 
 
@@ -313,6 +336,25 @@ def _validate(cfg: AppConfig) -> None:
       (full commit) before TRACK, with TRACK unreachable — it would commit the
       aircraft where the pilot expected follow-only.
     """
+    # Unknown rate_guidance keys would be silently dropped, so you would believe you had
+    # detuned the guidance when you had not. Validate against RateConfig's real fields.
+    if cfg.rate_guidance:
+        from dataclasses import fields as _dc_fields
+        from pi_fpv_companion.guidance.rate_control import RateConfig as _RC
+        valid = {f.name for f in _dc_fields(_RC)} - {"frame_width", "frame_height"}
+        unknown = sorted(set(cfg.rate_guidance) - valid)
+        if unknown:
+            raise ValueError(
+                f"unknown rate_guidance key(s): {', '.join(unknown)}. "
+                f"Valid keys: {', '.join(sorted(valid))}")
+
+    # A typo'd exposure profile is silently ignored by the sensor, which means you
+    # believe you are flying a short-exposure (low motion-blur) setup and are not.
+    if cfg.camera.ae_exposure_mode not in ("", "normal", "short", "long"):
+        raise ValueError(
+            f"camera.ae_exposure_mode must be one of '', normal, short, long; "
+            f"got {cfg.camera.ae_exposure_mode!r}"
+        )
     fc = cfg.fc
     if fc.backend == "ardupilot":
         if fc.control_mode not in _VALID_CONTROL_MODES:
@@ -416,7 +458,12 @@ def _recorder(d: Dict[str, Any]) -> RecorderSection:
 
 
 def load(path: str | Path) -> AppConfig:
-    raw = yaml.safe_load(Path(path).read_text())
+    p = Path(path)
+    try:
+        raw = yaml.safe_load(p.read_text())
+    except FileNotFoundError:
+        raise SystemExit(f"config file not found: {p.resolve()}\n"
+                         f"  copy a template from config/ and edit it") from None
     video = _video(raw.get("video", {}))
     cfg = AppConfig(
         video=video,
@@ -427,6 +474,7 @@ def load(path: str | Path) -> AppConfig:
         servo=_servo(raw.get("guidance", {}), video.width, video.height),
         safety=_safety(raw.get("safety", {})),
         recorder=_recorder(raw.get("flight_log", {})),
+        rate_guidance=dict(raw.get("rate_guidance", {}) or {}),
     )
     _validate(cfg)
     return cfg

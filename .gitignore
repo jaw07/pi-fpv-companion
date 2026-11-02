@@ -14,8 +14,12 @@ dist/
 # Model weights — large binaries, do not commit
 *.rpk
 *.ncnn
-# EXCEPT the deployed default model — ships with the code so deploys are self-contained.
+# EXCEPT the models a config actually deploys — they ship with the code so a clean
+# flash + clone is self-contained. camera/imx500.py raises at startup if the .rpk is
+# missing, so an untracked-but-configured model is a boot failure on a fresh Pi.
+# KEEP IN SYNC with imx500_model in config/*.yaml.
 !models/imx500_network_yolo11n_visdrone416_pp.rpk
+!models/imx500_network_yolo11n_416_pp.rpk
 # Other export-pipeline build artifacts stay ignored.
 models/*.zip
 models/*best*.pt

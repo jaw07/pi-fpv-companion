@@ -49,11 +49,15 @@ class PerfStats:
 class PerfMonitor:
     """Tracks per-tick wall time and peak RSS over a rolling window."""
 
-    def __init__(self, budget: Optional[PiBudget] = None, window: int = 600) -> None:
+    def __init__(self, budget: Optional[PiBudget] = None, window: int = 600,
+                 rss_every_n: int = 22) -> None:
         self._budget = budget or PiBudget()
         self._ticks_ms: Deque[float] = deque(maxlen=window)
         self._rss_peak_mb: float = 0.0
+        self._rss_current_mb: float = 0.0
         self._proc = None  # lazy psutil.Process
+        self._rss_every_n = max(1, rss_every_n)
+        self._tick_count = 0
 
     def tick_start(self) -> float:
         return time.perf_counter()
@@ -61,7 +65,9 @@ class PerfMonitor:
     def tick_end(self, started_at: float) -> float:
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         self._ticks_ms.append(elapsed_ms)
-        self._update_rss()
+        self._tick_count += 1
+        if self._tick_count % self._rss_every_n == 0:
+            self._update_rss()
         return elapsed_ms
 
     def _update_rss(self) -> None:
@@ -69,6 +75,7 @@ class PerfMonitor:
             import psutil
             self._proc = psutil.Process()
         rss_mb = self._proc.memory_info().rss / (1024 * 1024)
+        self._rss_current_mb = rss_mb
         if rss_mb > self._rss_peak_mb:
             self._rss_peak_mb = rss_mb
 
@@ -77,9 +84,7 @@ class PerfMonitor:
             return PerfStats(0, 0.0, 0.0, 0.0, 0.0, self._rss_peak_mb, 0.0, self._budget)
         ts = sorted(self._ticks_ms)
         n = len(ts)
-        rss_now = 0.0
-        if self._proc is not None:
-            rss_now = self._proc.memory_info().rss / (1024 * 1024)
+        rss_now = self._rss_current_mb
         return PerfStats(
             n_ticks=n,
             tick_p50_ms=ts[n // 2],

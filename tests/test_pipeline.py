@@ -5,6 +5,7 @@
   - Safety gate mutes intent correctly
 """
 from __future__ import annotations
+import time
 from typing import List
 
 import numpy as np
@@ -663,6 +664,12 @@ def _det_bundle(x):
         detections=[Detection(x=x, y=120, w=30, h=30, confidence=0.9, class_id=0, class_name="t")])
 
 
+def _empty_bundle():
+    return FrameBundle(
+        image=np.zeros((240, 320, 3), dtype=np.uint8), width=320, height=240,
+        timestamp=0.0, detections=[])
+
+
 class _ListCam:
     def __init__(self, bundles, delay): self._b, self._d = bundles, delay; self.opened=self.closed=False
     def open(self): self.opened=True
@@ -673,22 +680,64 @@ class _ListCam:
             _t.sleep(self._d); yield b
 
 
-def test_control_loop_dedupes_repeated_detections():
-    # Many frames carrying the SAME detection (IMX500 repeats its tensor between
-    # inferences) must NOT tick guidance per frame — only on the fallback keepalive.
-    import time
+def test_repeated_detections_still_tick_but_do_not_refeed_the_tracker():
+    # A camera whose detector is slower than its frame rate repeats the previous tensor
+    # on the frames in between. Two separate requirements, which used to be conflated:
+    #
+    #   1. the control tick MUST still run every frame — it is what reads the RC switch,
+    #      the armed state and drives the FC. Gating it on the detection changing made
+    #      the whole loop run at ~5Hz whenever the target was near-stationary, which is
+    #      what made the tracker feel laggy and jittery in STANDBY (measured on the
+    #      airframe: 0.4px of detector dither -> 5.1Hz control, box frozen 69% of the time).
+    #   2. the tracker/filter must NOT be re-fed the repeated tensor — that reads as a
+    #      fresh confirmation and would reset the staleness clock the safety gate uses,
+    #      so a frozen detector would look healthy.
     bundles = [_det_bundle(160.0) for _ in range(15)]      # identical detection every frame
     cam = _ListCam(bundles, delay=0.02)                    # ~0.3s of frames
     fc = StubFC(switch_active=True, armed=True)
     ticks = []
-    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(320, 240), _safety(), fc,
+    tracker = IouAssociator(iou_threshold=0.2)
+    consumed = []
+    orig_consume = tracker.consume
+
+    def counting_consume(image, detections, now):
+        consumed.append(now)
+        return orig_consume(image, detections, now)
+    tracker.consume = counting_consume
+
+    pipe = Pipeline(cam, tracker, _servo(320, 240), _safety(), fc,
                     on_status=lambda *a, **k: ticks.append(1),
                     display=lambda *a, **k: None)
-    pipe._control_fallback_s = 0.1                         # keepalive ~10Hz
+    pipe._control_fallback_s = 0.1
     pipe.run()
-    # 15 identical-detection frames over ~0.3s -> ~1 fresh + ~3 fallback ticks, NOT 15.
-    assert len(ticks) < 8, f"expected dedupe, got {len(ticks)} ticks for 15 repeated frames"
-    assert len(ticks) >= 1
+
+    # 1. the tick ran for essentially every frame, not at the old ~5Hz fallback rate.
+    assert len(ticks) >= 12, f"control tick should run per frame, got {len(ticks)}/15"
+    # 2. but the repeated tensor was only ever handed to the tracker once.
+    assert len(consumed) == 1, f"tracker re-fed a repeated tensor {len(consumed)} times"
+
+
+def test_empty_detections_keep_feeding_the_tracker():
+    # "Nothing detected" repeats the same (empty) signature every frame, but it is real
+    # information: without it a coasting track never ages out and the HUD keeps drawing
+    # a ghost box over an empty scene forever.
+    bundles = [_empty_bundle() for _ in range(6)]
+    cam = _ListCam(bundles, delay=0.02)
+    fc = StubFC(switch_active=True, armed=True)
+    tracker = IouAssociator(iou_threshold=0.2)
+    consumed = []
+    orig_consume = tracker.consume
+
+    def counting_consume(image, detections, now):
+        consumed.append(now)
+        return orig_consume(image, detections, now)
+    tracker.consume = counting_consume
+
+    pipe = Pipeline(cam, tracker, _servo(320, 240), _safety(), fc,
+                    display=lambda *a, **k: None)
+    pipe._control_fallback_s = 0.1
+    pipe.run()
+    assert len(consumed) >= 5, f"empty frames must keep aging the tracker, got {len(consumed)}"
 
 
 def test_control_loop_ticks_on_each_fresh_detection():
@@ -704,3 +753,121 @@ def test_control_loop_ticks_on_each_fresh_detection():
     pipe._control_fallback_s = 1.0                             # fallback won't fire in ~0.4s
     pipe.run()
     assert len(ticks) >= 6, f"expected ~one tick per fresh detection, got {len(ticks)}"
+
+
+# ---- display-side forward prediction -------------------------------------------------
+
+def _ftarget(x, y, vx, vy, ts):
+    from pi_fpv_companion.types import FilteredTarget
+    return FilteredTarget(
+        detection=Detection(x=x, y=y, w=20, h=20, confidence=0.9, class_id=0, class_name="t"),
+        track_id=1, vx_px_s=vx, vy_px_s=vy, quality=0.9,
+        timestamp=ts, measurement_timestamp=ts)
+
+
+def test_predict_to_advances_the_drawn_box_to_frame_time():
+    # The control thread produces state from frame N while the capture thread renders
+    # N+1, so the box trails the live image by one frame. Stepping it along the filter's
+    # velocity estimate removes that (airframe A/B: 9.1px behind -> 0.1px at 200px/s).
+    from pi_fpv_companion.pipeline import _predict_to
+    t = _ftarget(100.0, 50.0, vx=200.0, vy=-40.0, ts=10.0)
+    out = _predict_to(t, 10.045)                       # one 45ms frame later
+    assert abs(out.detection.x - 109.0) < 0.1
+    assert abs(out.detection.y - 48.2) < 0.1
+    # everything except the centroid is untouched
+    assert out.track_id == t.track_id and out.quality == t.quality
+    assert out.measurement_timestamp == t.measurement_timestamp
+    assert out.detection.w == t.detection.w and out.detection.h == t.detection.h
+
+
+def test_predict_to_refuses_to_extrapolate_stale_state():
+    # Beyond the horizon the control state is old enough that extrapolating on a stale
+    # velocity would fling the box across the screen; freeze it instead.
+    from pi_fpv_companion.pipeline import _predict_to, _PREDICT_HORIZON_S
+    t = _ftarget(100.0, 50.0, vx=800.0, vy=0.0, ts=10.0)
+    out = _predict_to(t, 10.0 + _PREDICT_HORIZON_S + 0.01)
+    assert out.detection.x == 100.0                    # unchanged
+    assert _predict_to(t, 9.9).detection.x == 100.0    # negative dt -> unchanged
+    assert _predict_to(None, 10.0) is None
+
+
+def test_forward_prediction_is_display_only():
+    # Guidance and the safety gate must see the UNMODIFIED target — the prediction is
+    # cosmetic and must never influence what is sent to the FC.
+    fc = StubFC(switch_active=True, armed=True)
+    from_status, from_display = [], []
+    cam = _ListCam([_det_bundle(100.0 + 30 * i) for i in range(6)], delay=0.02)
+    pipe = Pipeline(cam, IouAssociator(iou_threshold=0.2), _servo(320, 240), _safety(), fc,
+                    on_status=lambda tgt, *a, **k: from_status.append(tgt),
+                    display=lambda tgt, *a, **k: from_display.append(tgt))
+    pipe.run()
+    # The control path sees targets whose centroid is exactly the filter's output: its
+    # timestamp equals the bundle timestamp it was computed from (all bundles here are
+    # stamped 0.0), so no prediction has been applied.
+    live = [t for t in from_status if t is not None]
+    assert live, "expected the pipeline to lock a target"
+    for t in live:
+        assert t.timestamp == 0.0          # untouched by _predict_to
+    assert from_display, "expected the display path to be driven"
+
+
+# ---- camera-stall clock ---------------------------------------------------------------
+
+def test_tick_defaults_its_clock_to_the_frame_timestamp():
+    fc = StubFC(switch_active=True, armed=True)
+    pipe = Pipeline(_ListCam([], delay=0), IouAssociator(iou_threshold=0.2),
+                    _servo(320, 240), _safety(), fc)
+    b = _det_bundle(160.0)
+    pipe.tick(b)
+    # the filter was fed the bundle's own timestamp
+    assert pipe._last_target is not None
+    assert pipe._last_target.measurement_timestamp == b.timestamp
+
+
+def test_stalled_camera_still_ages_the_target_into_a_mute():
+    """A camera stall re-ticks the LAST bundle. If tick() took its clock from that
+    frozen frame, `now` would never advance and the safety gate could not conclude the
+    target had gone stale — guidance would keep commanding on a dead image until the
+    camera watchdog fired. The control loop therefore advances the clock by real
+    elapsed time on a re-tick; this asserts the gate actually mutes because of it."""
+    fc = StubFC(switch_active=True, armed=True)
+    safety = SafetyConfig(watchdog_timeout_s=0.25, require_armed=True)
+    pipe = Pipeline(_ListCam([], delay=0), IouAssociator(iou_threshold=0.2),
+                    _servo(320, 240), safety, fc)
+    bundle = _det_bundle(160.0)
+
+    fresh = pipe.tick(bundle)                     # frame arrives, target locked
+    assert not fresh.muted, f"expected a live target, got {fresh.reason!r}"
+
+    # Frozen frame, clock NOT advanced (the old behaviour) -> gate still thinks it is live.
+    assert not pipe.tick(bundle).muted
+
+    # Frozen frame, clock advanced past the watchdog -> must mute as stale.
+    stalled = pipe.tick(bundle, bundle.timestamp + 0.3)
+    assert stalled.muted and stalled.reason == "target stale", stalled.reason
+
+
+def test_control_loop_advances_the_clock_when_re_ticking_a_stale_frame():
+    # End-to-end through the real control thread: one frame, then silence. The keepalive
+    # must hand tick() a clock that keeps moving.
+    seen = []
+    fc = StubFC(switch_active=True, armed=True)
+
+    class _OneFrameThenStall:
+        def open(self): pass
+        def close(self): pass
+        def frames(self):
+            yield _det_bundle(160.0)
+            time.sleep(0.45)                       # camera has stalled
+
+    pipe = Pipeline(_OneFrameThenStall(), IouAssociator(iou_threshold=0.2),
+                    _servo(320, 240), _safety(), fc, display=lambda *a, **k: None)
+    pipe._control_fallback_s = 0.05
+    orig = pipe.tick
+    pipe.tick = lambda b, now=None: (seen.append(now), orig(b, now))[1]
+    pipe.run()
+
+    advanced = [n for n in seen if n is not None]
+    assert len(advanced) >= 3, f"expected keepalive re-ticks, got {seen}"
+    assert advanced == sorted(advanced), "keepalive clock must be monotonic"
+    assert advanced[-1] - advanced[0] > 0.15, f"clock barely moved: {advanced}"

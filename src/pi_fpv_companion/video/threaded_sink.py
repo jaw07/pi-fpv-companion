@@ -43,6 +43,8 @@ class ThreadedSink:
         self._stop = False
         self._dropped = 0
         self._rendered = 0
+        self._consecutive_errors = 0
+        self._error_suppressed = False
         self._thread = threading.Thread(target=self._run, name="render", daemon=True)
         self._thread.start()
 
@@ -76,9 +78,19 @@ class ThreadedSink:
             try:
                 self._sink.show(*payload)
                 self._rendered += 1
+                if self._error_suppressed:
+                    logger.info("render sink recovered after %d consecutive errors",
+                                self._consecutive_errors)
+                    self._error_suppressed = False
+                self._consecutive_errors = 0
             except Exception:
-                # Never let one bad frame kill the render thread or crash the process.
-                logger.exception("render sink failed; dropping frame")
+                self._consecutive_errors += 1
+                if self._consecutive_errors <= 5:
+                    logger.exception("render sink failed; dropping frame")
+                elif not self._error_suppressed:
+                    logger.error("render sink failing repeatedly (%d in a row) — "
+                                 "suppressing further logs", self._consecutive_errors)
+                    self._error_suppressed = True
 
     @property
     def stats(self) -> tuple:

@@ -9,7 +9,7 @@ description = "Visual target tracking + guidance injection for analog-FPV drones
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24",
-    "opencv-contrib-python>=4.8",
+    "opencv-contrib-python>=4.8,<4.12",
     "pymavlink>=2.4.40",
     "pyserial>=3.5",
     "pyyaml>=6.0",
@@ -24,3 +24,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
+markers = [
+    # Wire-level SIL scenarios that run the real pipeline in REAL TIME against a fake
+    # FC (~23s). They are the regression net for the STANDBY command contract, so they
+    # run by default; deselect with `-m "not slow"` for a fast inner loop.
+    "slow: runs the real control loop in real time (seconds, not milliseconds)",
+]

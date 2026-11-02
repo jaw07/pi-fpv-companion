@@ -31,6 +31,16 @@ camera:
   # watchdog never kills the process mid-upload.
   first_frame_grace_s: 120
   # zoom: 1.0 = full FOV (digital centre-crop zoom available but left off for now).
+  # Bias AE toward SHORT exposures. Exposure time is the motion-blur budget and blur is
+  # what costs a moving airframe its detections; left on "normal" AE runs the exposure
+  # out to the whole frame period (measured 45.2ms of a 45.5ms frame on the bench, at
+  # gain 16) because gain is its only other lever. "short" holds exposure ~3x shorter
+  # through the middle of the range (20ms vs 60ms at gain 4.0) at the cost of some
+  # sensor noise — the right trade when the alternative is a smeared target.
+  # NOT a hard cap: in very low light AE still extends exposure, and the frame duration
+  # caps it at 45ms regardless. Verify in DAYLIGHT (var/hit/exposure_probe.py) — the
+  # bench is too dark for AE to have any headroom to give back.
+  ae_exposure_mode: short
 
 detector:
   type: none                 # IMX500 does detection on-sensor — no CPU/ncnn model
@@ -51,10 +61,16 @@ tracker:
   # sample and a long coast lets it streak off-screen. 8 frames bridges the detection
   # gap but kills a runaway in ~0.25s.
   reacquire_after_lost_frames: 8
-  # confirm_hits 1: the YOLO NPU rate is far below camera fps, so a 3-of-5 frame gate
-  # can't latch — conf_threshold is the ghost filter instead (the quality filter's
-  # time-based staleness + the fast coast-drop handle the rest).
-  confirm_hits: 1
+  # M-of-N confirmation: a track must be detected in >= confirm_hits of the last
+  # confirm_window frames before it is shown on the HUD or can be selected.
+  # Raised 1 -> 3 (2026-08-04). The old value carried the note "the YOLO NPU rate is far
+  # below camera fps, so a 3-of-5 frame gate can't latch" — that was true at framerate 30
+  # (detections every ~2nd frame) but is now FALSE: at framerate 22 the sensor delivers a
+  # fresh tensor on 100% of frames (measured, var/hit/tensor_rate.py). So the frame-based
+  # gate latches properly again, and with it back on, a one- or two-frame ghost never
+  # reaches the HUD or the lock — which is what was making candidate boxes flicker in
+  # STANDBY. Cost: a real target takes 3 frames (~136ms) to confirm instead of 1.
+  confirm_hits: 3
   confirm_window: 5
 
 fc:
@@ -106,6 +122,22 @@ fc:
   # truly dead Pi (or the rung-4 reboot, ~48 s) still fails safe. Engaged coverage for a
   # dead Pi stays with the GUIDED command timeout (levels in ~3 s), not this.
   enforce_params:
+    # --- EKF source set for a GPS-DENIED airframe -------------------------------
+    # Engaging TRACK failed with "needs an altitude/position estimate": with a GPS
+    # fitted but never locking, the EKF sits waiting for a fix that will not come, so
+    # it never publishes the estimate GUIDED_NOGPS entry and arming want.
+    #   POSXY/VELXY = 0 (None)  -> stop waiting for a horizontal source
+    #   POSZ        = 1 (Baro)  -> altitude comes from the barometer. THIS is the one
+    #                              that answers "need alt estimate".
+    #   VELZ        = 0 (None)  -> baro gives position, not velocity
+    # NOTE these are deliberately NOT the values in the ArduPilot optical-flow guide
+    # (EK3_SRC1_VELXY=5): that means "take velocity from the flow sensor", and this
+    # airframe has no flow sensor — it would wait on a sensor that isn't there.
+    # EK3_SRC* changes need an FC REBOOT to take effect.
+    EK3_SRC1_POSXY: 0
+    EK3_SRC1_VELXY: 0
+    EK3_SRC1_POSZ: 1
+    EK3_SRC1_VELZ: 0
     FS_GCS_TIMEOUT: 20
     # GUID_TIMEOUT backs the STANDBY design: the companion injects NOTHING in
     # STANDBY, so the FC's guided timeout (this many seconds after our last

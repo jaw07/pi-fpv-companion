@@ -239,6 +239,14 @@ class ArduPilotBackend:
         self._climb_mps: float = 0.0         # latest VFR_HUD.climb (+up)
         self._gs_mps: float = 0.0            # latest VFR_HUD.groundspeed (forward speed)
         self._alt_m: float = 0.0             # latest VFR_HUD.alt
+        # GLOBAL_POSITION_INT.relative_alt (m above home). MEASURED 2026-08-18 on
+        # ArduCopter 4.6.3 with GPS disabled: VFR_HUD.alt reads 0.0 for the whole
+        # flight while the aircraft climbs to 76m, but relative_alt tracks correctly —
+        # the EKF publishes height-above-home from the BARO even with no GPS. Since
+        # this airframe is GPS-denied by design, relative_alt is the trustworthy AGL
+        # source and VFR_HUD.alt is only a fallback.
+        self._rel_alt_m: float = 0.0
+        self._rel_alt_t: float = 0.0
         self._home_alt: Optional[float] = None   # first VFR_HUD.alt = ground reference (for AGL)
         self._climb_t: float = 0.0           # when _climb_mps was last updated
         self._pitch_rad: float = 0.0         # latest ATTITUDE.pitch (+nose-up)
@@ -250,6 +258,10 @@ class ArduPilotBackend:
         self._pos_t: float = 0.0             # when _x_m / _y_m was last updated
         self._vrate_i: float = 0.0           # vertical-rate-loop integral term (PWM)
         self._last_stream_req: float = 0.0   # last telemetry-stream (re)request
+        self._last_rc_t: float = 0.0         # last RC_CHANNELS received (stream liveness)
+        self._last_vfr_t: float = 0.0        # last VFR_HUD received (stream liveness)
+        self._last_att_t: float = 0.0        # last ATTITUDE received (stream liveness)
+        self._hb_alive_t: float = 0.0        # bumped by the heartbeat thread each send
         # GCS heartbeat runs on its OWN thread (see _heartbeat_loop): tying it to the
         # frame-driven _drain() meant a camera stall / watchdog restart starved it and
         # tripped the FC's GCS failsafe (FS_GCS -> LAND) mid-flight — flight-2 finding.
@@ -324,6 +336,7 @@ class ArduPilotBackend:
                     mav.mav.heartbeat_send(m.MAV_TYPE_GCS, m.MAV_AUTOPILOT_INVALID,
                                            0, 0, m.MAV_STATE_ACTIVE)
                 self._hb_send_failed = False
+                self._hb_alive_t = time.monotonic()
             except Exception as e:
                 if not self._hb_send_failed:
                     _log.warning("GCS heartbeat send failed (%s) — if this persists the "
@@ -454,7 +467,10 @@ class ArduPilotBackend:
             return
         mav = self._mavutil.mavlink
         for msg_id in (mav.MAVLINK_MSG_ID_RC_CHANNELS, mav.MAVLINK_MSG_ID_VFR_HUD,
-                       mav.MAVLINK_MSG_ID_ATTITUDE):
+                       mav.MAVLINK_MSG_ID_ATTITUDE,
+                       # GLOBAL_POSITION_INT carries relative_alt, the only altitude
+                       # that survives GPS-denied operation (see _rel_alt_m).
+                       mav.MAVLINK_MSG_ID_GLOBAL_POSITION_INT):
             try:
                 with self._send_lock:
                     self._mav.mav.command_long_send(
@@ -463,7 +479,7 @@ class ArduPilotBackend:
                         msg_id, int(1_000_000 / rate_hz), 0, 0, 0, 0, 0,
                     )
             except Exception:
-                pass
+                logger.debug("SET_MESSAGE_INTERVAL failed for msg %d", msg_id, exc_info=True)
         for stream in (mav.MAV_DATA_STREAM_RC_CHANNELS, mav.MAV_DATA_STREAM_EXTRA2,
                        mav.MAV_DATA_STREAM_EXTRA1):
             try:
@@ -473,7 +489,7 @@ class ArduPilotBackend:
                         stream, rate_hz, 1,
                     )
             except Exception:
-                pass
+                logger.debug("request_data_stream failed for stream %d", stream, exc_info=True)
 
     # Valid RC pulse-width band. Anything outside this is not a real switch position:
     # receiver-failsafe outputs, a momentary channel-count change, or the MAVLink
@@ -542,14 +558,25 @@ class ArduPilotBackend:
     def _drain(self) -> None:
         if self._mav is None:
             return
-        # Keep RC_CHANNELS + VFR_HUD flowing across link reconnects (see
-        # _STREAM_REREQUEST_S) — cheap, and the alternative is a stuck engage
-        # switch / starved adaptive hover after any blip.
         now = time.monotonic()
         self._last_drain_t = now             # heartbeat liveness gate (_hb_should_send)
-        if now - self._last_stream_req > _STREAM_REREQUEST_S:
+        # Re-request telemetry streams only when one has gone silent (saves ~200 B/s
+        # of serial traffic on a 115200 baud UART when streams are already flowing).
+        streams_stale = (
+            (self._last_rc_t == 0.0 or now - self._last_rc_t > _STREAM_REREQUEST_S)
+            or (self._last_vfr_t == 0.0 or now - self._last_vfr_t > _STREAM_REREQUEST_S)
+            or (self._last_att_t == 0.0 or now - self._last_att_t > _STREAM_REREQUEST_S)
+        )
+        if streams_stale and now - self._last_stream_req > _STREAM_REREQUEST_S:
             self._request_streams()
             self._last_stream_req = now
+        # Heartbeat-thread liveness: warn if the thread hasn't sent in >2s (it sends
+        # at ~1 Hz). The FC's FS_GCS is the real protection, but logging the gap
+        # makes the failure visible in the companion's own journal.
+        if (self._hb_alive_t > 0.0 and now - self._hb_alive_t > 2.0
+                and not self._hb_stalled):
+            _log.warning("GCS heartbeat thread appears dead (no send for %.1fs) — "
+                         "FS_GCS will fire after FS_GCS_TIMEOUT", now - self._hb_alive_t)
         # (The ~1 Hz GCS heartbeat lives on its own thread — see _heartbeat_loop.)
         while True:
             msg = self._mav.recv_match(blocking=False)
@@ -563,11 +590,13 @@ class ArduPilotBackend:
                 self._current_mode = int(msg.custom_mode)
                 self._hb_count += 1
             elif t == "RC_CHANNELS":
+                self._last_rc_t = now
                 pwm = getattr(msg, f"chan{self._switch_channel}_raw")
                 self._update_switch(pwm, int(msg.time_boot_ms))
                 if self._select_channel:
                     self._select_pwm_us = getattr(msg, f"chan{self._select_channel}_raw")
             elif t == "VFR_HUD":
+                self._last_vfr_t = now
                 self._climb_mps = float(msg.climb)   # +up; baro-derived (no GPS needed)
                 self._alt_m = float(msg.alt)         # altitude (AMSL-ish from baro)
                 self._gs_mps = float(msg.groundspeed)  # forward speed (m/s) for flight-path angle
@@ -579,10 +608,14 @@ class ArduPilotBackend:
                     self._home_alt = self._alt_m
                 self._climb_t = time.monotonic()
             elif t == "ATTITUDE":
+                self._last_att_t = now
                 self._pitch_rad = float(msg.pitch)   # +nose-up (aerospace convention)
                 self._roll_rad = float(msg.roll)     # +bank-right
                 self._yaw_rad = float(msg.yaw)       # heading (rad)
                 self._pitch_t = time.monotonic()
+            elif t == "GLOBAL_POSITION_INT":
+                self._rel_alt_m = float(msg.relative_alt) / 1000.0   # mm -> m above home
+                self._rel_alt_t = time.monotonic()
             elif t == "LOCAL_POSITION_NED":
                 self._x_m = float(msg.x)             # NED north (m from origin)
                 self._y_m = float(msg.y)             # NED east  (m from origin)
@@ -625,7 +658,7 @@ class ArduPilotBackend:
         diagnostics/measurement only (the GPS-denied flight path never uses position).
         Returns (0.0, 0.0) on stale telemetry."""
         if not self._pos_t or (time.monotonic() - self._pos_t) > 1.0:
-            return (self._x_m, self._y_m)
+            return (0.0, 0.0)
         return (self._x_m, self._y_m)
 
     def flight_path_angle_rad(self) -> float:
@@ -642,11 +675,27 @@ class ArduPilotBackend:
         return self._alt_m
 
     def agl_m(self) -> float:
-        """Height above ground (m) = alt - home, where home is the alt captured while DISARMED
-        (the ground/arming point). Used by the rate-control DIVE impact latch. Returns a large
-        value until home is known (never seen disarmed -> e.g. a mid-flight restart) so a missing
-        ground reference never reads as 'on the ground' and false-latches the impact STOP."""
+        """Height above ground (m). Used by the rate-control DIVE impact latch and terminal
+        commit, so an ERRONEOUSLY SMALL value is dangerous: it makes DIVE freeze its rates
+        immediately and cut throttle on the first lost target, at any altitude.
+
+        Prefers GLOBAL_POSITION_INT.relative_alt. MEASURED on ArduCopter 4.6.3 with GPS
+        disabled: VFR_HUD.alt reads 0.0 for an entire flight (climbed to 76m) while
+        relative_alt tracked correctly — the EKF derives height-above-home from the baro
+        without GPS, but VFR_HUD.alt does not survive. On a GPS-denied airframe the old
+        VFR_HUD path therefore produced agl=0 permanently, which is exactly the dangerous
+        direction.
+
+        Falls back to the VFR_HUD difference only while relative_alt is stale, and returns
+        a LARGE value when neither source is trustworthy — a missing ground reference must
+        never read as 'on the ground'."""
+        if self._rel_alt_t and (time.monotonic() - self._rel_alt_t) < 3.0:
+            return self._rel_alt_m
         if self._home_alt is None:
+            return 1e9
+        # VFR_HUD.alt pinned at exactly 0 is the GPS-denied signature, not a real
+        # altitude — treat it as unknown rather than as 'on the ground'.
+        if self._alt_m == 0.0 and self._home_alt == 0.0:
             return 1e9
         return self._alt_m - self._home_alt
 
@@ -835,7 +884,7 @@ class ArduPilotBackend:
         (an absolute-attitude quaternion snaps to each frame and jitters). thrust is real
         throttle 0..1 (REQUIRES GUID_OPTIONS bit 3 — see GUID_OPTIONS_THRUST_AS_THRUST;
         without it the FC treats thrust as a climb-rate and the dive planes)."""
-        tb = int(time.time() * 1000) & 0xFFFFFFFF
+        tb = int(time.monotonic() * 1000) & 0xFFFFFFFF
         with self._send_lock:
             self._mav.mav.set_attitude_target_send(
                 tb, self._mav.target_system, self._mav.target_component, 0b10000000,

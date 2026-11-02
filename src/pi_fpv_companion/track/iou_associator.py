@@ -46,12 +46,17 @@ def best_match(pred: Detection, candidates: List[Detection],
 
 
 class IouAssociator:
+    # Reference rate for converting per-frame parameters to time-based equivalents.
+    _NOMINAL_HZ = 22.0
+
     def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 30,
-                 max_match_dist_px: float = 60.0, vel_alpha: float = 0.5) -> None:
+                 max_match_dist_px: float = 60.0, vel_alpha: float = 0.5,
+                 vel_max_px_s: float = 1440.0) -> None:
         self._iou_threshold = iou_threshold
-        self._max_lost_frames = max_lost_frames
+        self._max_lost_s = max_lost_frames / self._NOMINAL_HZ
         self._max_match_dist_px = max_match_dist_px
         self._vel_alpha = vel_alpha
+        self._vel_max_px_s = vel_max_px_s
         self._target: Optional[Target] = None
         self._vx = self._vy = 0.0          # px/s, for constant-velocity prediction
         self._last_t: Optional[float] = None
@@ -80,7 +85,9 @@ class IouAssociator:
             if detections else None
         if match is None:
             new_lost = self._target.lost_frames + 1
-            if new_lost > self._max_lost_frames:
+            # Time-based drop instead of frame-count.
+            coast_age = now - self._target.timestamp
+            if coast_age > self._max_lost_s:
                 self._target = None
                 return None
             # Coast on the prediction (keeps moving through a brief miss).
@@ -88,9 +95,15 @@ class IouAssociator:
                                   lost_frames=new_lost, timestamp=self._target.timestamp)
             return self._target
         if dt > 1e-3:
-            a = self._vel_alpha
-            self._vx = a * (match.x - cur.x) / dt + (1 - a) * self._vx
-            self._vy = a * (match.y - cur.y) / dt + (1 - a) * self._vy
+            # Rate-adapt the EMA so the time constant is loop-rate independent.
+            a = 1.0 - (1.0 - self._vel_alpha) ** (dt * self._NOMINAL_HZ)
+            nvx = a * (match.x - cur.x) / dt + (1 - a) * self._vx
+            nvy = a * (match.y - cur.y) / dt + (1 - a) * self._vy
+            speed = (nvx * nvx + nvy * nvy) ** 0.5
+            if speed > self._vel_max_px_s:
+                scale = self._vel_max_px_s / speed
+                nvx, nvy = nvx * scale, nvy * scale
+            self._vx, self._vy = nvx, nvy
         self._target = Target(detection=match, track_id=self._target.track_id,
                               lost_frames=0, timestamp=now)
         return self._target
